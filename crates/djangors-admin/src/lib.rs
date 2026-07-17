@@ -3,17 +3,39 @@ use djangors_auth::{Auth, User};
 use djangors_core::extract::{Form, FromRequest};
 use djangors_core::{DjangorsError, PathParams, Request, Response, Router, StatusCode};
 use djangors_orm::meta::{Model, ModelMeta};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 pub(crate) const CHANGELIST_PER_PAGE: i64 = 100;
 
+/// Percent-encodes a value for embedding in a `href="?...&key=<value>"` query
+/// string. HTML-escaping alone is not enough here: `&` in a raw search term
+/// would be rendered as `&amp;`, which a browser decodes right back to a
+/// literal `&` before parsing the URL, letting the value inject extra query
+/// parameters or truncate the link (via `#`) instead of round-tripping as a
+/// single opaque value.
+fn url_encode_query_value(s: &str) -> String {
+    utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
+}
+
 pub struct ChangelistPage {
     pub columns: Vec<&'static str>, // field names, declaration order
     pub rows: Vec<Vec<String>>,     // Display-rendered, NOT escaped (view escapes)
-    pub total: i64,                 // COUNT(*) over the whole table
-    pub page: i64,                  // 1-based current page
+    pub pks: Vec<String>,
+    pub total: i64, // COUNT(*) over the whole table
+    pub page: i64,  // 1-based current page
     pub per_page: i64,
+}
+
+#[derive(Default, Clone)]
+pub struct ModelAdminConfig {
+    /// Subset/reorder of real field names to show as changelist columns.
+    /// `None` = all fields, declaration order (today's only behavior).
+    pub list_display: Option<&'static [&'static str]>,
+    /// Real, text-like field names to ILIKE-match against `?q=`.
+    /// `None` or empty = no search box rendered, `?q=` ignored if present.
+    pub search_fields: Option<&'static [&'static str]>,
 }
 
 #[async_trait]
@@ -26,7 +48,10 @@ pub trait ModelAdmin: Send + Sync {
         order: Option<&str>, // raw ?o= value, e.g. "name" or "-name"
         page: i64,           // already-validated >= 1
         per_page: i64,
+        search: Option<&str>,
     ) -> Result<ChangelistPage, DjangorsError>;
+
+    fn search_fields(&self) -> &[&'static str];
 
     async fn get_by_pk(
         &self,
@@ -55,7 +80,10 @@ pub trait ModelAdmin: Send + Sync {
 }
 
 /// Blanket impl so any real Model can be registered with zero boilerplate.
-pub struct DefaultModelAdmin<M: Model>(PhantomData<M>);
+pub struct DefaultModelAdmin<M: Model> {
+    config: ModelAdminConfig,
+    _marker: PhantomData<M>,
+}
 
 #[async_trait]
 impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
@@ -69,12 +97,17 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         M::field_names()
     }
 
+    fn search_fields(&self) -> &[&'static str] {
+        self.config.search_fields.unwrap_or(&[])
+    }
+
     async fn changelist(
         &self,
         db: &djangors_db::Database,
         order: Option<&str>,
         page: i64,
         per_page: i64,
+        search: Option<&str>,
     ) -> Result<ChangelistPage, DjangorsError> {
         let mut qs = M::objects();
         if let Some(o) = order {
@@ -85,7 +118,16 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
                 _ => DjangorsError::Internal(e.to_string()),
             })?;
         }
-        let total = M::objects()
+        if let (Some(term), Some(fields)) = (search, self.config.search_fields) {
+            if !term.is_empty() {
+                qs = qs
+                    .filter_or_icontains(fields, term)
+                    .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            }
+        }
+
+        let total = qs
+            .clone()
             .count(db)
             .await
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
@@ -97,21 +139,49 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
             .await
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
 
+        let columns: Vec<&'static str> = self
+            .config
+            .list_display
+            .map(|cols| cols.to_vec())
+            .unwrap_or_else(M::field_names);
+
+        let meta = M::meta();
+        let pk_field_name = meta
+            .fields
+            .iter()
+            .find(|f| f.primary_key)
+            .map(|f| f.name)
+            .unwrap_or("id");
+
         let mut rows = Vec::new();
+        let mut pks = Vec::new();
+
         for item in &items {
-            let row_vals: Vec<String> = item
-                .field_values()
-                .into_iter()
-                .map(|(_, v)| v.to_string())
+            let field_values = item.field_values();
+            let row_vals: Vec<String> = columns
+                .iter()
+                .map(|col| {
+                    field_values
+                        .iter()
+                        .find(|(name, _)| name == col)
+                        .map(|(_, v)| v.to_string())
+                        .unwrap_or_default()
+                })
                 .collect();
             rows.push(row_vals);
-        }
 
-        let columns = M::field_names();
+            let pk_val = field_values
+                .iter()
+                .find(|(name, _)| name == &pk_field_name)
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_default();
+            pks.push(pk_val);
+        }
 
         Ok(ChangelistPage {
             columns,
             rows,
+            pks,
             total,
             page,
             per_page,
@@ -475,8 +545,58 @@ impl AdminSite {
 
     /// Register a model with the default (no customization) ModelAdmin.
     pub fn register<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static>(&self) {
+        self.register_with::<M>(ModelAdminConfig::default());
+    }
+
+    pub fn register_with<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static>(
+        &self,
+        config: ModelAdminConfig,
+    ) {
+        let meta = M::meta();
+        if let Some(list_display) = config.list_display {
+            for name in list_display {
+                assert!(
+                    meta.fields.iter().any(|f| f.name == *name),
+                    "list_display field '{}' does not exist on model '{}'",
+                    name,
+                    meta.struct_name
+                );
+            }
+        }
+        if let Some(search_fields) = config.search_fields {
+            for name in search_fields {
+                let field = meta
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "search_fields field '{}' does not exist on model '{}'",
+                            name, meta.struct_name
+                        )
+                    });
+                assert!(
+                    matches!(
+                        field.kind,
+                        djangors_orm::meta::FieldKind::Char
+                            | djangors_orm::meta::FieldKind::Text
+                            | djangors_orm::meta::FieldKind::Email
+                            | djangors_orm::meta::FieldKind::Url
+                            | djangors_orm::meta::FieldKind::Slug
+                            | djangors_orm::meta::FieldKind::Ip
+                    ),
+                    "search_fields field '{}' on model '{}' is not a text-like field",
+                    name,
+                    meta.struct_name
+                );
+            }
+        }
+
         let mut reg = self.registry.lock().unwrap();
-        reg.push(Arc::new(DefaultModelAdmin::<M>(PhantomData)));
+        reg.push(Arc::new(DefaultModelAdmin::<M> {
+            config,
+            _marker: PhantomData,
+        }));
     }
 
     /// Build a Router with the index, changelist, and add/change routes.
@@ -613,6 +733,7 @@ async fn admin_changelist(
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
 
     let o = req.query("o");
+    let q = req.query("q");
     let page = match req.query("page") {
         Some(p_str) => {
             let p = p_str
@@ -626,38 +747,27 @@ async fn admin_changelist(
         None => 1,
     };
 
-    let page_data = admin.changelist(db, o, page, CHANGELIST_PER_PAGE).await?;
-
-    let meta = admin.model_meta();
-    let pk_field_name = meta
-        .fields
-        .iter()
-        .find(|f| f.primary_key)
-        .map(|f| f.name)
-        .unwrap_or("id");
-    let pk_col_idx = page_data
-        .columns
-        .iter()
-        .position(|&col| col == pk_field_name);
+    let page_data = admin
+        .changelist(db, o, page, CHANGELIST_PER_PAGE, q)
+        .await?;
 
     let mut header_html = String::new();
     for col in &page_data.columns {
-        let link = if o == Some(*col) {
+        let mut link = if o == Some(*col) {
             format!("?o=-{}", col)
         } else {
             format!("?o={}", col)
         };
+        if let Some(q_val) = q {
+            link.push_str(&format!("&q={}", url_encode_query_value(q_val)));
+        }
         header_html.push_str(&format!("<th><a href=\"{}\">{}</a></th>", link, col));
     }
 
     let mut body_html = String::new();
-    for row in page_data.rows {
+    for (row_index, row) in page_data.rows.into_iter().enumerate() {
         body_html.push_str("<tr>");
-        let pk_val = if let Some(idx) = pk_col_idx {
-            row.get(idx).cloned().unwrap_or_default()
-        } else {
-            String::new()
-        };
+        let pk_val = page_data.pks.get(row_index).cloned().unwrap_or_default();
         for (i, cell) in row.into_iter().enumerate() {
             let escaped = djangors_core::html_escape(&cell);
             if i == 0 {
@@ -683,6 +793,9 @@ async fn admin_changelist(
         if let Some(order_val) = o {
             prev_link.push_str(&format!("&o={}", order_val));
         }
+        if let Some(q_val) = q {
+            prev_link.push_str(&format!("&q={}", url_encode_query_value(q_val)));
+        }
         pager_html.push_str(&format!("<a href=\"{}\">Previous</a> ", prev_link));
     }
     pager_html.push_str(&format!(
@@ -694,12 +807,32 @@ async fn admin_changelist(
         if let Some(order_val) = o {
             next_link.push_str(&format!("&o={}", order_val));
         }
+        if let Some(q_val) = q {
+            next_link.push_str(&format!("&q={}", url_encode_query_value(q_val)));
+        }
         pager_html.push_str(&format!("<a href=\"{}\">Next</a>", next_link));
     }
 
+    let search_fields = admin.search_fields();
+    let mut search_html = String::new();
+    if !search_fields.is_empty() {
+        let q_val_escaped = q.map(djangors_core::html_escape).unwrap_or_default();
+        search_html.push_str("<form method=\"get\">");
+        if let Some(order_val) = o {
+            search_html.push_str(&format!(
+                "<input type=\"hidden\" name=\"o\" value=\"{}\">",
+                djangors_core::html_escape(order_val)
+            ));
+        }
+        search_html.push_str(&format!(
+            "<input type=\"text\" name=\"q\" value=\"{}\"> <input type=\"submit\" value=\"Search\"></form>",
+            q_val_escaped
+        ));
+    }
+
     let html = format!(
-        "<table><thead><tr>{}</tr></thead><tbody>{}</tbody></table><div>{}</div>",
-        header_html, body_html, pager_html
+        "{}<table><thead><tr>{}</tr></thead><tbody>{}</tbody></table><div>{}</div>",
+        search_html, header_html, body_html, pager_html
     );
 
     Ok(Response::html(StatusCode::OK, html))
@@ -1043,6 +1176,16 @@ mod tests {
         #[djangors(primary_key, auto)]
         id: i64,
         parent: djangors_orm::ForeignKey<ModelA>,
+    }
+
+    #[derive(MacroModel, Debug, Clone)]
+    #[djangors(app = "admin_test", table_name = "test_model_d")]
+    #[allow(dead_code)]
+    struct ModelD {
+        #[djangors(primary_key, auto)]
+        id: i64,
+        name: String,
+        content: String,
     }
 
     #[tokio::test]
@@ -1440,8 +1583,11 @@ mod tests {
         .unwrap();
 
         // Direct trait call: admin.changelist(&db, None, 2, 2)
-        let admin_a = DefaultModelAdmin::<ModelA>(PhantomData);
-        let page_data = admin_a.changelist(&db, None, 2, 2).await.unwrap();
+        let admin_a = DefaultModelAdmin::<ModelA> {
+            config: ModelAdminConfig::default(),
+            _marker: PhantomData,
+        };
+        let page_data = admin_a.changelist(&db, None, 2, 2, None).await.unwrap();
         assert_eq!(page_data.total, 5);
         assert_eq!(page_data.rows.len(), 2); // Row 3 and Row 4
         assert_eq!(page_data.rows[0][1], "Row C");
@@ -2043,6 +2189,254 @@ mod tests {
             .await;
         let _ = sqlx::query("DROP TABLE auth_user").execute(db.pool()).await;
         let _ = sqlx::query("DROP TABLE test_model_a")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_list_display_and_search() {
+        let _guard = DB_MUTEX.lock().unwrap();
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        // Drop/create tables
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE test_model_d (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff".to_string(),
+            email: "staff@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+
+        // 1. register_with with a list_display subset that excludes the pk field
+        let site = AdminSite::new();
+        site.register_with::<ModelD>(ModelAdminConfig {
+            list_display: Some(&["content", "name"]),
+            search_fields: None,
+        });
+
+        let pk_d = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Alice".to_string())),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("Hello world".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let router = Router::new().mount("/admin", site.urls());
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modeld/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+
+        assert!(body.contains("content"));
+        assert!(body.contains("name"));
+        assert!(!body.contains("<th><a href=\"?o=id\">id</a></th>"));
+        assert!(!body.contains("<th><a href=\"?o=-id\">id</a></th>"));
+        assert!(body.contains(&format!("<a href=\"{}/change/\">Hello world</a>", pk_d)));
+
+        // 2. register_with with a list_display naming a field that doesn't exist on the model -> panics
+        let site2 = AdminSite::new();
+        let res2 = std::panic::catch_unwind(|| {
+            site2.register_with::<ModelD>(ModelAdminConfig {
+                list_display: Some(&["nonexistent"]),
+                search_fields: None,
+            });
+        });
+        assert!(res2.is_err());
+
+        // 3. register_with with search_fields naming a non-text field -> panics
+        let site3 = AdminSite::new();
+        let res3 = std::panic::catch_unwind(|| {
+            site3.register_with::<ModelD>(ModelAdminConfig {
+                list_display: None,
+                search_fields: Some(&["id"]),
+            });
+        });
+        assert!(res3.is_err());
+
+        // Clean up rows for search tests
+        let _ = sqlx::query("TRUNCATE test_model_d RESTART IDENTITY")
+            .execute(db.pool())
+            .await;
+
+        // Insert 3 rows
+        let _ = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Apple".to_string())),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("First".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        let _ = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                (
+                    "name",
+                    djangors_orm::expr::Value::Text("Banana".to_string()),
+                ),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("Second".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        let _ = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                (
+                    "name",
+                    djangors_orm::expr::Value::Text("Apricot".to_string()),
+                ),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("Third".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        // 4. search_fields configured, ?q= matching substring (case-insensitive)
+        let site_search = AdminSite::new();
+        site_search.register_with::<ModelD>(ModelAdminConfig {
+            list_display: None,
+            search_fields: Some(&["name"]),
+        });
+        let router_search = Router::new().mount("/admin", site_search.urls());
+
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modeld/?q=ap"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router_search.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("Apple"));
+        assert!(body.contains("Apricot"));
+        assert!(!body.contains("Banana"));
+        assert!(body.contains("Total: 2."));
+
+        // 5. search_fields configured but ?q= omitted
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modeld/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router_search.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("Apple"));
+        assert!(body.contains("Banana"));
+        assert!(body.contains("Apricot"));
+        assert!(body.contains("Total: 3."));
+
+        // 6. No search_fields configured but ?q=something passed -> q is ignored, all show
+        let site_nosearch = AdminSite::new();
+        site_nosearch.register_with::<ModelD>(ModelAdminConfig::default());
+        let router_nosearch = Router::new().mount("/admin", site_nosearch.urls());
+
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modeld/?q=Banana"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router_nosearch.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("Apple"));
+        assert!(body.contains("Banana"));
+        assert!(body.contains("Apricot"));
+        assert!(body.contains("Total: 3."));
+
+        // Clean up
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
             .execute(db.pool())
             .await;
     }

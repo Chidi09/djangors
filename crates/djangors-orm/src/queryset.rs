@@ -106,6 +106,34 @@ impl<T: Model + FromRow> QuerySet<T> {
         Ok(self)
     }
 
+    /// ILIKE-matches `term` against every field in `fields`, OR'd together, ANDed
+    /// with any other filters already applied. Every name in `fields` must be a
+    /// real field on `T` (relations are not searchable this way — no `field_to_col`
+    /// mapping ambiguity to worry about since relation values aren't text).
+    pub fn filter_or_icontains(
+        mut self,
+        fields: &[&'static str],
+        term: &str,
+    ) -> Result<Self, OrmError> {
+        let meta = T::meta();
+        let mut compares = Vec::new();
+        for field_name in fields {
+            if !meta.fields.iter().any(|f| f.name == *field_name) {
+                return Err(OrmError::FieldNotFound {
+                    field: field_name.to_string(),
+                    model: meta.struct_name,
+                });
+            }
+            compares.push(Expr::Compare {
+                field: field_name,
+                op: CompareOp::IContains,
+                value: Value::Text(term.to_string()),
+            });
+        }
+        self.filters.push(Expr::Or(compares));
+        Ok(self)
+    }
+
     /// Order results by the given field. A leading `-` means descending.
     ///
     /// # Errors
