@@ -2,6 +2,19 @@
 //!
 //! Provides the core [`Request`], [`Response`], [`Router`], and [`Handler`]
 //! types that form the foundation of Djangors's HTTP layer.
+//!
+//! # CSRF Protection (v1 Scope)
+//!
+//! **CRITICAL SECURITY NOTE:**
+//! CSRF middleware in v1 only validates unsafe requests (e.g. POST, PUT, PATCH, DELETE)
+//! via the `X-CSRFToken` header. It does **not** validate CSRF tokens passed inside a
+//! form body field (like Django's `csrfmiddlewaretoken`). Consequently:
+//! - **Protected:** JSON/AJAX-style requests that set the `X-CSRFToken` header.
+//! - **NOT Protected:** Classic `<form method="post">` HTML form submissions without JavaScript.
+//!
+//! **BREACH Defense (Future Work):**
+//! This version uses a double-submit cookie scheme. Django's BREACH-hardened masked-secret
+//! scheme is not yet implemented and is planned as future work.
 
 pub mod app;
 pub mod debug_page;
