@@ -13,6 +13,7 @@ djangors-core = { path = "../djangors-core" }
 djangors-auth = { path = "../djangors-auth" }
 djangors-db = { path = "../djangors-db" }
 async-trait = "0.1.86"
+chrono = { version = "0.4.45", features = ["std", "serde"] }
 
 [dev-dependencies]
 djangors-sessions = { path = "../djangors-sessions" }

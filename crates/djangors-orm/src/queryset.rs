@@ -1,7 +1,47 @@
 use crate::error::{FromRow, OrmError};
 use crate::expr::{ArithOp, CompareOp, Expr, SetExpr, UnresolvedExpr, Value};
-use crate::meta::Model;
+use crate::meta::{FieldKind, Model, ModelMeta};
 use std::marker::PhantomData;
+
+/// The SQL type a `Value::Null` must be bound as, so a NULL going into (say) a
+/// TEXT or TIMESTAMPTZ column isn't sent typed as `int8` (sqlx/Postgres reject
+/// a mismatched parameter type even for NULL). Every non-null `Value` variant
+/// already carries its own type; only `Null` is ambiguous without this.
+#[derive(Clone, Copy)]
+enum NullBindKind {
+    I64,
+    F64,
+    Text,
+    Bool,
+    DateTime,
+}
+
+/// Resolves the correct `NullBindKind` for a field on `meta` by name. Relation
+/// (FK) fields aren't in `meta.fields` and are always bound as the related
+/// row's `i64` id. `Decimal`/`Date`/`Time`/`Duration`/`Uuid` fall back to
+/// `I64` — the derive macro (`crates/djangors-macros/src/model.rs`, the
+/// "unsupported types for save/update operations" check) already rejects any
+/// model with such a field at compile time, so no real `ModelMeta` in this
+/// workspace can actually reach that arm; it exists only so this function
+/// stays total instead of panicking on a hypothetical future field kind.
+fn null_bind_kind_for(field_name: &str, meta: &'static ModelMeta) -> NullBindKind {
+    match meta.fields.iter().find(|f| f.name == field_name) {
+        Some(f) => match f.kind {
+            FieldKind::Char
+            | FieldKind::Text
+            | FieldKind::Email
+            | FieldKind::Url
+            | FieldKind::Slug
+            | FieldKind::Ip => NullBindKind::Text,
+            FieldKind::Integer | FieldKind::BigInt => NullBindKind::I64,
+            FieldKind::Float => NullBindKind::F64,
+            FieldKind::Boolean => NullBindKind::Bool,
+            FieldKind::DateTime => NullBindKind::DateTime,
+            _ => NullBindKind::I64,
+        },
+        None => NullBindKind::I64,
+    }
+}
 
 #[derive(Debug)]
 pub struct QuerySet<T: Model + FromRow> {
@@ -454,6 +494,12 @@ impl<T: Model + FromRow> QuerySet<T> {
         };
 
         let mut params = Vec::new();
+        // Parallel to `params`: the correct bind type for a `Value::Null` at
+        // that index. SET-clause entries get a real field-derived kind below;
+        // WHERE-clause entries appended by `compile_expr_sql` (which has no
+        // per-value field context) default to `I64`, matching this
+        // function's pre-existing behavior for filter values.
+        let mut null_kinds = Vec::new();
         let mut param_idx = 1;
         let mut set_parts = Vec::new();
 
@@ -463,6 +509,7 @@ impl<T: Model + FromRow> QuerySet<T> {
                 SetExpr::Literal(v) => {
                     set_parts.push(format!("{} = ${}", lhs_col, param_idx));
                     params.push(v.clone());
+                    null_kinds.push(null_bind_kind_for(field_name, meta));
                     param_idx += 1;
                 }
                 SetExpr::FieldOp { field, op, operand } => {
@@ -478,6 +525,7 @@ impl<T: Model + FromRow> QuerySet<T> {
                         lhs_col, rhs_col, op_sql, param_idx
                     ));
                     params.push(operand.clone());
+                    null_kinds.push(null_bind_kind_for(field_name, meta));
                     param_idx += 1;
                 }
             }
@@ -488,24 +536,110 @@ impl<T: Model + FromRow> QuerySet<T> {
             let combined = Expr::And(self.filters.clone());
             let where_clause =
                 compile_expr_sql(&combined, &field_to_col, &mut params, &mut param_idx);
+            null_kinds.resize(params.len(), NullBindKind::I64);
             sql.push_str(" WHERE ");
             sql.push_str(&where_clause);
         }
 
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
-        for val in &params {
+        for (i, val) in params.iter().enumerate() {
             query = match val {
                 Value::I64(v) => query.bind(*v),
                 Value::F64(v) => query.bind(*v),
                 Value::Text(v) => query.bind(v.clone()),
                 Value::Bool(v) => query.bind(*v),
                 Value::DateTime(v) => query.bind(*v),
-                Value::Null => query.bind(None::<i64>),
+                Value::Null => match null_kinds[i] {
+                    NullBindKind::I64 => query.bind(None::<i64>),
+                    NullBindKind::F64 => query.bind(None::<f64>),
+                    NullBindKind::Text => query.bind(None::<String>),
+                    NullBindKind::Bool => query.bind(None::<bool>),
+                    NullBindKind::DateTime => query.bind(None::<chrono::DateTime<chrono::Utc>>),
+                },
             };
         }
 
         let res = query.execute(db.pool()).await?;
         Ok(res.rows_affected())
+    }
+
+    pub async fn insert_raw(
+        db: &djangors_db::Database,
+        values: Vec<(&'static str, crate::expr::Value)>,
+    ) -> Result<i64, OrmError> {
+        let meta = T::meta();
+        let pk_field = meta
+            .fields
+            .iter()
+            .find(|f| f.primary_key)
+            .expect("Primary key field not found");
+        let pk_column = pk_field.column_name;
+
+        let mut processed_values = Vec::new();
+        for (field_name, val) in values {
+            if let Some(f) = meta.fields.iter().find(|f| f.name == field_name) {
+                if f.auto {
+                    continue;
+                }
+                processed_values.push((f.column_name, val, field_name));
+            } else if let Some(r) = meta.relations.iter().find(|r| r.field_name == field_name) {
+                processed_values.push((r.field_name, val, field_name));
+            } else {
+                return Err(OrmError::FieldNotFound {
+                    field: field_name.to_string(),
+                    model: meta.struct_name,
+                });
+            }
+        }
+
+        let mut cols = Vec::new();
+        let mut placeholders = Vec::new();
+        let mut params = Vec::new();
+        let mut null_kinds = Vec::new();
+        for (i, (col_name, val, field_name)) in processed_values.into_iter().enumerate() {
+            cols.push(col_name);
+            placeholders.push(format!("${}", i + 1));
+            null_kinds.push(null_bind_kind_for(field_name, meta));
+            params.push(val);
+        }
+
+        let sql = if cols.is_empty() {
+            format!(
+                "INSERT INTO {} DEFAULT VALUES RETURNING {}",
+                meta.table_name, pk_column
+            )
+        } else {
+            format!(
+                "INSERT INTO {} ({}) VALUES ({}) RETURNING {}",
+                meta.table_name,
+                cols.join(", "),
+                placeholders.join(", "),
+                pk_column
+            )
+        };
+
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for (i, val) in params.iter().enumerate() {
+            query = match val {
+                Value::I64(v) => query.bind(*v),
+                Value::F64(v) => query.bind(*v),
+                Value::Text(v) => query.bind(v.clone()),
+                Value::Bool(v) => query.bind(*v),
+                Value::DateTime(v) => query.bind(*v),
+                Value::Null => match null_kinds[i] {
+                    NullBindKind::I64 => query.bind(None::<i64>),
+                    NullBindKind::F64 => query.bind(None::<f64>),
+                    NullBindKind::Text => query.bind(None::<String>),
+                    NullBindKind::Bool => query.bind(None::<bool>),
+                    NullBindKind::DateTime => query.bind(None::<chrono::DateTime<chrono::Utc>>),
+                },
+            };
+        }
+
+        use sqlx::Row;
+        let row = query.fetch_one(db.pool()).await?;
+        let pk: i64 = row.try_get(0)?;
+        Ok(pk)
     }
 
     /// Eagerly loads the given relation, avoiding an N+1 query. Returns each

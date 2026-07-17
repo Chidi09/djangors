@@ -1052,3 +1052,180 @@ async fn test_count_and_aggregate_on_model_with_default_ordering() {
         .await
         .unwrap();
 }
+
+#[derive(Model, Debug)]
+#[djangors(app = "test_app", table_name = "test_insert_raw_model")]
+#[allow(dead_code)]
+pub struct InsertRawTestModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+    pub age: i64,
+}
+
+#[tokio::test]
+async fn test_queryset_insert_raw() {
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query("DROP TABLE IF EXISTS test_insert_raw_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE test_insert_raw_model (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            age BIGINT NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // 1. Valid insert_raw
+    let values = vec![
+        ("name", crate::expr::Value::Text("Alice".to_string())),
+        ("age", crate::expr::Value::I64(30)),
+    ];
+    let pk = crate::queryset::QuerySet::<InsertRawTestModel>::insert_raw(&db, values)
+        .await
+        .unwrap();
+
+    // Verify it exists in DB via typed get()
+    let row = crate::queryset::QuerySet::<InsertRawTestModel>::new()
+        .filter(q!(id = pk))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(row.name, "Alice");
+    assert_eq!(row.age, 30);
+
+    // 2. Reject unknown field name
+    let bad_values = vec![
+        ("name", crate::expr::Value::Text("Bob".to_string())),
+        ("invalid_field", crate::expr::Value::I64(42)),
+    ];
+    let err = crate::queryset::QuerySet::<InsertRawTestModel>::insert_raw(&db, bad_values).await;
+    match err {
+        Err(crate::error::OrmError::FieldNotFound { field, .. }) => {
+            assert_eq!(field, "invalid_field");
+        }
+        other => panic!("Expected FieldNotFound error, got {:?}", other),
+    }
+
+    sqlx::query("DROP TABLE test_insert_raw_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+#[derive(Model, Debug)]
+#[djangors(app = "test_app", table_name = "test_nullable_bind_model")]
+#[allow(dead_code)]
+pub struct NullableBindTestModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+    pub bio: Option<String>,
+    pub last_seen: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Regression test: `insert_raw` and `update`'s bind loops used to type
+/// every `Value::Null` as `None::<i64>` regardless of the target column,
+/// which Postgres rejects for a non-integer column (the same bug class
+/// fixed in the derive macro for `save`/`update` during Phase 5 part 3 —
+/// see that commit message — but reintroduced here since `insert_raw` and
+/// generic `QuerySet::update` build binds at runtime, not compile time, so
+/// they need their own field-kind-aware fix). Neither of `insert_raw`'s or
+/// `update`'s own required tests catch this because their test models have
+/// no nullable non-i64 field; this one does.
+#[tokio::test]
+async fn test_null_bind_respects_field_type() {
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query("DROP TABLE IF EXISTS test_nullable_bind_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE test_nullable_bind_model (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            bio TEXT,
+            last_seen TIMESTAMPTZ
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // insert_raw with a nullable TEXT and a nullable TIMESTAMPTZ both Null.
+    let values = vec![
+        ("name", crate::expr::Value::Text("Alice".to_string())),
+        ("bio", crate::expr::Value::Null),
+        ("last_seen", crate::expr::Value::Null),
+    ];
+    let pk = crate::queryset::QuerySet::<NullableBindTestModel>::insert_raw(&db, values)
+        .await
+        .unwrap();
+
+    let row = crate::queryset::QuerySet::<NullableBindTestModel>::new()
+        .filter(q!(id = pk))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(row.bio, None);
+    assert_eq!(row.last_seen, None);
+
+    // Now set bio to a real value via insert, then clear it back to Null
+    // through `update` (the generic QuerySet path djangors-admin's
+    // update_from_form drives) — must not error typing NULL as int8.
+    let pk2 = crate::queryset::QuerySet::<NullableBindTestModel>::insert_raw(
+        &db,
+        vec![
+            ("name", crate::expr::Value::Text("Bob".to_string())),
+            ("bio", crate::expr::Value::Text("hello".to_string())),
+        ],
+    )
+    .await
+    .unwrap();
+
+    crate::queryset::QuerySet::<NullableBindTestModel>::new()
+        .filter(q!(id = pk2))
+        .unwrap()
+        .update(
+            &db,
+            vec![
+                (
+                    "bio",
+                    crate::expr::SetExpr::Literal(crate::expr::Value::Null),
+                ),
+                (
+                    "last_seen",
+                    crate::expr::SetExpr::Literal(crate::expr::Value::Null),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let row2 = crate::queryset::QuerySet::<NullableBindTestModel>::new()
+        .filter(q!(id = pk2))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(row2.bio, None);
+    assert_eq!(row2.last_seen, None);
+
+    sqlx::query("DROP TABLE test_nullable_bind_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
