@@ -1,6 +1,6 @@
 # Phase 5 roadmap — status, sequencing, and the deferred-items ledger
 
-**Last updated:** 2026-07-17 (after commit aba0ff9). This is the authoritative status document
+**Last updated:** 2026-07-17 (after commit a6ad28f). This is the authoritative status document
 for Phase 5 (THE ADMIN) and the single place where every deliberately-deferred item across the
 project is tracked, so no session ever has to re-derive project state from git archaeology.
 Update this file whenever a slice lands or a new deferral is made.
@@ -20,6 +20,7 @@ Phase 5 slices landed so far:
 | 5.3 | `5.3-createsuperuser-polls-admin.md` | 9b2fd47 | Real `dj createsuperuser` (non-interactive, `DJANGORS_SUPERUSER_PASSWORD` env, argon2, duplicate check) + admin mounted in `examples/polls` (`admin.rs` is now a real `admin.py`-equivalent), socket-level integration tests. Also fixed a latent macro bug: derived `save()`/`update()` bound every SQL NULL as `None::<i64>`, breaking any `None` value in a non-i64 nullable column (e.g. `last_login: None` against TIMESTAMPTZ); NULL binds are now typed per-field. |
 | 5.4 | `5.4-admin-change-form.md` | 9f016fe | Add + edit pages (`/{app}/{model}/add/`, `/{app}/{model}/{pk}/change/`), no macro changes — edit reuses the already-generic `QuerySet::update()`, add gets one new generic `QuerySet::insert_raw()` built from `ModelMeta` alone. `parse_field_value()` (form string → `Value`) collects every field error at once instead of failing fast. Changelist rows now link to their change page. Known gap: CSRF is header-only, so a raw `<form>` POST needs client-side JS to actually submit — not fixed here, tracked below. |
 | 5.5 | `5.5-admin-delete-confirmation.md` | aba0ff9 | Delete confirmation (`GET`/`POST /{app}/{model}/{pk}/delete/`), no macro changes — one new generic `QuerySet::delete_by_pk()`, sibling to 5.4's `insert_raw()`. `collect_related_objects()` walks the pre-existing `inventory`-based global model registry (`djangors_orm::meta::all_registered_models()`) to find any registered model (not just admin-registered ones) with a relation pointing at the object, one hop, counts only, `on_delete` shown for information only (still not enforced by the ORM). First slice this segment where independent review found zero bugs. |
+| 5.6.1 | `5.6-changelist-list-display-search.md` | a6ad28f | First customizable-admin registration path: `ModelAdminConfig { list_display, search_fields }` + `AdminSite::register_with()`, validated (panics) at registration time. `list_display` projects changelist columns to a real-field subset/reorder; `search_fields` adds an OR'd-ILIKE search box via a new generic `QuerySet::filter_or_icontains()`. Fixed two bugs found in review before they shipped: (1) the changelist row edit-link used to derive the pk from its position among displayed columns, which silently breaks once `list_display` can omit the pk — fixed by adding a parallel `ChangelistPage::pks` field always populated from full field values; (2) the search term was embedded into pagination hrefs via HTML-escaping only, not URL percent-encoding, so a term containing `&`/`#` could inject query params or truncate the link — fixed with `url_encode_query_value()`. |
 
 Working infrastructure a new session should know exists (all proven by tests):
 - `Model::field_values(&self) -> Vec<(&'static str, Value)>` and `Model::field_names()` —
@@ -43,14 +44,24 @@ Working infrastructure a new session should know exists (all proven by tests):
   struct in the binary, independent of any `AdminSite`'s own registry. Use this, not the admin
   registry, for any future feature needing "every model in the project" (e.g. migrations
   tooling, or a future transitive related-object walk).
+- `AdminSite::register_with::<M>(ModelAdminConfig { list_display, search_fields })` (5.6.1) —
+  the first per-model admin customization path; `register::<M>()` is now just `register_with`
+  with `ModelAdminConfig::default()`. Validated (panics) at registration time, not runtime.
+  `QuerySet::<T>::filter_or_icontains(fields, term)` (5.6.1) — generic OR'd-ILIKE search,
+  sibling to `filter()`, built on the pre-existing `Expr::Or`/`CompareOp::IContains` that
+  `filter()`'s own `UnresolvedExpr` never exposed a way to construct.
+- `ChangelistPage::pks: Vec<String>` (5.6.1) — parallel array to `rows`, always the real pk
+  value per row regardless of whether the pk field is in the (now possibly customized)
+  `columns`. Added specifically so `list_display` excluding the pk doesn't break row edit
+  links; use this field for any future per-row link, don't re-derive pk from `columns`.
 
 ## Recommended sequencing for the remaining Phase 5 bullets
 
-1. **5.6 — Changelist customization**: `list_display` (subset of fields + computed methods —
-   needs a `ModelAdmin` method returning column closures), `search_fields` (ILIKE across
-   named fields), `list_filter` v1 (bool/choices fields), then `date_hierarchy`,
-   `list_editable`, bulk actions (delete first, then CSV export — XLSX needs a new dependency,
-   justify it then), saved views last.
+1. **5.6.2+ — remaining changelist customization**: `list_filter` v1 (bool/choices fields),
+   then `date_hierarchy`, `list_editable`, bulk actions (delete first — can likely reuse
+   `delete_by_pk` in a loop, then CSV export — XLSX needs a new dependency, justify it then),
+   saved views last. `list_display` computed-method columns (closures, not just real field
+   names) were explicitly deferred out of 5.6.1 and belong here too.
 2. **5.7 — Permissions**: requires groups/model-level permissions, which were *deferred out of
    Phase 4* — that work (auth tables, permission checks) has to land before "permission
    enforcement everywhere" is possible. Design it as its own auth-side doc first.
