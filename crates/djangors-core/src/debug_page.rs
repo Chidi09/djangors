@@ -23,6 +23,7 @@ pub fn render_debug_page(error: &DjangorsError, req: &Request) -> Response {
             "Not Found",
             "The requested URL was not found on this server.",
         ),
+        DjangorsError::Unauthorized(msg) => ("unauthorized", "Unauthorized", msg.as_str()),
     };
 
     let mut headers_html = String::new();

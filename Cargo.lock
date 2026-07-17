@@ -578,9 +578,15 @@ name = "djangors-auth"
 version = "0.0.1"
 dependencies = [
  "argon2",
+ "async-trait",
+ "bytes",
  "chrono",
+ "djangors-core",
+ "djangors-db",
  "djangors-macros",
  "djangors-orm",
+ "djangors-sessions",
+ "hyper",
  "rand_core 0.6.4",
  "sqlx",
  "thiserror",

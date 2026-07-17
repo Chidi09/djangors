@@ -2,6 +2,8 @@ use super::*;
 use djangors_orm::q;
 use djangors_orm::Model;
 
+static DB_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_auth", table_name = "test_auth_user")]
 pub struct TestUser {
@@ -113,7 +115,9 @@ fn test_verify_password_malformed_hash() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_user_db_round_trip() {
+    let _guard = DB_MUTEX.lock().unwrap();
     let db_url = "postgres://postgres:postgres@localhost/djangors_test";
     let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
 
@@ -191,6 +195,317 @@ async fn test_user_db_round_trip() {
 
     // Cleanup
     djangors_orm::sqlx::query("DROP TABLE test_auth_user")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_model_backend_authenticate() {
+    let _guard = DB_MUTEX.lock().unwrap();
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_orm::djangors_db::Database::connect(&config)
+        .await
+        .unwrap();
+
+    djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_user")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_user (
+            id BIGSERIAL PRIMARY KEY,
+            username VARCHAR(150) NOT NULL,
+            email VARCHAR(254) NOT NULL,
+            password TEXT NOT NULL,
+            is_active BOOLEAN NOT NULL,
+            is_staff BOOLEAN NOT NULL,
+            is_superuser BOOLEAN NOT NULL,
+            date_joined TIMESTAMPTZ NOT NULL,
+            last_login TIMESTAMPTZ
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let plaintext = "correct_password";
+    let hash = hash_password(plaintext).unwrap();
+    let now = chrono::Utc::now();
+
+    // 1. Create an active user
+    let active_user_raw = User {
+        id: 0,
+        username: "active_user".to_string(),
+        email: "active@example.com".to_string(),
+        password: hash.clone(),
+        is_active: true,
+        is_staff: false,
+        is_superuser: false,
+        date_joined: now,
+        last_login: Some(now),
+    };
+    let _active_user = active_user_raw.save(&db).await.unwrap();
+
+    // 2. Create an inactive user
+    let inactive_user_raw = User {
+        id: 0,
+        username: "inactive_user".to_string(),
+        email: "inactive@example.com".to_string(),
+        password: hash.clone(),
+        is_active: false,
+        is_staff: false,
+        is_superuser: false,
+        date_joined: now,
+        last_login: Some(now),
+    };
+    let _ = inactive_user_raw.save(&db).await.unwrap();
+
+    let backend = ModelBackend;
+
+    // Test correct credentials -> Some(user)
+    let auth_res = backend
+        .authenticate(&db, "active_user", plaintext)
+        .await
+        .unwrap();
+    assert!(auth_res.is_some());
+    assert_eq!(auth_res.unwrap().username, "active_user");
+
+    // Test wrong password -> None
+    let auth_res = backend
+        .authenticate(&db, "active_user", "wrong_password")
+        .await
+        .unwrap();
+    assert!(auth_res.is_none());
+
+    // Test nonexistent username -> None
+    let auth_res = backend
+        .authenticate(&db, "nonexistent", plaintext)
+        .await
+        .unwrap();
+    assert!(auth_res.is_none());
+
+    // Test inactive user with correct password -> None
+    let auth_res = backend
+        .authenticate(&db, "inactive_user", plaintext)
+        .await
+        .unwrap();
+    assert!(auth_res.is_none());
+
+    // Cleanup
+    djangors_orm::sqlx::query("DROP TABLE auth_user")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+#[test]
+fn test_login_session_mechanics() {
+    let secret = b"super-secret-key-for-testing-purposes-only";
+    let store = djangors_sessions::SignedCookieStore::new(secret);
+    let session = djangors_sessions::Session::new_empty();
+
+    let user = User {
+        id: 42,
+        username: "testuser".to_string(),
+        email: "test@example.com".to_string(),
+        password: "hash".to_string(),
+        is_active: true,
+        is_staff: false,
+        is_superuser: false,
+        date_joined: chrono::Utc::now(),
+        last_login: None,
+    };
+
+    let cookie_val_before = store.encode(&session);
+
+    login(&session, &user);
+
+    let cookie_val_after = store.encode(&session);
+
+    // Prove pre-rotation and post-rotation cookie strings are different (cycle_key logic)
+    assert_ne!(cookie_val_before, cookie_val_after);
+
+    // Verify session sets the _auth_user_id
+    assert_eq!(session.get::<i64>(SESSION_USER_ID_KEY), Some(42));
+}
+
+#[test]
+fn test_logout_session_mechanics() {
+    let session = djangors_sessions::Session::new_empty();
+    session.set(SESSION_USER_ID_KEY, 42i64);
+    session.set("other_key", "value".to_string());
+
+    assert_eq!(session.get::<i64>(SESSION_USER_ID_KEY), Some(42));
+
+    logout(&session);
+
+    assert_eq!(session.get::<i64>(SESSION_USER_ID_KEY), None);
+    assert!(session.is_empty());
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_auth_extractor() {
+    let _guard = DB_MUTEX.lock().unwrap();
+    use bytes::Bytes;
+    use djangors_core::extract::FromRequest;
+    use djangors_core::Request;
+    use hyper::http::{Extensions, HeaderMap, Method, Uri};
+
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_orm::djangors_db::Database::connect(&config)
+        .await
+        .unwrap();
+
+    djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_user")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_user (
+            id BIGSERIAL PRIMARY KEY,
+            username VARCHAR(150) NOT NULL,
+            email VARCHAR(254) NOT NULL,
+            password TEXT NOT NULL,
+            is_active BOOLEAN NOT NULL,
+            is_staff BOOLEAN NOT NULL,
+            is_superuser BOOLEAN NOT NULL,
+            date_joined TIMESTAMPTZ NOT NULL,
+            last_login TIMESTAMPTZ
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let now = chrono::Utc::now();
+    let active_user_raw = User {
+        id: 0,
+        username: "alice".to_string(),
+        email: "alice@example.com".to_string(),
+        password: "hash".to_string(),
+        is_active: true,
+        is_staff: false,
+        is_superuser: false,
+        date_joined: now,
+        last_login: Some(now),
+    };
+    let active_user = active_user_raw.save(&db).await.unwrap();
+
+    let inactive_user_raw = User {
+        id: 0,
+        username: "inactive".to_string(),
+        email: "inactive@example.com".to_string(),
+        password: "hash".to_string(),
+        is_active: false,
+        is_staff: false,
+        is_superuser: false,
+        date_joined: now,
+        last_login: Some(now),
+    };
+    let inactive_user = inactive_user_raw.save(&db).await.unwrap();
+
+    // 1. no session extension present -> Err(Unauthorized)
+    let req_no_session = Request::new(
+        Method::GET,
+        Uri::from_static("/"),
+        HeaderMap::new(),
+        Bytes::new(),
+    )
+    .with_state(djangors_core::state::AppState::default());
+    let res = Auth::<User>::from_request(&req_no_session).await;
+    assert!(res.is_err());
+    assert!(matches!(
+        res.err().unwrap(),
+        djangors_core::error::DjangorsError::Unauthorized(_)
+    ));
+
+    // 2. session present but no _auth_user_id set -> Err(Unauthorized)
+    let session = djangors_sessions::Session::new_empty();
+    let mut extensions = Extensions::new();
+    extensions.insert(session.clone());
+    let req_empty_session = Request::new(
+        Method::GET,
+        Uri::from_static("/"),
+        HeaderMap::new(),
+        Bytes::new(),
+    )
+    .with_extensions(extensions)
+    .with_state(djangors_core::state::AppState::default());
+    let res = Auth::<User>::from_request(&req_empty_session).await;
+    assert!(res.is_err());
+    assert!(matches!(
+        res.err().unwrap(),
+        djangors_core::error::DjangorsError::Unauthorized(_)
+    ));
+
+    // 3. valid _auth_user_id pointing at a real active user -> Ok(Auth(user))
+    let app_state = djangors_core::state::AppState::new().insert(db.clone());
+
+    let session = djangors_sessions::Session::new_empty();
+    session.set(SESSION_USER_ID_KEY, active_user.id);
+    let mut extensions = Extensions::new();
+    extensions.insert(session.clone());
+    let req_valid = Request::new(
+        Method::GET,
+        Uri::from_static("/"),
+        HeaderMap::new(),
+        Bytes::new(),
+    )
+    .with_extensions(extensions)
+    .with_state(app_state.clone());
+    let res = Auth::<User>::from_request(&req_valid).await;
+    assert!(res.is_ok());
+    assert_eq!(res.unwrap().0.username, "alice");
+
+    // 4. valid _auth_user_id pointing at an inactive user -> Err(Unauthorized)
+    let session = djangors_sessions::Session::new_empty();
+    session.set(SESSION_USER_ID_KEY, inactive_user.id);
+    let mut extensions = Extensions::new();
+    extensions.insert(session.clone());
+    let req_inactive = Request::new(
+        Method::GET,
+        Uri::from_static("/"),
+        HeaderMap::new(),
+        Bytes::new(),
+    )
+    .with_extensions(extensions)
+    .with_state(app_state.clone());
+    let res = Auth::<User>::from_request(&req_inactive).await;
+    assert!(res.is_err());
+    assert!(matches!(
+        res.err().unwrap(),
+        djangors_core::error::DjangorsError::Unauthorized(_)
+    ));
+
+    // 5. valid _auth_user_id pointing at a since-deleted row -> Err(Unauthorized)
+    let session = djangors_sessions::Session::new_empty();
+    session.set(SESSION_USER_ID_KEY, 9999i64); // Nonexistent ID
+    let mut extensions = Extensions::new();
+    extensions.insert(session.clone());
+    let req_deleted = Request::new(
+        Method::GET,
+        Uri::from_static("/"),
+        HeaderMap::new(),
+        Bytes::new(),
+    )
+    .with_extensions(extensions)
+    .with_state(app_state.clone());
+    let res = Auth::<User>::from_request(&req_deleted).await;
+    assert!(res.is_err());
+    assert!(matches!(
+        res.err().unwrap(),
+        djangors_core::error::DjangorsError::Unauthorized(_)
+    ));
+
+    // Cleanup
+    djangors_orm::sqlx::query("DROP TABLE auth_user")
         .execute(db.pool())
         .await
         .unwrap();
