@@ -24,6 +24,7 @@ pub fn render_debug_page(error: &DjangorsError, req: &Request) -> Response {
             "The requested URL was not found on this server.",
         ),
         DjangorsError::Unauthorized(msg) => ("unauthorized", "Unauthorized", msg.as_str()),
+        DjangorsError::Forbidden(msg) => ("forbidden", "Forbidden", msg.as_str()),
     };
 
     let mut headers_html = String::new();
@@ -133,6 +134,9 @@ pub fn render_debug_page(error: &DjangorsError, req: &Request) -> Response {
         }}
         .badge.not-found {{
             background-color: #78909c;
+        }}
+        .badge.forbidden {{
+            background-color: #d32f2f;
         }}
     </style>
 </head>

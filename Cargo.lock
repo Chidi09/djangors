@@ -572,6 +572,19 @@ version = "0.0.1"
 [[package]]
 name = "djangors-admin"
 version = "0.0.1"
+dependencies = [
+ "bytes",
+ "chrono",
+ "djangors-auth",
+ "djangors-core",
+ "djangors-db",
+ "djangors-macros",
+ "djangors-orm",
+ "djangors-sessions",
+ "hyper",
+ "sqlx",
+ "tokio",
+]
 
 [[package]]
 name = "djangors-auth"

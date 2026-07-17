@@ -17,6 +17,8 @@ pub enum DjangorsError {
     Panicked(String),
     /// The request is unauthorized (401).
     Unauthorized(String),
+    /// The request is forbidden (403).
+    Forbidden(String),
 }
 
 impl fmt::Display for DjangorsError {
@@ -27,6 +29,7 @@ impl fmt::Display for DjangorsError {
             DjangorsError::Internal(msg) => write!(f, "Internal Error: {msg}"),
             DjangorsError::Panicked(msg) => write!(f, "Handler panicked: {msg}"),
             DjangorsError::Unauthorized(msg) => write!(f, "Unauthorized: {msg}"),
+            DjangorsError::Forbidden(msg) => write!(f, "Forbidden: {msg}"),
         }
     }
 }
@@ -42,6 +45,7 @@ impl DjangorsError {
             DjangorsError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             DjangorsError::Panicked(_) => StatusCode::INTERNAL_SERVER_ERROR,
             DjangorsError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            DjangorsError::Forbidden(_) => StatusCode::FORBIDDEN,
         }
     }
 
@@ -62,6 +66,9 @@ impl DjangorsError {
             ),
             DjangorsError::Unauthorized(msg) => {
                 Response::text(status, &format!("401 Unauthorized: {msg}"))
+            }
+            DjangorsError::Forbidden(msg) => {
+                Response::text(status, &format!("403 Forbidden: {msg}"))
             }
         }
     }
