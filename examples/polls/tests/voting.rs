@@ -243,4 +243,65 @@ async fn test_polls_voting_integration() {
         .await
         .unwrap();
     assert_eq!(db_choice.votes, 1);
+
+    // 6. Unauthenticated GET /admin/ returns 401 Unauthorized
+    let unauth_admin_req = "GET /admin/ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    let res = send_request(addr, unauth_admin_req).await;
+    assert!(
+        res.contains("401 Unauthorized"),
+        "GET /admin/ unauth response: {res}"
+    );
+
+    // 7. Create a staff user, log in to get session cookie, GET /admin/
+    let staff_user = User {
+        id: 0,
+        username: "staffuser".to_string(),
+        email: "staff@example.com".to_string(),
+        password: hash_password("staff_password").unwrap(),
+        is_active: true,
+        is_staff: true,
+        is_superuser: false,
+        date_joined: now,
+        last_login: Some(now),
+    };
+    let _saved_staff = staff_user.save(&db).await.unwrap();
+
+    let staff_login_payload = "username=staffuser&password=staff_password";
+    let staff_login_req = format!(
+        "POST /accounts/login/ HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: csrftoken={}\r\nX-CSRFToken: {}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        csrf_cookie, csrf_cookie, staff_login_payload.len(), staff_login_payload
+    );
+    let res = send_request(addr, &staff_login_req).await;
+    let staff_session_cookie = get_cookie_value(&res, "djangors_sessionid")
+        .expect("Staff login should return session cookie");
+
+    let auth_admin_req = format!(
+        "GET /admin/ HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: djangors_sessionid={}\r\nConnection: close\r\n\r\n",
+        staff_session_cookie
+    );
+    let res = send_request(addr, &auth_admin_req).await;
+    assert!(res.contains("200 OK"), "GET /admin/ auth response: {res}");
+    assert!(
+        res.contains("polls.Question"),
+        "GET /admin/ should list polls.Question, response: {res}"
+    );
+    assert!(
+        res.contains("polls.Choice"),
+        "GET /admin/ should list polls.Choice, response: {res}"
+    );
+
+    // 8. GET /admin/polls/question/ returns 200 and body contains seeded question's text
+    let get_questions_list_req = format!(
+        "GET /admin/polls/question/ HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: djangors_sessionid={}\r\nConnection: close\r\n\r\n",
+        staff_session_cookie
+    );
+    let res = send_request(addr, &get_questions_list_req).await;
+    assert!(
+        res.contains("200 OK"),
+        "GET /admin/polls/question/ response: {res}"
+    );
+    assert!(
+        res.contains("What is your favorite color?"),
+        "GET /admin/polls/question/ body should contain seeded question text, response: {res}"
+    );
 }

@@ -615,10 +615,14 @@ dependencies = [
 name = "djangors-cli"
 version = "0.0.1"
 dependencies = [
+ "chrono",
  "clap",
+ "djangors-auth",
  "djangors-db",
  "djangors-migrations",
+ "djangors-orm",
  "djangors-staticfiles",
+ "sqlx",
  "tokio",
 ]
 
@@ -1546,6 +1550,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "chrono",
+ "djangors-admin",
  "djangors-auth",
  "djangors-core",
  "djangors-db",

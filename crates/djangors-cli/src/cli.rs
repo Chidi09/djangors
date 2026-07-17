@@ -49,7 +49,15 @@ pub enum Commands {
     },
     /// Create an admin user.
     #[command(name = "createsuperuser")]
-    Createsuperuser,
+    Createsuperuser {
+        /// The username for the superuser.
+        #[arg(long)]
+        username: String,
+
+        /// The email address for the superuser.
+        #[arg(long, default_value = "")]
+        email: String,
+    },
     /// Open a REPL.
     #[command(name = "shell")]
     Shell,
@@ -118,6 +126,26 @@ mod tests {
                 assert!(check);
             }
             _ => panic!("Expected Commands::Makemigrations"),
+        }
+    }
+
+    #[test]
+    fn test_parse_createsuperuser() {
+        let args = vec![
+            "dj",
+            "createsuperuser",
+            "--username",
+            "admin",
+            "--email",
+            "admin@example.com",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Commands::Createsuperuser { username, email } => {
+                assert_eq!(username, "admin");
+                assert_eq!(email, "admin@example.com");
+            }
+            _ => panic!("Expected Commands::Createsuperuser"),
         }
     }
 }

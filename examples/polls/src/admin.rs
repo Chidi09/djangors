@@ -1,18 +1,14 @@
-//! ASPIRATIONAL — nothing in this file exists yet. Target API for Phase 5
-//! (djangors-admin). See README.md. This is the file that should make a
-//! Django developer feel most at home: register a model, get a full CRUD
-//! back-office with zero hand-written views/templates.
-
-use djangors::prelude::*;
+//! Admin registration for the polls app — the Djangors equivalent of
+//! Django's `admin.py`. Registers each model with the default (no
+//! customization) `ModelAdmin`; per-model customization (`list_display`,
+//! filters, inlines) is a later Phase 5 feature.
 
 use crate::models::{Choice, Question};
+use djangors_admin::AdminSite;
 
-pub fn register(site: &mut AdminSite) {
-    site.register::<Question>(
-        ModelAdmin::new()
-            .list_display(&["question_text", "pub_date", "was_published_recently"])
-            .list_filter(&["pub_date"])
-            .search_fields(&["question_text"])
-            .inlines(&[Inline::<Choice>::tabular().extra(3)]),
-    );
+pub fn admin_site() -> AdminSite {
+    let site = AdminSite::new();
+    site.register::<Question>();
+    site.register::<Choice>();
+    site
 }

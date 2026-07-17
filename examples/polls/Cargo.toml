@@ -19,6 +19,7 @@ djangors-orm = { path = "../../crates/djangors-orm" }
 djangors-macros = { path = "../../crates/djangors-macros" }
 djangors-db = { path = "../../crates/djangors-db" }
 djangors-auth = { path = "../../crates/djangors-auth" }
+djangors-admin = { path = "../../crates/djangors-admin" }
 djangors-sessions = { path = "../../crates/djangors-sessions" }
 tokio = { version = "1.53.0", features = ["full"] }
 tower = { version = "0.5.3", features = ["util"] }

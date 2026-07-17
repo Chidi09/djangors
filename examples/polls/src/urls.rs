@@ -10,4 +10,5 @@ pub fn urls() -> Router {
         .post("/{question_id:i64}/vote/", views::vote)
         .post("/accounts/login/", views::login_view)
         .post("/accounts/logout/", views::logout_view)
+        .mount("/admin", crate::admin::admin_site().urls())
 }

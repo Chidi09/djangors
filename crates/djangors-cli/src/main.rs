@@ -24,8 +24,8 @@ async fn main() {
         Commands::Makemigrations { check } => {
             commands::makemigrations(check);
         }
-        Commands::Createsuperuser => {
-            commands::createsuperuser();
+        Commands::Createsuperuser { username, email } => {
+            commands::createsuperuser(username, email).await;
         }
         Commands::Shell => {
             commands::shell();
