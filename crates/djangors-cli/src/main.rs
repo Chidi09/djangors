@@ -33,5 +33,8 @@ async fn main() {
         Commands::Test => {
             commands::test();
         }
+        Commands::Collectstatic { source, output } => {
+            commands::collectstatic(source, output);
+        }
     }
 }

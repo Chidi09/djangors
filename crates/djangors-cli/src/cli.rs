@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 /// The command-line interface for the Djangors web framework.
 #[derive(Parser, Debug)]
@@ -55,6 +56,17 @@ pub enum Commands {
     /// Run the test suite.
     #[command(name = "test")]
     Test,
+    /// Collect static files from source directories into one output directory.
+    #[command(name = "collectstatic")]
+    Collectstatic {
+        /// Source directory to collect from. May be repeated; earlier
+        /// directories win on a filename collision. Defaults to "static".
+        #[arg(long = "source")]
+        source: Vec<PathBuf>,
+        /// Output directory for the collected, hashed files and manifest.json.
+        #[arg(long, default_value = "staticfiles")]
+        output: PathBuf,
+    },
 }
 
 #[cfg(test)]

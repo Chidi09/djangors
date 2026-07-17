@@ -1,5 +1,7 @@
 //! Stub implementations for all dj subcommands.
 
+use std::path::PathBuf;
+
 /// Create a new Djangors project.
 pub fn new(name: &str) {
     println!(
@@ -78,4 +80,28 @@ pub fn shell() {
 /// Run the test suite.
 pub fn test() {
     println!("[dj test] would run the test suite (not yet implemented)");
+}
+
+/// Collect static files from source directories into one output directory.
+pub fn collectstatic(source: Vec<PathBuf>, output: PathBuf) {
+    let sources = if source.is_empty() {
+        vec![PathBuf::from("static")]
+    } else {
+        source
+    };
+
+    let sf = djangors_staticfiles::StaticFiles::new(sources);
+    match sf.collect(&output) {
+        Ok(manifest) => {
+            println!(
+                "[dj collectstatic] collected {} file(s) into {}",
+                manifest.mapping.len(),
+                output.display()
+            );
+        }
+        Err(e) => {
+            eprintln!("[dj collectstatic] failed: {e}");
+            std::process::exit(1);
+        }
+    }
 }
