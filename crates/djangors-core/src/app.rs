@@ -52,8 +52,9 @@ impl Djangors {
             match listener.accept().await {
                 Ok((stream, _peer_addr)) => {
                     let router = self.router.clone();
+                    let debug = self.settings.debug;
                     tokio::task::spawn(async move {
-                        if let Err(e) = serve_connection(stream, router).await {
+                        if let Err(e) = serve_connection(stream, router, debug).await {
                             eprintln!("Connection error: {e}");
                         }
                     });
@@ -78,16 +79,22 @@ impl Djangors {
 
 /// Serve a single TCP connection using the router.
 ///
-/// Wraps the stream in [`hyper_util::rt::TokioIo`], adapts the router
-/// (a `tower::Service`) to a `hyper::service::Service` via
-/// [`hyper_util::service::TowerToHyperService`], and drives it with
-/// hyper's HTTP/1.1 connection builder.
+/// Wraps the stream in [`hyper_util::rt::TokioIo`] and drives it with
+/// hyper's HTTP/1.1 connection builder against a `hyper::service::service_fn`
+/// that calls [`Router::dispatch_debug`] — this (rather than the
+/// `tower::Service` impl used for middleware composition) is what makes the
+/// Django-style debug page / production error page actually get served,
+/// based on `settings.debug`.
 async fn serve_connection(
     stream: tokio::net::TcpStream,
     router: Router,
+    debug: bool,
 ) -> Result<(), DjangorsError> {
     let io = hyper_util::rt::TokioIo::new(stream);
-    let svc = hyper_util::service::TowerToHyperService::new(router);
+    let svc = hyper::service::service_fn(move |req| {
+        let router = router.clone();
+        async move { Ok::<_, std::convert::Infallible>(router.dispatch_debug(req, debug).await) }
+    });
 
     hyper::server::conn::http1::Builder::new()
         .serve_connection(io, svc)
