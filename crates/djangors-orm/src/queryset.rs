@@ -112,6 +112,19 @@ impl<T: Model + FromRow> QuerySet<T> {
     }
 
     pub fn compile_select_custom(&self, select_list: &str) -> (String, Vec<Value>) {
+        self.compile_select_with_order(select_list, true)
+    }
+
+    /// `include_order: false` is for aggregate-shaped selects (COUNT,
+    /// SUM, ...): Postgres rejects `SELECT COUNT(*) ... ORDER BY col`
+    /// ("must appear in the GROUP BY clause"), and clearing `order_by`
+    /// on a cloned queryset is not enough because an empty `order_by`
+    /// falls back to `meta.ordering` below.
+    fn compile_select_with_order(
+        &self,
+        select_list: &str,
+        include_order: bool,
+    ) -> (String, Vec<Value>) {
         let meta = T::meta();
         let mut sql = format!("SELECT {} FROM {}", select_list, meta.table_name);
         let mut params = Vec::new();
@@ -135,7 +148,9 @@ impl<T: Model + FromRow> QuerySet<T> {
             sql.push_str(&where_clause);
         }
 
-        let order_source = if !self.order_by.is_empty() {
+        let order_source = if !include_order {
+            Vec::new()
+        } else if !self.order_by.is_empty() {
             self.order_by.clone()
         } else {
             meta.ordering
@@ -233,7 +248,7 @@ impl<T: Model + FromRow> QuerySet<T> {
     pub async fn exists(&self, db: &djangors_db::Database) -> Result<bool, OrmError> {
         let mut cloned = self.clone();
         cloned.limit = Some(1);
-        let (sql, params) = cloned.compile_select_custom("1");
+        let (sql, params) = cloned.compile_select_with_order("1", false);
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for val in &params {
             query = match val {
@@ -250,7 +265,7 @@ impl<T: Model + FromRow> QuerySet<T> {
     }
 
     pub async fn count(&self, db: &djangors_db::Database) -> Result<i64, OrmError> {
-        let (sql, params) = self.compile_select_custom("COUNT(*)");
+        let (sql, params) = self.compile_select_with_order("COUNT(*)", false);
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for val in &params {
             query = match val {
@@ -345,15 +360,15 @@ impl<T: Model + FromRow> QuerySet<T> {
         let select_list = agg_sql_parts.join(", ");
 
         // A single aggregate row has nothing to order or paginate — reuse
-        // compile_select_custom (so the WHERE clause stays in sync with the
-        // regular filter-compilation path) via a clone with order_by/limit/
-        // offset cleared, rather than duplicating the WHERE-building logic.
+        // the shared compilation (so the WHERE clause stays in sync with
+        // the regular filter-compilation path) with ordering excluded
+        // (clearing `order_by` alone would fall back to `meta.ordering`)
+        // and limit/offset cleared on a clone.
         let mut clean_qs = self.clone();
-        clean_qs.order_by.clear();
         clean_qs.limit = None;
         clean_qs.offset = None;
 
-        let (sql, params) = clean_qs.compile_select_custom(&select_list);
+        let (sql, params) = clean_qs.compile_select_with_order(&select_list, false);
 
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for val in &params {

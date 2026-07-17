@@ -47,6 +47,19 @@ impl From<DateTime<Utc>> for Value {
     }
 }
 
+impl std::fmt::Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::I64(v) => write!(f, "{}", v),
+            Value::F64(v) => write!(f, "{}", v),
+            Value::Text(v) => write!(f, "{}", v),
+            Value::Bool(v) => write!(f, "{}", v),
+            Value::DateTime(v) => write!(f, "{}", v.format("%Y-%m-%d %H:%M:%S")),
+            Value::Null => write!(f, "-"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompareOp {
     Eq,

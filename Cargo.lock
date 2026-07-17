@@ -573,6 +573,7 @@ version = "0.0.1"
 name = "djangors-admin"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "bytes",
  "chrono",
  "djangors-auth",

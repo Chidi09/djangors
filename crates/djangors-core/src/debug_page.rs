@@ -1,4 +1,5 @@
 use crate::error::DjangorsError;
+use crate::html_escape;
 use crate::request::Request;
 use crate::response::Response;
 use hyper::StatusCode;
@@ -233,22 +234,6 @@ pub fn render_production_error_page(status: StatusCode) -> Response {
     );
 
     Response::html(status, html)
-}
-
-fn html_escape(input: &str) -> String {
-    let mut escaped = String::with_capacity(input.len());
-    for c in input.chars() {
-        match c {
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '&' => escaped.push_str("&amp;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#x27;"),
-            '/' => escaped.push_str("&#x2F;"),
-            _ => escaped.push(c),
-        }
-    }
-    escaped
 }
 
 #[cfg(test)]

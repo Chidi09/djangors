@@ -3,6 +3,60 @@ use quote::quote;
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Fields, Ident, LitInt, LitStr, Type};
 
+struct ModelField {
+    ident: Ident,
+    column_name: String,
+    is_auto: bool,
+    is_primary_key: bool,
+    is_relation: bool,
+    last_ident: Option<String>,
+    is_nullable: bool,
+}
+
+fn field_value_expr(f: &ModelField) -> TokenStream {
+    let ident = &f.ident;
+    if f.is_relation {
+        quote! { djangors_orm::expr::Value::from(self.#ident.id) }
+    } else {
+        let last_ident_str = f.last_ident.as_deref().unwrap_or("");
+        if f.is_nullable {
+            match last_ident_str {
+                "String" => quote! {
+                    match &self.#ident {
+                        Some(v) => djangors_orm::expr::Value::from(v.clone()),
+                        None => djangors_orm::expr::Value::Null,
+                    }
+                },
+                "i32" => quote! {
+                    match self.#ident {
+                        Some(v) => djangors_orm::expr::Value::from(v as i64),
+                        None => djangors_orm::expr::Value::Null,
+                    }
+                },
+                "f32" => quote! {
+                    match self.#ident {
+                        Some(v) => djangors_orm::expr::Value::from(v as f64),
+                        None => djangors_orm::expr::Value::Null,
+                    }
+                },
+                _ => quote! {
+                    match self.#ident {
+                        Some(v) => djangors_orm::expr::Value::from(v),
+                        None => djangors_orm::expr::Value::Null,
+                    }
+                },
+            }
+        } else {
+            match last_ident_str {
+                "String" => quote! { djangors_orm::expr::Value::from(self.#ident.clone()) },
+                "i32" => quote! { djangors_orm::expr::Value::from(self.#ident as i64) },
+                "f32" => quote! { djangors_orm::expr::Value::from(self.#ident as f64) },
+                _ => quote! { djangors_orm::expr::Value::from(self.#ident) },
+            }
+        }
+    }
+}
+
 pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     // 1. Parse struct-level attributes
     let mut app = None;
@@ -134,16 +188,6 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
 
     struct ParsedRelation {
         relation_meta_tokens: TokenStream,
-    }
-
-    struct ModelField {
-        ident: Ident,
-        column_name: String,
-        is_auto: bool,
-        is_primary_key: bool,
-        is_relation: bool,
-        last_ident: Option<String>,
-        is_nullable: bool,
     }
 
     let mut parsed_fields = Vec::new();
@@ -490,49 +534,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         save_cols.join(", "),
         save_placeholders.join(", ")
     );
-    let save_binds = save_fields.iter().map(|f| {
-        let ident = &f.ident;
-        if f.is_relation {
-            quote! { djangors_orm::expr::Value::from(self.#ident.id) }
-        } else {
-            let last_ident_str = f.last_ident.as_deref().unwrap_or("");
-            if f.is_nullable {
-                match last_ident_str {
-                    "String" => quote! {
-                        match &self.#ident {
-                            Some(v) => djangors_orm::expr::Value::from(v.clone()),
-                            None => djangors_orm::expr::Value::Null,
-                        }
-                    },
-                    "i32" => quote! {
-                        match self.#ident {
-                            Some(v) => djangors_orm::expr::Value::from(v as i64),
-                            None => djangors_orm::expr::Value::Null,
-                        }
-                    },
-                    "f32" => quote! {
-                        match self.#ident {
-                            Some(v) => djangors_orm::expr::Value::from(v as f64),
-                            None => djangors_orm::expr::Value::Null,
-                        }
-                    },
-                    _ => quote! {
-                        match self.#ident {
-                            Some(v) => djangors_orm::expr::Value::from(v),
-                            None => djangors_orm::expr::Value::Null,
-                        }
-                    },
-                }
-            } else {
-                match last_ident_str {
-                    "String" => quote! { djangors_orm::expr::Value::from(self.#ident.clone()) },
-                    "i32" => quote! { djangors_orm::expr::Value::from(self.#ident as i64) },
-                    "f32" => quote! { djangors_orm::expr::Value::from(self.#ident as f64) },
-                    _ => quote! { djangors_orm::expr::Value::from(self.#ident) },
-                }
-            }
-        }
-    });
+    let save_binds = save_fields.iter().map(|f| field_value_expr(f));
 
     let pk_field = model_fields.iter().find(|f| f.is_primary_key).unwrap();
     let update_fields: Vec<&ModelField> =
@@ -551,97 +553,21 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     let update_binds = update_fields
         .iter()
         .chain(std::iter::once(&pk_field))
-        .map(|f| {
-            let ident = &f.ident;
-            if f.is_relation {
-                quote! { djangors_orm::expr::Value::from(self.#ident.id) }
-            } else {
-                let last_ident_str = f.last_ident.as_deref().unwrap_or("");
-                if f.is_nullable {
-                    match last_ident_str {
-                        "String" => quote! {
-                            match &self.#ident {
-                                Some(v) => djangors_orm::expr::Value::from(v.clone()),
-                                None => djangors_orm::expr::Value::Null,
-                            }
-                        },
-                        "i32" => quote! {
-                            match self.#ident {
-                                Some(v) => djangors_orm::expr::Value::from(v as i64),
-                                None => djangors_orm::expr::Value::Null,
-                            }
-                        },
-                        "f32" => quote! {
-                            match self.#ident {
-                                Some(v) => djangors_orm::expr::Value::from(v as f64),
-                                None => djangors_orm::expr::Value::Null,
-                            }
-                        },
-                        _ => quote! {
-                            match self.#ident {
-                                Some(v) => djangors_orm::expr::Value::from(v),
-                                None => djangors_orm::expr::Value::Null,
-                            }
-                        },
-                    }
-                } else {
-                    match last_ident_str {
-                        "String" => quote! { djangors_orm::expr::Value::from(self.#ident.clone()) },
-                        "i32" => quote! { djangors_orm::expr::Value::from(self.#ident as i64) },
-                        "f32" => quote! { djangors_orm::expr::Value::from(self.#ident as f64) },
-                        _ => quote! { djangors_orm::expr::Value::from(self.#ident) },
-                    }
-                }
-            }
-        });
+        .map(|f| field_value_expr(f));
 
     let delete_sql = format!(
         "DELETE FROM {} WHERE {} = $1",
         table_name, pk_field.column_name
     );
-    let delete_bind = {
-        let ident = &pk_field.ident;
-        if pk_field.is_relation {
-            quote! { djangors_orm::expr::Value::from(self.#ident.id) }
-        } else {
-            let last_ident_str = pk_field.last_ident.as_deref().unwrap_or("");
-            if pk_field.is_nullable {
-                match last_ident_str {
-                    "String" => quote! {
-                        match &self.#ident {
-                            Some(v) => djangors_orm::expr::Value::from(v.clone()),
-                            None => djangors_orm::expr::Value::Null,
-                        }
-                    },
-                    "i32" => quote! {
-                        match self.#ident {
-                            Some(v) => djangors_orm::expr::Value::from(v as i64),
-                            None => djangors_orm::expr::Value::Null,
-                        }
-                    },
-                    "f32" => quote! {
-                        match self.#ident {
-                            Some(v) => djangors_orm::expr::Value::from(v as f64),
-                            None => djangors_orm::expr::Value::Null,
-                        }
-                    },
-                    _ => quote! {
-                        match self.#ident {
-                            Some(v) => djangors_orm::expr::Value::from(v),
-                            None => djangors_orm::expr::Value::Null,
-                        }
-                    },
-                }
-            } else {
-                match last_ident_str {
-                    "String" => quote! { djangors_orm::expr::Value::from(self.#ident.clone()) },
-                    "i32" => quote! { djangors_orm::expr::Value::from(self.#ident as i64) },
-                    "f32" => quote! { djangors_orm::expr::Value::from(self.#ident as f64) },
-                    _ => quote! { djangors_orm::expr::Value::from(self.#ident) },
-                }
-            }
-        }
-    };
+    let delete_bind = field_value_expr(pk_field);
+
+    let field_value_pairs = model_fields.iter().map(|f| {
+        let name_str = f.ident.to_string();
+        let val_expr = field_value_expr(f);
+        quote! { (#name_str, #val_expr) }
+    });
+
+    let field_names_list: Vec<String> = model_fields.iter().map(|f| f.ident.to_string()).collect();
 
     Ok(quote! {
         impl #struct_name_ident {
@@ -755,6 +681,18 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         impl djangors_orm::Model for #struct_name_ident {
             fn meta() -> &'static djangors_orm::ModelMeta {
                 #struct_name_ident::meta()
+            }
+
+            fn field_values(&self) -> Vec<(&'static str, djangors_orm::expr::Value)> {
+                vec![
+                    #(#field_value_pairs),*
+                ]
+            }
+
+            fn field_names() -> Vec<&'static str> {
+                vec![
+                    #(#field_names_list),*
+                ]
             }
         }
 

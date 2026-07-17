@@ -11,9 +11,10 @@ authors.workspace = true
 djangors-orm = { path = "../djangors-orm" }
 djangors-core = { path = "../djangors-core" }
 djangors-auth = { path = "../djangors-auth" }
+djangors-db = { path = "../djangors-db" }
+async-trait = "0.1.86"
 
 [dev-dependencies]
-djangors-db = { path = "../djangors-db" }
 djangors-sessions = { path = "../djangors-sessions" }
 djangors-macros = { path = "../djangors-macros" }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros"] }

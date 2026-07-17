@@ -50,6 +50,17 @@ impl Model for FictionalModel {
             ordering: &[],
         })
     }
+
+    fn field_values(&self) -> Vec<(&'static str, crate::expr::Value)> {
+        vec![
+            ("id", crate::expr::Value::I64(1)),
+            ("name", crate::expr::Value::Text("test".to_string())),
+        ]
+    }
+
+    fn field_names() -> Vec<&'static str> {
+        vec!["id", "name"]
+    }
 }
 
 pub struct RelatedModel;
@@ -87,6 +98,17 @@ impl Model for RelatedModel {
             unique_together: &[],
             ordering: &[],
         })
+    }
+
+    fn field_values(&self) -> Vec<(&'static str, crate::expr::Value)> {
+        vec![
+            ("id", crate::expr::Value::I64(1)),
+            ("fictional", crate::expr::Value::I64(2)),
+        ]
+    }
+
+    fn field_names() -> Vec<&'static str> {
+        vec!["id", "fictional"]
     }
 }
 
@@ -871,6 +893,161 @@ async fn test_queryset_select_related() {
         .await
         .unwrap();
     sqlx::query("DROP TABLE test_select_related_parent")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_field_values_parent")]
+pub struct FieldValuesParent {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_field_values_model")]
+#[allow(dead_code)]
+pub struct FieldValuesModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub title: String,
+    pub optional_text: Option<String>,
+    pub optional_num: Option<i32>,
+    #[djangors(foreign_key(on_delete = "cascade"))]
+    pub parent: ForeignKey<FieldValuesParent>,
+}
+
+#[test]
+fn test_value_display() {
+    use crate::expr::Value;
+    use chrono::{TimeZone, Utc};
+
+    assert_eq!(Value::I64(42).to_string(), "42");
+    assert_eq!(Value::F64(1.23).to_string(), "1.23");
+    assert_eq!(Value::Bool(true).to_string(), "true");
+    assert_eq!(Value::Bool(false).to_string(), "false");
+    assert_eq!(Value::Text("hello".to_string()).to_string(), "hello");
+    assert_eq!(Value::Null.to_string(), "-");
+
+    let dt = Utc.with_ymd_and_hms(2026, 7, 17, 22, 27, 47).unwrap();
+    assert_eq!(Value::DateTime(dt).to_string(), "2026-07-17 22:27:47");
+}
+
+#[test]
+fn test_model_field_values_and_names() {
+    let parent = FieldValuesParent {
+        id: 10,
+        name: "Parent Name".to_string(),
+    };
+
+    let model_some = FieldValuesModel {
+        id: 42,
+        title: "Test Title".to_string(),
+        optional_text: Some("hello".to_string()),
+        optional_num: Some(100),
+        parent: ForeignKey::new(parent.id),
+    };
+
+    let values_some = model_some.field_values();
+    assert_eq!(values_some.len(), 5);
+    assert_eq!(values_some[0].0, "id");
+    assert_eq!(values_some[0].1, crate::expr::Value::I64(42));
+    assert_eq!(values_some[1].0, "title");
+    assert_eq!(
+        values_some[1].1,
+        crate::expr::Value::Text("Test Title".to_string())
+    );
+    assert_eq!(values_some[2].0, "optional_text");
+    assert_eq!(
+        values_some[2].1,
+        crate::expr::Value::Text("hello".to_string())
+    );
+    assert_eq!(values_some[3].0, "optional_num");
+    assert_eq!(values_some[3].1, crate::expr::Value::I64(100));
+    assert_eq!(values_some[4].0, "parent");
+    assert_eq!(values_some[4].1, crate::expr::Value::I64(10));
+
+    let model_none = FieldValuesModel {
+        id: 43,
+        title: "Test Title 2".to_string(),
+        optional_text: None,
+        optional_num: None,
+        parent: ForeignKey::new(parent.id),
+    };
+
+    let values_none = model_none.field_values();
+    assert_eq!(values_none[2].0, "optional_text");
+    assert_eq!(values_none[2].1, crate::expr::Value::Null);
+    assert_eq!(values_none[3].0, "optional_num");
+    assert_eq!(values_none[3].1, crate::expr::Value::Null);
+
+    let names = FieldValuesModel::field_names();
+    assert_eq!(
+        names,
+        vec!["id", "title", "optional_text", "optional_num", "parent"]
+    );
+}
+
+#[derive(Model, Debug)]
+#[djangors(
+    app = "test_app",
+    table_name = "test_ordered_agg_model",
+    ordering = "-name"
+)]
+#[allow(dead_code)]
+pub struct OrderedAggModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+}
+
+/// Regression test: `count()`, `exists()`, and `aggregate()` on a model with
+/// default `meta.ordering` used to emit `SELECT COUNT(*) ... ORDER BY name`,
+/// which Postgres rejects ("must appear in the GROUP BY clause") — clearing
+/// `order_by` on a clone wasn't enough because an empty `order_by` falls back
+/// to `meta.ordering` during SQL compilation.
+#[tokio::test]
+async fn test_count_and_aggregate_on_model_with_default_ordering() {
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query("DROP TABLE IF EXISTS test_ordered_agg_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE test_ordered_agg_model (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    sqlx::query("INSERT INTO test_ordered_agg_model (name) VALUES ('a'), ('b'), ('c')")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    assert_eq!(OrderedAggModel::objects().count(&db).await.unwrap(), 3);
+    assert!(OrderedAggModel::objects().exists(&db).await.unwrap());
+
+    let aggs = OrderedAggModel::objects()
+        .aggregate(&db, vec![crate::aggregate::AggExpr::Count { field: "*" }])
+        .await
+        .unwrap();
+    assert_eq!(aggs.len(), 1);
+
+    // The default ordering itself must still apply to regular selects.
+    let rows = OrderedAggModel::objects().all(&db).await.unwrap();
+    let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(names, vec!["c", "b", "a"]);
+
+    sqlx::query("DROP TABLE test_ordered_agg_model")
         .execute(db.pool())
         .await
         .unwrap();
