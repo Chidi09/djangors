@@ -139,6 +139,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     let mut parsed_fields = Vec::new();
     let mut parsed_relations = Vec::new();
     let mut column_names = std::collections::HashMap::new();
+    let mut from_row_assignments = Vec::new();
 
     for field in named_fields.named {
         let field_ident = field
@@ -264,6 +265,9 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             parsed_relations.push(ParsedRelation {
                 relation_meta_tokens,
             });
+            from_row_assignments.push(quote! {
+                #field_ident: djangors_orm::ForeignKey::new(row.try_get(#field_name_str).map_err(djangors_orm::OrmError::from)?)
+            });
         } else {
             // It is a regular field!
             let (inner_ty, nullable) = resolve_option_type(&field.ty);
@@ -375,9 +379,12 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             };
 
             parsed_fields.push(ParsedField {
-                ident: field_ident,
+                ident: field_ident.clone(),
                 primary_key,
                 field_meta_tokens,
+            });
+            from_row_assignments.push(quote! {
+                #field_ident: row.try_get(#final_column).map_err(djangors_orm::OrmError::from)?
             });
         }
     }
@@ -446,11 +453,25 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                     ordering: #ordering_tok,
                 })
             }
+
+            /// Construct Self from a database row, reading each field by its column name.
+            pub fn from_row(row: &djangors_orm::sqlx::postgres::PgRow) -> Result<Self, djangors_orm::OrmError> {
+                use djangors_orm::sqlx::Row;
+                Ok(Self {
+                    #(#from_row_assignments),*
+                })
+            }
         }
 
         impl djangors_orm::Model for #struct_name_ident {
             fn meta() -> &'static djangors_orm::ModelMeta {
                 #struct_name_ident::meta()
+            }
+        }
+
+        impl djangors_orm::FromRow for #struct_name_ident {
+            fn from_row(row: &djangors_orm::sqlx::postgres::PgRow) -> Result<Self, djangors_orm::OrmError> {
+                #struct_name_ident::from_row(row)
             }
         }
 

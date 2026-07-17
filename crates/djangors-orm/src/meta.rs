@@ -188,6 +188,14 @@ pub trait Model {
     fn meta() -> &'static ModelMeta
     where
         Self: Sized;
+
+    /// Helper to get a QuerySet for this model.
+    fn objects() -> crate::queryset::QuerySet<Self>
+    where
+        Self: Sized + crate::error::FromRow,
+    {
+        crate::queryset::QuerySet::new()
+    }
 }
 
 /// Entry representing a registered model.
