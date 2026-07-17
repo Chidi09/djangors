@@ -5,10 +5,13 @@
 
 pub mod error;
 pub mod handler;
+pub mod middleware;
 pub mod path_params;
 pub mod request;
 pub mod response;
 pub mod router;
+pub mod service;
+pub mod settings;
 
 pub use error::DjangorsError;
 pub use handler::Handler;
@@ -16,6 +19,7 @@ pub use path_params::PathParams;
 pub use request::Request;
 pub use response::Response;
 pub use router::Router;
+pub use settings::DjangorsSettings;
 
 /// Re-export of [`hyper::StatusCode`] for convenience.
 pub use hyper::StatusCode;

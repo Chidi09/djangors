@@ -1,7 +1,7 @@
+use std::fmt;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use hyper::body::Incoming;
 use hyper::http::Method;
 
 use crate::error::DjangorsError;
@@ -23,6 +23,7 @@ enum Segment {
     Capture(CaptureType),
 }
 
+#[derive(Clone)]
 struct Route {
     pattern: String,
     method: Method,
@@ -40,8 +41,13 @@ struct Route {
 /// - `{name:slug}` captures a segment matching `[a-zA-Z0-9_-]+`
 ///
 /// Routers can be nested with [`mount`](Self::mount).
+///
+/// `Router` is cheaply [`Clone`]-able (the route table is `Arc`-wrapped) so it
+/// can be cloned per-request by `tower::Service` without deep-copying every
+/// registered route.
+#[derive(Clone)]
 pub struct Router {
-    routes: Vec<Route>,
+    routes: Arc<Vec<Route>>,
 }
 
 impl Default for Router {
@@ -53,7 +59,9 @@ impl Default for Router {
 impl Router {
     /// Create an empty router.
     pub fn new() -> Self {
-        Router { routes: Vec::new() }
+        Router {
+            routes: Arc::new(Vec::new()),
+        }
     }
 
     /// Register a handler for the given path and HTTP method.
@@ -66,7 +74,7 @@ impl Router {
             .trim_end_matches('/')
             .to_string();
         let (segments, param_names) = Self::parse_pattern(&pattern);
-        self.routes.push(Route {
+        Arc::make_mut(&mut self.routes).push(Route {
             pattern,
             method,
             segments,
@@ -103,19 +111,19 @@ impl Router {
     /// creates a route matching `/api/users/{id}`.
     pub fn mount(mut self, prefix: &str, sub_router: Router) -> Self {
         let prefix = prefix.trim_start_matches('/').trim_end_matches('/');
-        for route in sub_router.routes {
+        for route in sub_router.routes.iter() {
             let full_pattern = if route.pattern.is_empty() {
                 prefix.to_string()
             } else {
                 format!("{}/{}", prefix, route.pattern)
             };
             let (segments, param_names) = Self::parse_pattern(&full_pattern);
-            self.routes.push(Route {
+            Arc::make_mut(&mut self.routes).push(Route {
                 pattern: full_pattern,
-                method: route.method,
+                method: route.method.clone(),
                 segments,
                 param_names,
-                handler: route.handler,
+                handler: route.handler.clone(),
             });
         }
         self
@@ -235,10 +243,14 @@ impl Router {
     ///
     /// This is the top-level entry point intended for use by server bindings.
     /// Body read errors are converted to 500 responses.
-    pub async fn dispatch(
+    pub async fn dispatch<B>(
         &self,
-        hyper_req: hyper::Request<Incoming>,
-    ) -> hyper::Response<http_body_util::Full<Bytes>> {
+        hyper_req: hyper::Request<B>,
+    ) -> hyper::Response<http_body_util::Full<Bytes>>
+    where
+        B: hyper::body::Body<Data = Bytes> + Send,
+        B::Error: fmt::Display,
+    {
         let (parts, body) = hyper_req.into_parts();
 
         let body_bytes = match http_body_util::BodyExt::collect(body).await {
