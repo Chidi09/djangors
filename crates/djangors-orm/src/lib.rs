@@ -1,4 +1,15 @@
-//! Django-style ORM with querysets and model metadata for Djangors (placeholder release)
+//! Django-style ORM with querysets and model metadata for Djangors.
 //!
-//! This is a name-reserving placeholder. Djangors is under active development —
-//! a Django-inspired, batteries-included web framework for Rust.
+//! This crate defines runtime metadata types (`ModelMeta`, `FieldMeta`, etc.)
+//! which describe database models. These metadata structures serve as the
+//! single source of truth for migrations, serializers, admin interfaces, and more.
+
+pub mod meta;
+
+pub use meta::{
+    all_registered_models, DefaultValue, FieldKind, FieldMeta, ForeignKey, IndexMeta, Model,
+    ModelMeta, ModelRegistration, OnDelete, RelationKind, RelationMeta,
+};
+
+#[cfg(test)]
+mod tests;

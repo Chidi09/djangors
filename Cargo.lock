@@ -599,6 +599,9 @@ version = "0.0.1"
 [[package]]
 name = "djangors-orm"
 version = "0.0.1"
+dependencies = [
+ "inventory",
+]
 
 [[package]]
 name = "djangors-rest"
@@ -1125,6 +1128,15 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+]
+
+[[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
