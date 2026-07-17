@@ -604,6 +604,14 @@ dependencies = [
 [[package]]
 name = "djangors-migrations"
 version = "0.0.1"
+dependencies = [
+ "djangors-db",
+ "djangors-macros",
+ "djangors-orm",
+ "sqlx",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "djangors-orm"

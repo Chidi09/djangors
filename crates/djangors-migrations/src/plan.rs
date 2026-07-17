@@ -1,0 +1,137 @@
+use crate::error::MigrationError;
+use crate::operation::{ColumnDef, ForeignKeyRef, Operation};
+use crate::type_mapping::field_meta_to_sql_type;
+use djangors_orm::{all_registered_models, ModelMeta};
+use std::collections::{HashMap, HashSet};
+
+pub fn build_create_all_plan() -> Result<Vec<Operation>, MigrationError> {
+    // 1. Get all models
+    let models: Vec<&'static ModelMeta> = all_registered_models().collect();
+
+    // Map struct_name -> ModelMeta
+    let mut models_by_struct = HashMap::new();
+    for &model in &models {
+        models_by_struct.insert(model.struct_name, model);
+    }
+
+    // 2. Topological sort
+    let mut visited = HashSet::new();
+    let mut visiting = HashSet::new();
+    let mut ordered_models = Vec::new();
+
+    for &model in &models {
+        if !visited.contains(model.struct_name) {
+            dfs(
+                model,
+                &models_by_struct,
+                &mut visiting,
+                &mut visited,
+                &mut ordered_models,
+            )?;
+        }
+    }
+
+    // 3. Build plan
+    let mut operations = Vec::new();
+    for model in ordered_models {
+        let mut columns = Vec::new();
+
+        // Standard fields
+        for field in model.fields {
+            let sql_type = field_meta_to_sql_type(field)?;
+            columns.push(ColumnDef {
+                name: field.column_name.to_string(),
+                sql_type,
+                nullable: field.nullable,
+                primary_key: field.primary_key,
+                unique: field.unique,
+                default_sql: None,
+                references: None,
+            });
+        }
+
+        // Relation fields
+        for relation in model.relations {
+            let target_meta = (relation.target)();
+            let target_pk = target_meta
+                .fields
+                .iter()
+                .find(|f| f.primary_key)
+                .ok_or_else(|| {
+                    MigrationError::Database(djangors_db::DbError::ConnectionFailed(format!(
+                        "Target model {} has no primary key field",
+                        target_meta.struct_name
+                    )))
+                })?;
+
+            let mut fk_field_meta = *target_pk;
+            fk_field_meta.auto = false;
+            let sql_type = field_meta_to_sql_type(&fk_field_meta)?;
+
+            let on_delete_str = match relation.on_delete {
+                djangors_orm::OnDelete::Cascade => "CASCADE",
+                djangors_orm::OnDelete::Protect | djangors_orm::OnDelete::Restrict => "RESTRICT",
+                djangors_orm::OnDelete::SetNull => "SET NULL",
+                djangors_orm::OnDelete::DoNothing => "NO ACTION",
+            };
+
+            let nullable = matches!(relation.on_delete, djangors_orm::OnDelete::SetNull);
+
+            columns.push(ColumnDef {
+                name: relation.field_name.to_string(),
+                sql_type,
+                nullable,
+                primary_key: false,
+                unique: false,
+                default_sql: None,
+                references: Some(ForeignKeyRef {
+                    table: target_meta.table_name.to_string(),
+                    column: target_pk.column_name.to_string(),
+                    on_delete: on_delete_str.to_string(),
+                }),
+            });
+        }
+
+        operations.push(Operation::CreateTable {
+            table_name: model.table_name.to_string(),
+            columns,
+        });
+    }
+
+    Ok(operations)
+}
+
+fn dfs(
+    meta: &'static ModelMeta,
+    models_by_struct: &HashMap<&str, &'static ModelMeta>,
+    visiting: &mut HashSet<&str>,
+    visited: &mut HashSet<&str>,
+    order: &mut Vec<&'static ModelMeta>,
+) -> Result<(), MigrationError> {
+    let struct_name = meta.struct_name;
+    if visited.contains(struct_name) {
+        return Ok(());
+    }
+    if visiting.contains(struct_name) {
+        let mut cycle_models: Vec<String> = visiting.iter().map(|&s| s.to_string()).collect();
+        cycle_models.sort();
+        return Err(MigrationError::CyclicDependency {
+            models: cycle_models,
+        });
+    }
+
+    visiting.insert(struct_name);
+
+    for relation in meta.relations {
+        let target_meta = (relation.target)();
+        if let Some(&dep_meta) = models_by_struct.get(target_meta.struct_name) {
+            dfs(dep_meta, models_by_struct, visiting, visited, order)?;
+        }
+    }
+
+    visiting.remove(struct_name);
+    visited.insert(struct_name);
+    order.push(meta);
+
+    Ok(())
+}
