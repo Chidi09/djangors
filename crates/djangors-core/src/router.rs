@@ -328,7 +328,8 @@ impl Router {
         };
 
         let req = Request::new(parts.method, parts.uri, parts.headers, body_bytes)
-            .with_state(self.state.clone());
+            .with_state(self.state.clone())
+            .with_extensions(parts.extensions);
 
         match self.handle(req).await {
             Ok(resp) => resp.into_hyper(),
@@ -366,7 +367,8 @@ impl Router {
         };
 
         let req = Request::new(parts.method, parts.uri, parts.headers, body_bytes)
-            .with_state(self.state.clone());
+            .with_state(self.state.clone())
+            .with_extensions(parts.extensions);
         let req_clone = req.clone();
 
         match self.handle(req).await {
@@ -695,5 +697,34 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body_str = String::from_utf8(resp.body().to_vec()).unwrap();
         assert_eq!(body_str, "postgres://localhost");
+    }
+
+    #[derive(Clone)]
+    struct FakeSession(String);
+
+    async fn ext_handler_fn(req: Request, _: PathParams) -> Result<Response, DjangorsError> {
+        let session = req.ext::<FakeSession>().expect("extension should exist");
+        Ok(Response::text(StatusCode::OK, &session.0))
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_propagates_hyper_extensions_to_handler() {
+        let router = Router::new().get("/ext-test", ext_handler_fn);
+
+        let mut hyper_req = hyper::Request::builder()
+            .method(Method::GET)
+            .uri("/ext-test")
+            .body(http_body_util::Full::new(Bytes::new()))
+            .unwrap();
+        hyper_req
+            .extensions_mut()
+            .insert(FakeSession("injected-by-middleware".to_string()));
+
+        let hyper_resp = router.dispatch(hyper_req).await;
+        assert_eq!(hyper_resp.status(), StatusCode::OK);
+
+        use http_body_util::BodyExt;
+        let body_bytes = hyper_resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body_bytes[..], b"injected-by-middleware");
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
-use hyper::http::{HeaderMap, HeaderValue, Method, Uri};
+use hyper::http::{Extensions, HeaderMap, HeaderValue, Method, Uri};
 use percent_encoding::percent_decode_str;
 
 use crate::state::AppState;
@@ -18,6 +18,7 @@ pub struct Request {
     body: Bytes,
     query_params: HashMap<String, String>,
     state: AppState,
+    extensions: Extensions,
 }
 
 impl Request {
@@ -34,6 +35,7 @@ impl Request {
             body,
             query_params,
             state: AppState::default(),
+            extensions: Extensions::new(),
         }
     }
 
@@ -46,6 +48,25 @@ impl Request {
     /// Attach the app-wide state to this request.
     pub fn with_state(mut self, state: AppState) -> Self {
         self.state = state;
+        self
+    }
+
+    /// Retrieve a per-request typed value inserted by upstream middleware
+    /// (e.g. a session handle), if any was set for type `T`.
+    ///
+    /// Distinct from [`Request::state`]: state is app-wide and configured
+    /// once via [`Router::with_state`](crate::Router::with_state);
+    /// extensions are populated fresh per request by tower [`Layer`](tower::Layer)s
+    /// wrapping the router (via the incoming hyper request's own
+    /// `Extensions`), which is how `Router::dispatch` picks them up.
+    pub fn ext<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.extensions.get::<T>()
+    }
+
+    /// Replace this request's per-request extensions, typically propagated
+    /// from the incoming hyper request by `Router::dispatch`.
+    pub fn with_extensions(mut self, extensions: Extensions) -> Self {
+        self.extensions = extensions;
         self
     }
 
