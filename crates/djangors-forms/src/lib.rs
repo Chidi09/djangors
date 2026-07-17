@@ -5,6 +5,7 @@
 pub mod error;
 pub mod fields;
 
+pub use djangors_macros::Form;
 pub use error::{FieldError, FormErrors};
 pub use fields::{BooleanField, CharField, EmailField, FormField, IntegerField};
 

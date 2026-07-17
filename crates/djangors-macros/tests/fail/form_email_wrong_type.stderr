@@ -1,0 +1,5 @@
+error: email is only valid on String fields
+ --> tests/fail/form_email_wrong_type.rs:6:14
+  |
+6 |     pub age: i64,
+  |              ^^^

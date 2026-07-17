@@ -597,11 +597,15 @@ dependencies = [
 [[package]]
 name = "djangors-forms"
 version = "0.0.1"
+dependencies = [
+ "djangors-macros",
+]
 
 [[package]]
 name = "djangors-macros"
 version = "0.0.1"
 dependencies = [
+ "djangors-forms",
  "djangors-orm",
  "proc-macro2",
  "quote",
