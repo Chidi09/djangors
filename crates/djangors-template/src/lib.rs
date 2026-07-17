@@ -1,4 +1,12 @@
-//! Template engine integration for Djangors (placeholder release)
+//! Template engine integration for Djangors.
 //!
-//! This is a name-reserving placeholder. Djangors is under active development —
-//! a Django-inspired, batteries-included web framework for Rust.
+//! Provides `TemplateEngine` and `render` shortcut helper for rendering templates.
+
+pub mod engine;
+pub mod error;
+pub mod filters;
+pub mod render;
+
+pub use engine::TemplateEngine;
+pub use error::TemplateError;
+pub use render::render;
