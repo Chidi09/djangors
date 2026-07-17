@@ -81,6 +81,13 @@ impl Request {
         self.query_params.get(name).map(|s| s.as_str())
     }
 
+    /// Get the raw, undecoded query string from the request URI (e.g. `"q=rust&page=2"`).
+    ///
+    /// Returns `None` if no query string is present.
+    pub fn raw_query(&self) -> Option<&str> {
+        self.uri.query()
+    }
+
     /// Access all request headers.
     pub fn headers(&self) -> &HeaderMap {
         &self.headers

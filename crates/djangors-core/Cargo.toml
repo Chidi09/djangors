@@ -34,3 +34,5 @@ tower-http = { version = "0.7.0", features = [
 ] }
 tracing = "0.1.44"
 toml = "0.8.20"
+async-trait = "0.1.86"
+serde_urlencoded = "0.7.1"
