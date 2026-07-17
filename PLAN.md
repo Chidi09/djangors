@@ -328,16 +328,20 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 **DoD:** polls requires login to vote; full password-reset flow works via console email backend; OWASP top-10 self-assessment written.
 
 ### Phase 5 — THE ADMIN (~3–4 months, worth every week)
-- [ ] AdminSite + registry; auto-URLs; login gated by `is_staff`.
-- [ ] Changelist: columns from `list_display` (fields + computed methods), sorting, pagination, `list_filter` (field filters + custom), `search_fields`, `date_hierarchy`, `list_editable`, bulk actions (delete + custom + **CSV/XLSX export built-in**), saved views.
-- [ ] Change form: ModelForm from meta; fieldsets, readonly_fields, raw_id/autocomplete FK widgets (with async search endpoint), M2M widgets, inlines (tabular/stacked) via formsets.
-- [ ] Delete confirmation with full related-object collection; permission enforcement everywhere (view/add/change/delete, per object hook).
-- [ ] History: admin log entries table; deep integration with djangors-contrib-audit for full record diffing.
-- [ ] Theming: clean modern default (CSS custom properties, dark mode); every template overridable; per-site branding (title, logo, colors) via settings.
-- [ ] Extension points: custom admin views, `get_queryset` override, custom actions with intermediate pages, ModelAdmin as a trait with default methods so everything is overridable.
-- [ ] `createsuperuser` command.
 
-**DoD:** the school example runs its entire back-office (students, enrollment, grades) through the admin with zero custom views; a non-programmer can CRUD comfortably.
+> **Status (2026-07-17):** in progress — see `docs/design/phase-5-roadmap.md` for the
+> authoritative slice-by-slice status, commit references, and the full deferred-items ledger.
+
+- [x] AdminSite + registry; auto-URLs; login gated by `is_staff`. *(5.1, commit 9edf249 — v1 constraint: gate hardcoded to the built-in `User`, not generic `AuthUser`)*
+- [ ] Changelist: **done:** all-fields columns, sorting, pagination *(5.2, commit ac647f9)*. **remaining:** `list_display` customization (fields + computed methods), `list_filter` (field filters + custom), `search_fields`, `date_hierarchy`, `list_editable`, bulk actions (delete + custom + **CSV/XLSX export built-in**), saved views.
+- [ ] Change form: ModelForm from meta; fieldsets, readonly_fields, raw_id/autocomplete FK widgets (with async search endpoint), M2M widgets, inlines (tabular/stacked) via formsets. *(next up — needs the reverse of `field_values()`: a form-strings→model construction path; see roadmap doc)*
+- [ ] Delete confirmation with full related-object collection; permission enforcement everywhere (view/add/change/delete, per object hook). *(blocked on groups/model-level permissions, deferred from Phase 4)*
+- [ ] History: admin log entries table; deep integration with djangors-contrib-audit for full record diffing.
+- [ ] Theming: clean modern default (CSS custom properties, dark mode); every template overridable; per-site branding (title, logo, colors) via settings. *(all admin HTML is plain `format!` today, deliberately)*
+- [ ] Extension points: custom admin views, `get_queryset` override, custom actions with intermediate pages, ModelAdmin as a trait with default methods so everything is overridable. *(ModelAdmin is already a trait with `DefaultModelAdmin`; overridable defaults not yet designed)*
+- [x] `createsuperuser` command. *(5.3, commit 9b2fd47 — non-interactive only: `--username`/`--email` + `DJANGORS_SUPERUSER_PASSWORD` env; interactive prompting deferred)*
+
+**DoD:** the school example runs its entire back-office (students, enrollment, grades) through the admin with zero custom views; a non-programmer can CRUD comfortably. *(school example does not exist yet — polls is the only example app so far and now serves a real `/admin/`)*
 
 ### Phase 6 — CLI & developer experience (~6–8 weeks, parallel with 5)
 - [ ] `djangors` binary: `djangors new <project>` (generates workspace, settings, git, tuned dev profile), `djangors new-app <name>` (generates app crate wired into registry), `djangors run` (watch/rebuild/livereload per design 4.5), `djangors check` (system check framework — port Django's checks: model issues, missing migrations, security misconfigs for deploy).
