@@ -642,6 +642,26 @@ impl<T: Model + FromRow> QuerySet<T> {
         Ok(pk)
     }
 
+    pub async fn delete_by_pk(db: &djangors_db::Database, pk: i64) -> Result<u64, OrmError> {
+        let meta = T::meta();
+        let pk_field = meta
+            .fields
+            .iter()
+            .find(|f| f.primary_key)
+            .expect("Primary key field not found");
+
+        let sql = format!(
+            "DELETE FROM {} WHERE {} = $1",
+            meta.table_name, pk_field.column_name
+        );
+        let res = sqlx::query(sqlx::AssertSqlSafe(sql))
+            .bind(pk)
+            .execute(db.pool())
+            .await
+            .map_err(OrmError::from)?;
+        Ok(res.rows_affected())
+    }
+
     /// Eagerly loads the given relation, avoiding an N+1 query. Returns each
     /// matching `T` alongside its related `R` (or `None` if the relation is
     /// nullable and actually null for that row).

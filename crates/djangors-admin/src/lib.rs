@@ -46,6 +46,12 @@ pub trait ModelAdmin: Send + Sync {
         db: &djangors_db::Database,
         form: &std::collections::HashMap<String, String>,
     ) -> Result<Result<i64, std::collections::HashMap<String, String>>, DjangorsError>;
+
+    async fn delete_by_pk(
+        &self,
+        db: &djangors_db::Database,
+        pk: i64,
+    ) -> Result<bool, DjangorsError>;
 }
 
 /// Blanket impl so any real Model can be registered with zero boilerplate.
@@ -250,6 +256,17 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
 
         Ok(Ok(pk))
+    }
+
+    async fn delete_by_pk(
+        &self,
+        db: &djangors_db::Database,
+        pk: i64,
+    ) -> Result<bool, DjangorsError> {
+        let rows = djangors_orm::queryset::QuerySet::<M>::delete_by_pk(db, pk)
+            .await
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        Ok(rows > 0)
     }
 }
 
@@ -490,6 +507,8 @@ impl AdminSite {
         let add_post_admins = admins.clone();
         let change_get_admins = admins.clone();
         let change_post_admins = admins.clone();
+        let delete_get_admins = admins.clone();
+        let delete_post_admins = admins.clone();
 
         Router::new()
             .get("/", move |req: Request, params: PathParams| {
@@ -523,6 +542,18 @@ impl AdminSite {
                 "/{app:slug}/{model:slug}/{pk:i64}/change/",
                 move |req: Request, params: PathParams| {
                     admin_change_post(req, params, change_post_admins.clone())
+                },
+            )
+            .get(
+                "/{app:slug}/{model:slug}/{pk:i64}/delete/",
+                move |req: Request, params: PathParams| {
+                    admin_delete_get(req, params, delete_get_admins.clone())
+                },
+            )
+            .post(
+                "/{app:slug}/{model:slug}/{pk:i64}/delete/",
+                move |req: Request, params: PathParams| {
+                    admin_delete_post(req, params, delete_post_admins.clone())
                 },
             )
     }
@@ -834,6 +865,149 @@ async fn admin_change_post(
     }
 }
 
+pub struct RelatedObjectSummary {
+    pub app_label: &'static str,
+    pub struct_name: &'static str,
+    pub field_name: &'static str,
+    pub on_delete: djangors_orm::meta::OnDelete,
+    pub count: i64,
+}
+
+async fn collect_related_objects(
+    db: &djangors_db::Database,
+    target_meta: &'static ModelMeta,
+    pk: i64,
+) -> Result<Vec<RelatedObjectSummary>, DjangorsError> {
+    let mut summaries = Vec::new();
+    for related_meta in djangors_orm::meta::all_registered_models() {
+        for relation in related_meta.relations {
+            if (relation.target)().table_name != target_meta.table_name {
+                continue;
+            }
+            let sql = format!(
+                "SELECT COUNT(*) FROM {} WHERE {} = $1",
+                related_meta.table_name, relation.field_name
+            );
+            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                .bind(pk)
+                .fetch_one(db.pool())
+                .await
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            if count > 0 {
+                summaries.push(RelatedObjectSummary {
+                    app_label: related_meta.app_label,
+                    struct_name: related_meta.struct_name,
+                    field_name: relation.field_name,
+                    on_delete: relation.on_delete,
+                    count,
+                });
+            }
+        }
+    }
+    Ok(summaries)
+}
+
+async fn admin_delete_get(
+    req: Request,
+    params: PathParams,
+    admins: Vec<Arc<dyn ModelAdmin>>,
+) -> Result<Response, DjangorsError> {
+    require_staff(&req).await?;
+
+    let app = params.get("app").unwrap_or("");
+    let model = params.get("model").unwrap_or("");
+    let pk = params
+        .get_as::<i64>("pk")
+        .map_err(|_| DjangorsError::BadRequest("invalid pk".to_string()))?;
+
+    let admin = admins
+        .iter()
+        .find(|a| {
+            let meta = a.model_meta();
+            meta.app_label == app && meta.struct_name.to_lowercase() == model
+        })
+        .ok_or(DjangorsError::NotFound)?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    let row_vals = admin
+        .get_by_pk(db, pk)
+        .await?
+        .ok_or(DjangorsError::NotFound)?;
+
+    let meta = admin.model_meta();
+    let related = collect_related_objects(db, meta, pk).await?;
+
+    let mut obj_html = String::new();
+    for (name, val) in row_vals {
+        let name_esc = djangors_core::html_escape(name);
+        let val_esc = djangors_core::html_escape(&val.to_string());
+        obj_html.push_str(&format!(
+            "<div><strong>{}:</strong> {}</div>",
+            name_esc, val_esc
+        ));
+    }
+
+    let mut warnings_html = String::new();
+    if !related.is_empty() {
+        warnings_html.push_str("<h3>Related Objects:</h3><ul>");
+        for rel in related {
+            let struct_name_esc = djangors_core::html_escape(rel.struct_name);
+            let on_delete_esc = djangors_core::html_escape(&format!("{:?}", rel.on_delete));
+            let table_name = djangors_orm::meta::all_registered_models()
+                .find(|m| m.app_label == rel.app_label && m.struct_name == rel.struct_name)
+                .map(|m| m.table_name)
+                .unwrap_or("");
+            let table_name_esc = djangors_core::html_escape(table_name);
+            warnings_html.push_str(&format!(
+                "<li>{} (table: {}, count: {}, on_delete: {})</li>",
+                struct_name_esc, table_name_esc, rel.count, on_delete_esc
+            ));
+        }
+        warnings_html.push_str("</ul>");
+    }
+
+    let form_html = "<form method=\"post\"><input type=\"submit\" value=\"Confirm Delete\"></form>";
+    let full_html = format!("<div>{}</div>{}{}", obj_html, warnings_html, form_html);
+
+    Ok(Response::html(StatusCode::OK, full_html))
+}
+
+async fn admin_delete_post(
+    req: Request,
+    params: PathParams,
+    admins: Vec<Arc<dyn ModelAdmin>>,
+) -> Result<Response, DjangorsError> {
+    require_staff(&req).await?;
+
+    let app = params.get("app").unwrap_or("");
+    let model = params.get("model").unwrap_or("");
+    let pk = params
+        .get_as::<i64>("pk")
+        .map_err(|_| DjangorsError::BadRequest("invalid pk".to_string()))?;
+
+    let admin = admins
+        .iter()
+        .find(|a| {
+            let meta = a.model_meta();
+            meta.app_label == app && meta.struct_name.to_lowercase() == model
+        })
+        .ok_or(DjangorsError::NotFound)?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    let deleted = admin.delete_by_pk(db, pk).await?;
+    if deleted {
+        Ok(Response::redirect(&format!("/{}/{}/", app, model)))
+    } else {
+        Err(DjangorsError::NotFound)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -862,6 +1036,15 @@ mod tests {
         title: String,
     }
 
+    #[derive(MacroModel, Debug, Clone)]
+    #[djangors(app = "admin_test", table_name = "test_model_c")]
+    #[allow(dead_code)]
+    struct ModelC {
+        #[djangors(primary_key, auto)]
+        id: i64,
+        parent: djangors_orm::ForeignKey<ModelA>,
+    }
+
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_index_endpoints() {
@@ -871,6 +1054,9 @@ mod tests {
         let db = djangors_db::Database::connect(&config).await.unwrap();
 
         // Drop tables
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
         let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
             .execute(db.pool())
             .await;
@@ -1017,6 +1203,9 @@ mod tests {
         let db = djangors_db::Database::connect(&config).await.unwrap();
 
         // Drop tables
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
         let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
             .execute(db.pool())
             .await;
@@ -1365,6 +1554,9 @@ mod tests {
         assert!(idx_beta < idx_alpha);
 
         // Clean up
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
         let _ = sqlx::query("DROP TABLE auth_user").execute(db.pool()).await;
         let _ = sqlx::query("DROP TABLE test_model_a")
             .execute(db.pool())
@@ -1383,6 +1575,9 @@ mod tests {
         let db = djangors_db::Database::connect(&config).await.unwrap();
 
         // Drop/create tables
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
         let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
             .execute(db.pool())
             .await;
@@ -1615,6 +1810,237 @@ mod tests {
         assert_eq!(res.unwrap_err().status_code(), StatusCode::FORBIDDEN);
 
         // Clean up
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE auth_user").execute(db.pool()).await;
+        let _ = sqlx::query("DROP TABLE test_model_a")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_admin_delete_endpoints() {
+        let _guard = DB_MUTEX.lock().unwrap();
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        // Drop/create tables
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_c (
+                id BIGSERIAL PRIMARY KEY,
+                parent BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff".to_string(),
+            email: "staff@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let non_staff = User {
+            id: 0,
+            username: "non_staff".to_string(),
+            email: "non_staff@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: false,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let site = AdminSite::new();
+        site.register::<ModelA>();
+        site.register::<ModelC>();
+        let router = Router::new().mount("/admin", site.urls());
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+
+        let session_non_staff = djangors_sessions::Session::new_empty();
+        session_non_staff.set(SESSION_USER_ID_KEY, non_staff.id);
+
+        // Insert test data
+        let parent_pk = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
+            &db,
+            vec![(
+                "name",
+                djangors_orm::expr::Value::Text("Parent Object".to_string()),
+            )],
+        )
+        .await
+        .unwrap();
+
+        // Insert child referencing parent
+        let child_pk = djangors_orm::queryset::QuerySet::<ModelC>::insert_raw(
+            &db,
+            vec![("parent", djangors_orm::expr::Value::I64(parent_pk))],
+        )
+        .await
+        .unwrap();
+
+        // a. GET delete confirm page for an existing pk as staff -> 200, contains field values and related ModelC warning showing count 1
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::GET,
+            Uri::try_from(format!("/admin/admin_test/modela/{}/delete/", parent_pk)).unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("Parent Object"));
+        assert!(body.contains("ModelC") || body.contains("test_model_c"));
+        assert!(body.contains("1")); // shows count of 1
+
+        // b. GET delete confirm page for a nonexistent pk -> 404
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modela/99999/delete/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status_code(), StatusCode::NOT_FOUND);
+
+        // c. Unauthenticated GET -> 401. Non-staff GET -> 403.
+        let req = Request::new(
+            Method::GET,
+            Uri::try_from(format!("/admin/admin_test/modela/{}/delete/", parent_pk)).unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status_code(), StatusCode::UNAUTHORIZED);
+
+        let mut ext = Extensions::new();
+        ext.insert(session_non_staff);
+        let req = Request::new(
+            Method::GET,
+            Uri::try_from(format!("/admin/admin_test/modela/{}/delete/", parent_pk)).unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status_code(), StatusCode::FORBIDDEN);
+
+        // d. POST delete for an existing pk
+        // First delete child
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::POST,
+            Uri::try_from(format!("/admin/admin_test/modelc/{}/delete/", child_pk)).unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND);
+        assert_eq!(
+            res.headers().get("location").unwrap().to_str().unwrap(),
+            "/admin_test/modelc/"
+        );
+
+        // Verify child is gone from DB
+        let child_check = djangors_orm::queryset::QuerySet::<ModelC>::new()
+            .filter(djangors_orm::q!(id = child_pk))
+            .unwrap()
+            .get(&db)
+            .await;
+        assert!(child_check.is_err());
+
+        // e. POST delete for a nonexistent pk -> 404
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modelc/99999/delete/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status_code(), StatusCode::NOT_FOUND);
+
+        // Clean up
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
         let _ = sqlx::query("DROP TABLE auth_user").execute(db.pool()).await;
         let _ = sqlx::query("DROP TABLE test_model_a")
             .execute(db.pool())
