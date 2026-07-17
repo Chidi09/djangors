@@ -148,3 +148,139 @@ macro_rules! q {
         ])
     };
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArithOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SetExpr {
+    Literal(Value),
+    FieldOp {
+        field: &'static str,
+        op: ArithOp,
+        operand: Value,
+    },
+}
+
+/// Django's F() — a reference to a field's CURRENT value in the database.
+pub struct F(pub &'static str);
+
+impl std::ops::Add<i64> for F {
+    type Output = SetExpr;
+    fn add(self, rhs: i64) -> SetExpr {
+        SetExpr::FieldOp {
+            field: self.0,
+            op: ArithOp::Add,
+            operand: Value::I64(rhs),
+        }
+    }
+}
+
+impl std::ops::Sub<i64> for F {
+    type Output = SetExpr;
+    fn sub(self, rhs: i64) -> SetExpr {
+        SetExpr::FieldOp {
+            field: self.0,
+            op: ArithOp::Sub,
+            operand: Value::I64(rhs),
+        }
+    }
+}
+
+impl std::ops::Mul<i64> for F {
+    type Output = SetExpr;
+    fn mul(self, rhs: i64) -> SetExpr {
+        SetExpr::FieldOp {
+            field: self.0,
+            op: ArithOp::Mul,
+            operand: Value::I64(rhs),
+        }
+    }
+}
+
+impl std::ops::Div<i64> for F {
+    type Output = SetExpr;
+    fn div(self, rhs: i64) -> SetExpr {
+        SetExpr::FieldOp {
+            field: self.0,
+            op: ArithOp::Div,
+            operand: Value::I64(rhs),
+        }
+    }
+}
+
+impl std::ops::Add<f64> for F {
+    type Output = SetExpr;
+    fn add(self, rhs: f64) -> SetExpr {
+        SetExpr::FieldOp {
+            field: self.0,
+            op: ArithOp::Add,
+            operand: Value::F64(rhs),
+        }
+    }
+}
+
+impl std::ops::Sub<f64> for F {
+    type Output = SetExpr;
+    fn sub(self, rhs: f64) -> SetExpr {
+        SetExpr::FieldOp {
+            field: self.0,
+            op: ArithOp::Sub,
+            operand: Value::F64(rhs),
+        }
+    }
+}
+
+impl std::ops::Mul<f64> for F {
+    type Output = SetExpr;
+    fn mul(self, rhs: f64) -> SetExpr {
+        SetExpr::FieldOp {
+            field: self.0,
+            op: ArithOp::Mul,
+            operand: Value::F64(rhs),
+        }
+    }
+}
+
+impl std::ops::Div<f64> for F {
+    type Output = SetExpr;
+    fn div(self, rhs: f64) -> SetExpr {
+        SetExpr::FieldOp {
+            field: self.0,
+            op: ArithOp::Div,
+            operand: Value::F64(rhs),
+        }
+    }
+}
+
+pub trait IntoSetExpr {
+    fn into_set_expr(self) -> SetExpr;
+}
+
+impl IntoSetExpr for SetExpr {
+    fn into_set_expr(self) -> SetExpr {
+        self
+    }
+}
+
+impl<T: Into<Value>> IntoSetExpr for T {
+    fn into_set_expr(self) -> SetExpr {
+        SetExpr::Literal(self.into())
+    }
+}
+
+#[macro_export]
+macro_rules! set {
+    ($($field:ident = $value:expr),+ $(,)?) => {
+        vec![
+            $(
+                (stringify!($field), $crate::expr::IntoSetExpr::into_set_expr($value))
+            ),+
+        ]
+    };
+}

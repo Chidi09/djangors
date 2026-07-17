@@ -557,3 +557,182 @@ async fn test_queryset_aggregation() {
         .await
         .unwrap();
 }
+
+#[derive(Model, Debug)]
+#[djangors(app = "test_app", table_name = "test_bulk_update_model")]
+#[allow(dead_code)]
+pub struct BulkUpdateTestModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+
+    pub votes: i64,
+
+    pub price: f64,
+
+    pub is_active: bool,
+}
+
+#[tokio::test]
+async fn test_queryset_bulk_update() {
+    use crate::expr::F;
+    use crate::set;
+
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    // Create table
+    sqlx::query("DROP TABLE IF EXISTS test_bulk_update_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "CREATE TABLE test_bulk_update_model (
+            id BIGSERIAL PRIMARY KEY,
+            votes BIGINT NOT NULL,
+            price DOUBLE PRECISION NOT NULL,
+            is_active BOOLEAN NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // Insert initial rows
+    sqlx::query(
+        "INSERT INTO test_bulk_update_model (votes, price, is_active) VALUES
+            (10, 1.5, true),
+            (20, 2.5, true),
+            (30, 3.5, false)",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // Test 1: Literal and F() expression updates on filtered queryset
+    // votes = votes + 5, price = price * 2.0, is_active = false
+    let affected = BulkUpdateTestModel::objects()
+        .filter(q!(is_active = true))
+        .unwrap()
+        .update(
+            &db,
+            set!(
+                votes = F("votes") + 5,
+                price = F("price") * 2.0,
+                is_active = false
+            ),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(affected, 2);
+
+    // Verify row 1
+    let row1 = BulkUpdateTestModel::objects()
+        .filter(q!(id = 1))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(row1.votes, 15);
+    assert_eq!(row1.price, 3.0);
+    assert_eq!(row1.is_active, false);
+
+    // Verify row 2
+    let row2 = BulkUpdateTestModel::objects()
+        .filter(q!(id = 2))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(row2.votes, 25);
+    assert_eq!(row2.price, 5.0);
+    assert_eq!(row2.is_active, false);
+
+    // Verify row 3 (unaffected because it was not active)
+    let row3 = BulkUpdateTestModel::objects()
+        .filter(q!(id = 3))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(row3.votes, 30);
+    assert_eq!(row3.price, 3.5);
+    assert_eq!(row3.is_active, false);
+
+    // Test 2: Double sequential increment
+    let affected_seq = BulkUpdateTestModel::objects()
+        .filter(q!(id = 1))
+        .unwrap()
+        .update(&db, set!(votes = F("votes") + 1))
+        .await
+        .unwrap();
+    assert_eq!(affected_seq, 1);
+
+    let affected_seq2 = BulkUpdateTestModel::objects()
+        .filter(q!(id = 1))
+        .unwrap()
+        .update(&db, set!(votes = F("votes") + 1))
+        .await
+        .unwrap();
+    assert_eq!(affected_seq2, 1);
+
+    let row1_double = BulkUpdateTestModel::objects()
+        .filter(q!(id = 1))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(row1_double.votes, 17); // 15 + 1 + 1
+
+    // Test 3: Concurrent updates using tokio::join!
+    let qs1 = BulkUpdateTestModel::objects().filter(q!(id = 2)).unwrap();
+    let qs2 = BulkUpdateTestModel::objects().filter(q!(id = 2)).unwrap();
+    let fut1 = qs1.update(&db, set!(votes = F("votes") + 1));
+    let fut2 = qs2.update(&db, set!(votes = F("votes") + 1));
+    let (res1, res2) = tokio::join!(fut1, fut2);
+    assert_eq!(res1.unwrap(), 1);
+    assert_eq!(res2.unwrap(), 1);
+
+    let row2_concurrent = BulkUpdateTestModel::objects()
+        .filter(q!(id = 2))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(row2_concurrent.votes, 27); // 25 + 1 + 1
+
+    // Test 4: Typo'd field name (LHS) is rejected
+    let typo_lhs = BulkUpdateTestModel::objects()
+        .update(&db, set!(votes_typo = 5))
+        .await;
+    assert!(matches!(
+        typo_lhs,
+        Err(crate::error::OrmError::FieldNotFound { .. })
+    ));
+
+    // Test 5: Typo'd field name (RHS F()) is rejected
+    let typo_rhs = BulkUpdateTestModel::objects()
+        .update(&db, set!(votes = F("votes_typo") + 1))
+        .await;
+    assert!(matches!(
+        typo_rhs,
+        Err(crate::error::OrmError::FieldNotFound { .. })
+    ));
+
+    // Test 6: Bulk update matching zero rows returns Ok(0)
+    let affected_zero = BulkUpdateTestModel::objects()
+        .filter(q!(id = 9999))
+        .unwrap()
+        .update(&db, set!(votes = F("votes") + 1))
+        .await
+        .unwrap();
+    assert_eq!(affected_zero, 0);
+
+    // Clean up
+    sqlx::query("DROP TABLE test_bulk_update_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}

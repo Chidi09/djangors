@@ -1,5 +1,5 @@
 use crate::error::{FromRow, OrmError};
-use crate::expr::{CompareOp, Expr, UnresolvedExpr, Value};
+use crate::expr::{ArithOp, CompareOp, Expr, SetExpr, UnresolvedExpr, Value};
 use crate::meta::Model;
 use std::marker::PhantomData;
 
@@ -392,6 +392,105 @@ impl<T: Model + FromRow> QuerySet<T> {
         }
 
         Ok(results)
+    }
+
+    pub async fn update(
+        &self,
+        db: &djangors_db::Database,
+        sets: Vec<(&'static str, SetExpr)>,
+    ) -> Result<u64, OrmError> {
+        let meta = T::meta();
+
+        // 1. Validate every field name in `sets` (LHS and RHS F-expressions if any)
+        for &(field_name, ref set_expr) in &sets {
+            let exists_lhs = meta.fields.iter().any(|f| f.name == field_name)
+                || meta.relations.iter().any(|r| r.field_name == field_name);
+            if !exists_lhs {
+                return Err(OrmError::FieldNotFound {
+                    field: field_name.to_string(),
+                    model: meta.struct_name,
+                });
+            }
+
+            if let SetExpr::FieldOp {
+                field: rhs_field, ..
+            } = set_expr
+            {
+                let exists_rhs = meta.fields.iter().any(|f| f.name == *rhs_field)
+                    || meta.relations.iter().any(|r| r.field_name == *rhs_field);
+                if !exists_rhs {
+                    return Err(OrmError::FieldNotFound {
+                        field: rhs_field.to_string(),
+                        model: meta.struct_name,
+                    });
+                }
+            }
+        }
+
+        // 2. Build the UPDATE SQL statement
+        let field_to_col = |field_name: &str| -> String {
+            if let Some(f) = meta.fields.iter().find(|f| f.name == field_name) {
+                f.column_name.to_string()
+            } else if let Some(r) = meta.relations.iter().find(|r| r.field_name == field_name) {
+                r.field_name.to_string()
+            } else {
+                field_name.to_string()
+            }
+        };
+
+        let mut params = Vec::new();
+        let mut param_idx = 1;
+        let mut set_parts = Vec::new();
+
+        for &(field_name, ref set_expr) in &sets {
+            let lhs_col = field_to_col(field_name);
+            match set_expr {
+                SetExpr::Literal(v) => {
+                    set_parts.push(format!("{} = ${}", lhs_col, param_idx));
+                    params.push(v.clone());
+                    param_idx += 1;
+                }
+                SetExpr::FieldOp { field, op, operand } => {
+                    let rhs_col = field_to_col(field);
+                    let op_sql = match op {
+                        ArithOp::Add => "+",
+                        ArithOp::Sub => "-",
+                        ArithOp::Mul => "*",
+                        ArithOp::Div => "/",
+                    };
+                    set_parts.push(format!(
+                        "{} = {} {} ${}",
+                        lhs_col, rhs_col, op_sql, param_idx
+                    ));
+                    params.push(operand.clone());
+                    param_idx += 1;
+                }
+            }
+        }
+
+        let mut sql = format!("UPDATE {} SET {}", meta.table_name, set_parts.join(", "));
+        if !self.filters.is_empty() {
+            let combined = Expr::And(self.filters.clone());
+            let where_clause =
+                compile_expr_sql(&combined, &field_to_col, &mut params, &mut param_idx);
+            sql.push_str(" WHERE ");
+            sql.push_str(&where_clause);
+        }
+
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for val in &params {
+            query = match val {
+                Value::I64(v) => query.bind(*v),
+                Value::F64(v) => query.bind(*v),
+                Value::Text(v) => query.bind(v.clone()),
+                Value::Bool(v) => query.bind(*v),
+                Value::DateTime(v) => query.bind(*v),
+                Value::Null => query.bind(None::<i64>),
+            };
+        }
+
+        let res = query.execute(db.pool()).await?;
+        Ok(res.rows_affected())
     }
 }
 

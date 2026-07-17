@@ -21,7 +21,9 @@ pub use meta::{
 
 pub use aggregate::{AggExpr, AggResult};
 pub use error::{FromRow, OrmError};
-pub use expr::{CompareOp, Expr, UnresolvedCompare, UnresolvedExpr, Value};
+pub use expr::{
+    ArithOp, CompareOp, Expr, IntoSetExpr, SetExpr, UnresolvedCompare, UnresolvedExpr, Value, F,
+};
 pub use queryset::QuerySet;
 
 #[cfg(test)]
