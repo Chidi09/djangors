@@ -267,6 +267,132 @@ impl<T: Model + FromRow> QuerySet<T> {
         let count: i64 = row.try_get(0)?;
         Ok(count)
     }
+
+    pub async fn aggregate(
+        &self,
+        db: &djangors_db::Database,
+        aggs: Vec<crate::aggregate::AggExpr>,
+    ) -> Result<Vec<crate::aggregate::AggResult>, OrmError> {
+        let meta = T::meta();
+
+        // 1. Validate every AggExpr's field (except Count's "*" sentinel) against T::meta().fields
+        for agg in &aggs {
+            let field_name = match agg {
+                crate::aggregate::AggExpr::Count { field } => *field,
+                crate::aggregate::AggExpr::Sum { field } => *field,
+                crate::aggregate::AggExpr::Avg { field } => *field,
+                crate::aggregate::AggExpr::Min { field } => *field,
+                crate::aggregate::AggExpr::Max { field } => *field,
+            };
+
+            if field_name != "*" {
+                let exists = meta.fields.iter().any(|f| f.name == field_name)
+                    || meta.relations.iter().any(|r| r.field_name == field_name);
+                if !exists {
+                    return Err(OrmError::FieldNotFound {
+                        field: field_name.to_string(),
+                        model: meta.struct_name,
+                    });
+                }
+            }
+        }
+
+        // 2. Build SELECT list and custom SQL.
+        let field_to_col = |field_name: &str| -> String {
+            if let Some(f) = meta.fields.iter().find(|f| f.name == field_name) {
+                f.column_name.to_string()
+            } else if let Some(r) = meta.relations.iter().find(|r| r.field_name == field_name) {
+                r.field_name.to_string()
+            } else {
+                field_name.to_string()
+            }
+        };
+
+        let mut agg_sql_parts = Vec::new();
+        for agg in &aggs {
+            let part = match agg {
+                crate::aggregate::AggExpr::Count { field } => {
+                    if *field == "*" {
+                        "COUNT(*)".to_string()
+                    } else {
+                        format!("COUNT({})", field_to_col(field))
+                    }
+                }
+                // Cast to float8 so the result is always decodable as
+                // Option<f64> client-side, regardless of the underlying
+                // column's numeric type. Without this, Postgres returns
+                // different native types depending on both the aggregate
+                // function and the column type — SUM(integer) -> bigint,
+                // SUM(bigint)/AVG(integer|bigint) -> numeric, MIN/MAX(real)
+                // -> double precision, etc. Casting in SQL sidesteps having
+                // to handle every combination on the Rust side.
+                crate::aggregate::AggExpr::Sum { field } => {
+                    format!("SUM({})::float8", field_to_col(field))
+                }
+                crate::aggregate::AggExpr::Avg { field } => {
+                    format!("AVG({})::float8", field_to_col(field))
+                }
+                crate::aggregate::AggExpr::Min { field } => {
+                    format!("MIN({})::float8", field_to_col(field))
+                }
+                crate::aggregate::AggExpr::Max { field } => {
+                    format!("MAX({})::float8", field_to_col(field))
+                }
+            };
+            agg_sql_parts.push(part);
+        }
+
+        let select_list = agg_sql_parts.join(", ");
+
+        // A single aggregate row has nothing to order or paginate — reuse
+        // compile_select_custom (so the WHERE clause stays in sync with the
+        // regular filter-compilation path) via a clone with order_by/limit/
+        // offset cleared, rather than duplicating the WHERE-building logic.
+        let mut clean_qs = self.clone();
+        clean_qs.order_by.clear();
+        clean_qs.limit = None;
+        clean_qs.offset = None;
+
+        let (sql, params) = clean_qs.compile_select_custom(&select_list);
+
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for val in &params {
+            query = match val {
+                Value::I64(v) => query.bind(*v),
+                Value::F64(v) => query.bind(*v),
+                Value::Text(v) => query.bind(v.clone()),
+                Value::Bool(v) => query.bind(*v),
+                Value::DateTime(v) => query.bind(*v),
+                Value::Null => query.bind(None::<i64>),
+            };
+        }
+
+        let row = query.fetch_one(db.pool()).await?;
+        use sqlx::Row;
+
+        let mut results = Vec::new();
+        for (i, agg) in aggs.iter().enumerate() {
+            let res = match agg {
+                crate::aggregate::AggExpr::Count { .. } => {
+                    let count_val: i64 = row.try_get(i)?;
+                    crate::aggregate::AggResult::I64(count_val)
+                }
+                crate::aggregate::AggExpr::Sum { .. }
+                | crate::aggregate::AggExpr::Avg { .. }
+                | crate::aggregate::AggExpr::Min { .. }
+                | crate::aggregate::AggExpr::Max { .. } => {
+                    let val: Option<f64> = row.try_get(i)?;
+                    match val {
+                        Some(v) => crate::aggregate::AggResult::F64(v),
+                        None => crate::aggregate::AggResult::Null,
+                    }
+                }
+            };
+            results.push(res);
+        }
+
+        Ok(results)
+    }
 }
 
 fn split_field_lookup(s: &'static str) -> (&'static str, &'static str) {

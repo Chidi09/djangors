@@ -427,3 +427,133 @@ async fn test_queryset_operations() {
         .await
         .unwrap();
 }
+
+#[derive(Model, Debug)]
+#[djangors(app = "test_app", table_name = "test_aggregate_model")]
+#[allow(dead_code)]
+pub struct AggregateTestModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+
+    pub category: String,
+
+    pub score: i32,
+}
+
+#[tokio::test]
+async fn test_queryset_aggregation() {
+    use crate::aggregate::{AggExpr, AggResult};
+
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query("DROP TABLE IF EXISTS test_aggregate_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE test_aggregate_model (
+            id BIGSERIAL PRIMARY KEY,
+            category TEXT NOT NULL,
+            score INTEGER NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO test_aggregate_model (category, score) VALUES
+            ('a', 10), ('a', 20), ('a', 30), ('b', 100)",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // COUNT(*) via aggregate() must match the existing .count() method.
+    let count_via_count = AggregateTestModel::objects().count(&db).await.unwrap();
+    let count_via_agg = AggregateTestModel::objects()
+        .aggregate(&db, vec![AggExpr::Count { field: "*" }])
+        .await
+        .unwrap();
+    assert_eq!(count_via_agg, vec![AggResult::I64(4)]);
+    assert_eq!(count_via_count, 4);
+
+    // SUM/AVG/MIN/MAX over the whole table.
+    let results = AggregateTestModel::objects()
+        .aggregate(
+            &db,
+            vec![
+                AggExpr::Sum { field: "score" },
+                AggExpr::Avg { field: "score" },
+                AggExpr::Min { field: "score" },
+                AggExpr::Max { field: "score" },
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(results[0], AggResult::F64(160.0)); // SUM: 10+20+30+100
+    assert_eq!(results[1], AggResult::F64(40.0)); // AVG: 160/4
+    assert_eq!(results[2], AggResult::F64(10.0)); // MIN
+    assert_eq!(results[3], AggResult::F64(100.0)); // MAX
+
+    // Aggregation composed with filter() — only category 'a' rows.
+    let filtered_sum = AggregateTestModel::objects()
+        .filter(q!(category = "a"))
+        .unwrap()
+        .aggregate(&db, vec![AggExpr::Sum { field: "score" }])
+        .await
+        .unwrap();
+    assert_eq!(filtered_sum, vec![AggResult::F64(60.0)]); // 10+20+30, not +100
+
+    // SUM/AVG/MIN/MAX over zero matching rows -> Null, not an error.
+    let empty_results = AggregateTestModel::objects()
+        .filter(q!(category = "nonexistent"))
+        .unwrap()
+        .aggregate(
+            &db,
+            vec![
+                AggExpr::Sum { field: "score" },
+                AggExpr::Avg { field: "score" },
+                AggExpr::Min { field: "score" },
+                AggExpr::Max { field: "score" },
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        empty_results,
+        vec![
+            AggResult::Null,
+            AggResult::Null,
+            AggResult::Null,
+            AggResult::Null
+        ]
+    );
+    // COUNT over zero matching rows is 0, never Null.
+    let empty_count = AggregateTestModel::objects()
+        .filter(q!(category = "nonexistent"))
+        .unwrap()
+        .aggregate(&db, vec![AggExpr::Count { field: "*" }])
+        .await
+        .unwrap();
+    assert_eq!(empty_count, vec![AggResult::I64(0)]);
+
+    // Typo'd field name is rejected before any SQL executes — the same
+    // injection-safety discipline as filter()/order_by().
+    let typo_res = AggregateTestModel::objects()
+        .aggregate(&db, vec![AggExpr::Sum { field: "scoer" }])
+        .await;
+    match typo_res {
+        Err(crate::error::OrmError::FieldNotFound { field, .. }) => {
+            assert_eq!(field, "scoer");
+        }
+        other => panic!("expected FieldNotFound, got {other:?}"),
+    }
+
+    sqlx::query("DROP TABLE test_aggregate_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}

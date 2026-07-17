@@ -4,6 +4,7 @@
 //! which describe database models. These metadata structures serve as the
 //! single source of truth for migrations, serializers, admin interfaces, and more.
 
+pub mod aggregate;
 pub mod error;
 pub mod expr;
 pub mod meta;
@@ -18,6 +19,7 @@ pub use meta::{
     ModelMeta, ModelRegistration, OnDelete, RelationKind, RelationMeta,
 };
 
+pub use aggregate::{AggExpr, AggResult};
 pub use error::{FromRow, OrmError};
 pub use expr::{CompareOp, Expr, UnresolvedCompare, UnresolvedExpr, Value};
 pub use queryset::QuerySet;
