@@ -1,0 +1,190 @@
+use bytes::Bytes;
+use hyper::http::header::{CONTENT_TYPE, LOCATION};
+use hyper::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use serde::Serialize;
+
+use crate::error::DjangorsError;
+
+/// An HTTP response with a fully buffered body.
+///
+/// Constructed via builder-style helpers and then converted into a hyper
+/// response with [`Response::into_hyper`].
+#[derive(Debug, Clone)]
+pub struct Response {
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Bytes,
+}
+
+impl Response {
+    fn new(status: StatusCode) -> Self {
+        Response {
+            status,
+            headers: HeaderMap::new(),
+            body: Bytes::new(),
+        }
+    }
+
+    /// Create a plain-text response.
+    ///
+    /// Sets `Content-Type: text/plain; charset=utf-8`.
+    pub fn text(status: StatusCode, body: &str) -> Self {
+        let mut res = Response::new(status);
+        res.headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+        res.body = Bytes::copy_from_slice(body.as_bytes());
+        res
+    }
+
+    /// Create an HTML response.
+    ///
+    /// Sets `Content-Type: text/html; charset=utf-8`.
+    pub fn html(status: StatusCode, body: impl Into<String>) -> Self {
+        let s = body.into();
+        let mut res = Response::new(status);
+        res.headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        res.body = Bytes::copy_from_slice(s.as_bytes());
+        res
+    }
+
+    /// Create a JSON response from a serializable value.
+    ///
+    /// Sets `Content-Type: application/json; charset=utf-8`. Returns
+    /// `DjangorsError::Internal` if serialization fails.
+    pub fn json<T: Serialize>(status: StatusCode, value: &T) -> Result<Self, DjangorsError> {
+        let s = serde_json::to_string(value).map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        let mut res = Response::new(status);
+        res.headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/json; charset=utf-8"),
+        );
+        res.body = Bytes::copy_from_slice(s.as_bytes());
+        Ok(res)
+    }
+
+    /// Create a 302 Found redirect response.
+    ///
+    /// Sets the `Location` header to the given URI.
+    pub fn redirect(location: &str) -> Self {
+        let mut res = Response::new(StatusCode::FOUND);
+        res.headers.insert(
+            LOCATION,
+            HeaderValue::from_str(location)
+                .expect("redirect location must be a valid header value"),
+        );
+        res
+    }
+
+    /// Add a response header (builder pattern).
+    ///
+    /// Overwrites any existing value for the same header name.
+    ///
+    /// # Panics
+    /// Panics if `name` or `value` contain invalid characters for HTTP headers.
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        let header_name =
+            HeaderName::from_bytes(name.as_bytes()).expect("header name must be valid HTTP token");
+        let header_value = HeaderValue::from_str(value).expect("header value must be valid ASCII");
+        self.headers.insert(header_name, header_value);
+        self
+    }
+
+    /// Convert this response into a hyper [`Response`](hyper::Response) backed by
+    /// a [`Full`](http_body_util::Full) body.
+    pub fn into_hyper(self) -> hyper::Response<http_body_util::Full<Bytes>> {
+        let mut res = hyper::Response::new(http_body_util::Full::new(self.body));
+        *res.status_mut() = self.status;
+        *res.headers_mut() = self.headers;
+        res
+    }
+
+    /// The HTTP status code.
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    /// The response headers.
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    /// The response body as bytes.
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+}
+
+impl From<Response> for hyper::Response<http_body_util::Full<Bytes>> {
+    fn from(resp: Response) -> Self {
+        resp.into_hyper()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyper::http::StatusCode;
+
+    #[test]
+    fn text_response() {
+        let resp = Response::text(StatusCode::OK, "hello");
+        assert_eq!(resp.status, StatusCode::OK);
+        assert_eq!(&resp.body[..], b"hello");
+        assert_eq!(
+            resp.headers.get(CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn html_response() {
+        let resp = Response::html(StatusCode::CREATED, "<h1>hi</h1>");
+        assert_eq!(resp.status, StatusCode::CREATED);
+        assert_eq!(
+            resp.headers.get(CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+    }
+
+    #[test]
+    fn json_response() {
+        #[derive(serde::Serialize)]
+        struct Data {
+            key: String,
+        }
+        let resp = Response::json(StatusCode::OK, &Data { key: "val".into() }).unwrap();
+        assert_eq!(resp.status, StatusCode::OK);
+        assert_eq!(
+            resp.headers.get(CONTENT_TYPE).unwrap(),
+            "application/json; charset=utf-8"
+        );
+        let body_str = String::from_utf8(resp.body.to_vec()).unwrap();
+        assert!(body_str.contains("\"key\""));
+        assert!(body_str.contains("\"val\""));
+    }
+
+    #[test]
+    fn redirect_response() {
+        let resp = Response::redirect("/login");
+        assert_eq!(resp.status, StatusCode::FOUND);
+        assert_eq!(resp.headers.get(LOCATION).unwrap(), "/login");
+    }
+
+    #[test]
+    fn builder_header() {
+        let resp = Response::text(StatusCode::OK, "body").header("X-Custom", "myval");
+        assert_eq!(resp.headers.get("x-custom").unwrap(), "myval");
+    }
+
+    #[test]
+    fn into_hyper_conversion() {
+        let resp = Response::text(StatusCode::OK, "test");
+        let hyper_resp: hyper::Response<http_body_util::Full<Bytes>> = resp.into();
+        assert_eq!(hyper_resp.status(), StatusCode::OK);
+    }
+}
