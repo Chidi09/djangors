@@ -235,7 +235,14 @@ impl Router {
         let path = req.path().to_string();
         let method = req.method().clone();
 
-        match self.match_path(&path, &method) {
+        crate::signals::REQUEST_STARTED
+            .send(crate::signals::RequestStarted {
+                method: method.to_string(),
+                path: path.clone(),
+            })
+            .await;
+
+        let res = match self.match_path(&path, &method) {
             Some((idx, params)) => {
                 let handler = self.routes[idx].handler.clone();
                 // Spawn a new task to isolate the handler future. This allows catching
@@ -263,7 +270,22 @@ impl Router {
                 }
             }
             None => Err(DjangorsError::NotFound),
-        }
+        };
+
+        let status = match &res {
+            Ok(resp) => resp.status().as_u16(),
+            Err(err) => err.status_code().as_u16(),
+        };
+
+        crate::signals::REQUEST_FINISHED
+            .send(crate::signals::RequestFinished {
+                method: method.to_string(),
+                path: path.clone(),
+                status,
+            })
+            .await;
+
+        res
     }
 
     /// Dispatch an incoming hyper request, consuming the body, and return a
@@ -590,5 +612,48 @@ mod tests {
         assert!(!body_str_prod.contains("boom"));
         assert!(!body_str_prod.contains("DEBUG = true"));
         assert!(body_str_prod.contains("Internal Server Error"));
+    }
+
+    #[tokio::test]
+    async fn test_router_signals_fire() {
+        use crate::signals::{REQUEST_FINISHED, REQUEST_STARTED};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let started_counter = Arc::new(AtomicUsize::new(0));
+        let finished_counter = Arc::new(AtomicUsize::new(0));
+
+        let started_clone = started_counter.clone();
+        REQUEST_STARTED.connect(move |payload| {
+            let started = started_clone.clone();
+            async move {
+                if payload.path == "/signals-test-unique-path-foo" {
+                    started.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(payload.method, "GET");
+                }
+            }
+        });
+
+        let finished_clone = finished_counter.clone();
+        REQUEST_FINISHED.connect(move |payload| {
+            let finished = finished_clone.clone();
+            async move {
+                if payload.path == "/signals-test-unique-path-foo" {
+                    finished.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(payload.method, "GET");
+                    assert_eq!(payload.status, 200);
+                }
+            }
+        });
+
+        let router = Router::new().get(
+            "/signals-test-unique-path-foo",
+            |_: Request, _: PathParams| async { Ok(Response::text(StatusCode::OK, "ok")) },
+        );
+
+        let req = make_request(Method::GET, "/signals-test-unique-path-foo");
+        let _resp = router.handle(req).await.unwrap();
+
+        assert_eq!(started_counter.load(Ordering::SeqCst), 1);
+        assert_eq!(finished_counter.load(Ordering::SeqCst), 1);
     }
 }

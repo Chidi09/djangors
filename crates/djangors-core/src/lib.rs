@@ -15,6 +15,7 @@ pub mod response;
 pub mod router;
 pub mod service;
 pub mod settings;
+pub mod signals;
 
 pub use app::Djangors;
 pub use error::DjangorsError;
