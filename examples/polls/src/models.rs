@@ -1,10 +1,9 @@
-//! ASPIRATIONAL — nothing in this file exists yet. Target API for Phase 2
-//! (djangors-orm, djangors-macros, djangors-migrations). See README.md.
+use chrono::{DateTime, Utc};
+use djangors_macros::Model;
+use djangors_orm::ForeignKey;
 
-use djangors::prelude::*;
-
-#[derive(Model)]
-#[djangors(app = "polls", ordering = "-pub_date")]
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "polls", table_name = "polls_question", ordering = "-pub_date")]
 pub struct Question {
     #[djangors(primary_key, auto)]
     pub id: i64,
@@ -25,13 +24,13 @@ impl Question {
     }
 }
 
-#[derive(Model)]
-#[djangors(app = "polls")]
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "polls", table_name = "polls_choice")]
 pub struct Choice {
     #[djangors(primary_key, auto)]
     pub id: i64,
 
-    #[djangors(foreign_key(to = Question, on_delete = "cascade", related_name = "choices"))]
+    #[djangors(foreign_key(on_delete = "cascade", related_name = "choices"))]
     pub question: ForeignKey<Question>,
 
     #[djangors(max_length = 200)]

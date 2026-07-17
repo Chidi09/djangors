@@ -1,16 +1,32 @@
 [package]
 name = "polls"
-description = "Aspirational API spec for Djangors — the Django tutorial's polls app. Intentionally does NOT compile yet; see README.md."
+description = "Polls app for Djangors"
 version = "0.0.1"
 edition = "2021"
 publish = false
 
-# This crate is NOT part of the workspace `members` list (see /root/dev/Rango/Cargo.toml —
-# it only globs `crates/*`) and is not built by `cargo build --workspace`. That's deliberate:
-# this is a design spec for APIs that don't exist yet (the ORM, migrations, admin, forms),
-# not real code. See README.md for how to use this file as you build each phase.
+[lib]
+name = "polls"
+path = "src/lib.rs"
+
+[[bin]]
+name = "polls"
+path = "src/main.rs"
 
 [dependencies]
-# Left empty on purpose. Once djangors-orm/djangors-admin/djangors-forms/djangors-macros
-# exist, this becomes a real dependency list and the crate should start actually compiling,
-# module by module, as each referenced API lands for real.
+djangors-core = { path = "../../crates/djangors-core" }
+djangors-orm = { path = "../../crates/djangors-orm" }
+djangors-macros = { path = "../../crates/djangors-macros" }
+djangors-db = { path = "../../crates/djangors-db" }
+djangors-auth = { path = "../../crates/djangors-auth" }
+djangors-sessions = { path = "../../crates/djangors-sessions" }
+tokio = { version = "1.53.0", features = ["full"] }
+tower = { version = "0.5.3", features = ["util"] }
+hyper = { version = "1.10.1", features = ["full"] }
+chrono = { version = "0.4.45", features = ["std", "serde"] }
+serde = { version = "1.0.228", features = ["derive"] }
+async-trait = "0.1.86"
+
+[dev-dependencies]
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }
+bytes = "1.12.1"

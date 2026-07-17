@@ -1,92 +1,194 @@
-//! Mixed: the HTTP plumbing (imports, handler signatures, `Response`/`Request`
-//! usage, error propagation) is REAL and works today against `djangors-core`.
-//! The database/ORM calls (`Question::objects()...`, `req.db()`) are
-//! ASPIRATIONAL — Phase 2 territory. See README.md.
-
+use djangors_auth::{Auth, AuthBackend};
 use djangors_core::extract::{Form, FromRequest};
 use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
+use djangors_orm::{q, Model};
 
 use crate::models::{Choice, Question};
 
-/// REAL: this is a plain `async fn` with the exact signature
-/// `Fn(Request, PathParams) -> impl Future<Output = Result<Response, DjangorsError>>`
-/// that `Handler`'s blanket impl (djangors-core/src/handler.rs) accepts
-/// directly — no `#[handler]` macro, no manual `Box::pin` wrapping. Register
-/// it with `.get("/", index)` in urls.rs exactly as written.
 pub async fn index(req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
-    // ASPIRATIONAL from here down: `req.db()` (a connection pulled from
-    // per-request app state) and the QuerySet chain don't exist yet.
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("database state absent".to_string()))?;
+
     let latest_question_list = Question::objects()
         .filter(q!(pub_date__lte = chrono::Utc::now()))
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?
         .order_by("-pub_date")
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?
         .limit(5)
-        .all(req.db())
-        .await?;
+        .all(db)
+        .await
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?;
 
-    // REAL: Response::html already exists. Template rendering (rango-template,
-    // Phase 3) isn't built yet, so this stands in for what will eventually be
-    // `render(&req, "polls/index.html", context! { latest_question_list })`.
     let body = latest_question_list
         .iter()
-        .map(|q| format!("<li>{}</li>", q.question_text))
+        .map(|q| format!("<li><a href=\"/{}/\">{}</a></li>", q.id, q.question_text))
         .collect::<String>();
     Ok(Response::html(StatusCode::OK, format!("<ul>{body}</ul>")))
 }
 
-/// REAL signature/plumbing; ASPIRATIONAL body (ORM `get_or_404`).
 pub async fn detail(req: Request, params: PathParams) -> Result<Response, DjangorsError> {
-    // REAL: PathParams::get_as::<i64> exists today.
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("database state absent".to_string()))?;
+
     let question_id: i64 = params.get_as("question_id")?;
 
-    // ASPIRATIONAL: Question::objects().get_or_404(...) — the ORM's
-    // "fetch or return a 404 DjangorsError" convenience, mirroring Django's
-    // get_object_or_404().
     let question = Question::objects()
-        .get_or_404(req.db(), question_id)
-        .await?;
+        .filter(q!(id = question_id))
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?
+        .get(db)
+        .await
+        .map_err(|e| match e {
+            djangors_orm::OrmError::NotFound { .. } => DjangorsError::NotFound,
+            _ => DjangorsError::Internal(e.to_string()),
+        })?;
 
-    Ok(Response::html(
-        StatusCode::OK,
-        format!("<h1>{}</h1>", question.question_text),
-    ))
+    let choices = Choice::objects()
+        .filter(q!(question = question_id))
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?
+        .all(db)
+        .await
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+
+    let choices_html = choices
+        .iter()
+        .map(|c| {
+            format!(
+                r#"<li>
+                    <input type="radio" name="choice" id="choice_{}" value="{}">
+                    <label for="choice_{}">{}</label>
+                </li>"#,
+                c.id, c.id, c.id, c.choice_text
+            )
+        })
+        .collect::<String>();
+
+    let html = format!(
+        r#"<h1>{}</h1>
+        <form action="/{}/vote/" method="post">
+            <ul>{}</ul>
+            <input type="submit" value="Vote">
+        </form>"#,
+        question.question_text, question.id, choices_html
+    );
+
+    Ok(Response::html(StatusCode::OK, html))
 }
 
-/// REAL signature/plumbing including the `Form` extractor (djangors-core's
-/// `extract.rs`, Phase 1); ASPIRATIONAL body (ORM update + F() expression).
 pub async fn vote(req: Request, params: PathParams) -> Result<Response, DjangorsError> {
+    // login-gating requirement: extract AuthUser via the manual pattern
+    let _auth = Auth::<djangors_auth::User>::from_request(&req).await?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("database state absent".to_string()))?;
+
     let question_id: i64 = params.get_as("question_id")?;
 
-    // REAL: manual FromRequest call — Form<T>/Json<T>/Query<T> exist today
-    // but aren't yet auto-extracted as handler parameters (noted as a
-    // deliberate scope cut in the extract.rs module doc comment).
     #[derive(serde::Deserialize)]
     struct VoteForm {
         choice: i64,
     }
     let Form(vote) = Form::<VoteForm>::from_request(&req).await?;
 
-    // ASPIRATIONAL: get_or_404, F() race-safe increment (Django's F()
-    // objects, avoiding a read-modify-write race), set!() macro.
     let question = Question::objects()
-        .get_or_404(req.db(), question_id)
-        .await?;
+        .filter(q!(id = question_id))
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?
+        .get(db)
+        .await
+        .map_err(|e| match e {
+            djangors_orm::OrmError::NotFound { .. } => DjangorsError::NotFound,
+            _ => DjangorsError::Internal(e.to_string()),
+        })?;
+
     Choice::objects()
         .filter(q!(question = question.id, id = vote.choice))
-        .update(req.db(), set!(votes = F("votes") + 1))
-        .await?;
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?
+        .update(
+            db,
+            djangors_orm::set!(votes = djangors_orm::F("votes") + 1i64),
+        )
+        .await
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?;
 
-    // ASPIRATIONAL: reverse!() named-route reversal (Phase 1's router has
-    // path matching but not named-route reversal yet).
-    Ok(Response::redirect(&reverse!("polls:results", question_id)))
+    // Named-route reversal doesn't exist yet, so we use a hardcoded format string path as a stand-in per design 4.16
+    Ok(Response::redirect(&format!("/{}/results/", question_id)))
 }
 
 pub async fn results(req: Request, params: PathParams) -> Result<Response, DjangorsError> {
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("database state absent".to_string()))?;
     let question_id: i64 = params.get_as("question_id")?;
+
     let question = Question::objects()
-        .get_or_404(req.db(), question_id)
-        .await?;
+        .filter(q!(id = question_id))
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?
+        .get(db)
+        .await
+        .map_err(|e| match e {
+            djangors_orm::OrmError::NotFound { .. } => DjangorsError::NotFound,
+            _ => DjangorsError::Internal(e.to_string()),
+        })?;
+
+    let choices = Choice::objects()
+        .filter(q!(question = question_id))
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?
+        .all(db)
+        .await
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+
+    let choices_html = choices
+        .iter()
+        .map(|c| format!("<li>{} -- {} vote(s)</li>", c.choice_text, c.votes))
+        .collect::<String>();
+
     Ok(Response::html(
         StatusCode::OK,
-        format!("<h1>Results for {}</h1>", question.question_text),
+        format!(
+            "<h1>Results for {}</h1><ul>{}</ul><a href=\"/{}/\">Vote again?</a>",
+            question.question_text, choices_html, question.id
+        ),
     ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct LoginForm {
+    pub username: String,
+    pub password: String,
+}
+
+pub async fn login_view(req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("database state absent".to_string()))?;
+
+    let session = req.ext::<djangors_sessions::Session>().ok_or_else(|| {
+        DjangorsError::Internal("session extension absent (SessionLayer misconfigured)".to_string())
+    })?;
+
+    let Form(form) = Form::<LoginForm>::from_request(&req).await?;
+
+    let backend = djangors_auth::ModelBackend;
+    match backend
+        .authenticate(db, &form.username, &form.password)
+        .await
+    {
+        Ok(Some(user)) => {
+            djangors_auth::login(session, &user);
+            Ok(Response::redirect("/"))
+        }
+        Ok(None) => Ok(Response::redirect("/accounts/login/?error=1")),
+        Err(e) => Err(DjangorsError::Internal(e.to_string())),
+    }
+}
+
+pub async fn logout_view(req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
+    let session = req.ext::<djangors_sessions::Session>().ok_or_else(|| {
+        DjangorsError::Internal("session extension absent (SessionLayer misconfigured)".to_string())
+    })?;
+
+    djangors_auth::logout(session).await;
+    Ok(Response::redirect("/"))
 }
