@@ -1,6 +1,6 @@
 [package]
 name = "djangors-forms"
-description = "Forms and validation for the Djangors web framework (placeholder release)"
+description = "Forms and validation for the Djangors web framework"
 repository = "https://github.com/djangors/djangors"
 version.workspace = true
 edition.workspace = true
