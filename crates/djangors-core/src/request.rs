@@ -4,6 +4,8 @@ use bytes::Bytes;
 use hyper::http::{HeaderMap, HeaderValue, Method, Uri};
 use percent_encoding::percent_decode_str;
 
+use crate::state::AppState;
+
 /// An HTTP request with a fully buffered body.
 ///
 /// Constructed by the router from an incoming hyper request before being
@@ -15,6 +17,7 @@ pub struct Request {
     headers: HeaderMap,
     body: Bytes,
     query_params: HashMap<String, String>,
+    state: AppState,
 }
 
 impl Request {
@@ -30,7 +33,20 @@ impl Request {
             headers,
             body,
             query_params,
+            state: AppState::default(),
         }
+    }
+
+    /// Retrieve a piece of shared state attached to the app via
+    /// [`Router::with_state`], if any was registered for type `T`.
+    pub fn state<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.state.get::<T>()
+    }
+
+    /// Attach the app-wide state to this request.
+    pub fn with_state(mut self, state: AppState) -> Self {
+        self.state = state;
+        self
     }
 
     fn parse_query(query: &str) -> HashMap<String, String> {

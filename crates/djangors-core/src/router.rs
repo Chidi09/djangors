@@ -9,6 +9,7 @@ use crate::handler::Handler;
 use crate::path_params::PathParams;
 use crate::request::Request;
 use crate::response::Response;
+use crate::state::AppState;
 
 #[derive(Debug, Clone)]
 enum CaptureType {
@@ -48,6 +49,7 @@ struct Route {
 #[derive(Clone)]
 pub struct Router {
     routes: Arc<Vec<Route>>,
+    state: AppState,
 }
 
 impl Default for Router {
@@ -61,7 +63,21 @@ impl Router {
     pub fn new() -> Self {
         Router {
             routes: Arc::new(Vec::new()),
+            state: AppState::new(),
         }
+    }
+
+    /// Attach a piece of shared state (e.g. a database connection pool) that
+    /// handlers can retrieve via [`Request::state`]. Can be called
+    /// multiple times with different types to attach several independent
+    /// pieces of state.
+    ///
+    /// Note: Sub-routers mounted using [`mount`](Self::mount) will NOT merge
+    /// their own state with the parent. State should be configured on the top-level
+    /// outer router that is served.
+    pub fn with_state<T: Send + Sync + 'static>(mut self, value: T) -> Self {
+        self.state = self.state.insert(value);
+        self
     }
 
     /// Register a handler for the given path and HTTP method.
@@ -311,7 +327,8 @@ impl Router {
             }
         };
 
-        let req = Request::new(parts.method, parts.uri, parts.headers, body_bytes);
+        let req = Request::new(parts.method, parts.uri, parts.headers, body_bytes)
+            .with_state(self.state.clone());
 
         match self.handle(req).await {
             Ok(resp) => resp.into_hyper(),
@@ -338,7 +355,8 @@ impl Router {
                 let err = DjangorsError::Internal(format!("failed to read request body: {e}"));
                 let resp = if debug {
                     let dummy_req =
-                        Request::new(parts.method, parts.uri, parts.headers, Bytes::new());
+                        Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
+                            .with_state(self.state.clone());
                     crate::debug_page::render_debug_page(&err, &dummy_req)
                 } else {
                     crate::debug_page::render_production_error_page(err.status_code())
@@ -347,7 +365,8 @@ impl Router {
             }
         };
 
-        let req = Request::new(parts.method, parts.uri, parts.headers, body_bytes);
+        let req = Request::new(parts.method, parts.uri, parts.headers, body_bytes)
+            .with_state(self.state.clone());
         let req_clone = req.clone();
 
         match self.handle(req).await {
@@ -655,5 +674,26 @@ mod tests {
 
         assert_eq!(started_counter.load(Ordering::SeqCst), 1);
         assert_eq!(finished_counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[derive(Clone)]
+    struct DbConnectionPool(String);
+
+    async fn state_handler_fn(req: Request, _: PathParams) -> Result<Response, DjangorsError> {
+        let pool = req.state::<DbConnectionPool>().expect("pool should exist");
+        Ok(Response::text(StatusCode::OK, &pool.0))
+    }
+
+    #[tokio::test]
+    async fn test_router_app_state() {
+        let router = Router::new()
+            .with_state(DbConnectionPool("postgres://localhost".to_string()))
+            .get("/state-test", state_handler_fn);
+
+        let req = make_request(Method::GET, "/state-test").with_state(router.state.clone());
+        let resp = router.handle(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body_str = String::from_utf8(resp.body().to_vec()).unwrap();
+        assert_eq!(body_str, "postgres://localhost");
     }
 }
