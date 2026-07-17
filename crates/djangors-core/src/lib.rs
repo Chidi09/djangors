@@ -8,6 +8,7 @@ pub mod debug_page;
 pub mod error;
 pub mod extract;
 pub mod handler;
+pub mod logging;
 pub mod middleware;
 pub mod path_params;
 pub mod request;
