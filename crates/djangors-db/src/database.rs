@@ -1,0 +1,328 @@
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Executor, PgConnection, PgPool};
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
+
+use crate::config::DatabaseConfig;
+use crate::error::DbError;
+
+/// A pinned, boxed future that sends across threads, used for async callbacks
+/// that borrow the database connection reference.
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// A wrapper around a SQLx PostgreSQL connection pool.
+///
+/// This serves as the connection manager for the Djangors framework, allowing
+/// database operations to run on a connection pool configured via settings.
+#[derive(Debug, Clone)]
+pub struct Database {
+    pool: PgPool,
+}
+
+/// Supported isolation levels for database transactions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolationLevel {
+    /// Read Committed isolation level (PostgreSQL default).
+    ReadCommitted,
+    /// Repeatable Read isolation level.
+    RepeatableRead,
+    /// Serializable isolation level.
+    Serializable,
+}
+
+/// Helper function to map [`IsolationLevel`] to the corresponding SQL command.
+pub fn isolation_level_sql(level: IsolationLevel) -> &'static str {
+    match level {
+        IsolationLevel::ReadCommitted => "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+        IsolationLevel::RepeatableRead => "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",
+        IsolationLevel::Serializable => "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE",
+    }
+}
+
+impl Database {
+    /// Connect to the database using the given configuration, building a connection pool.
+    pub async fn connect(config: &DatabaseConfig) -> Result<Self, DbError> {
+        let mut options = PgPoolOptions::new()
+            .max_connections(config.max_connections)
+            .min_connections(config.min_connections)
+            .acquire_timeout(Duration::from_secs(config.connect_timeout_secs));
+
+        if let Some(idle) = config.idle_timeout_secs {
+            options = options.idle_timeout(Duration::from_secs(idle));
+        }
+
+        let pool = options.connect(&config.url).await.map_err(|e| {
+            if matches!(e, sqlx::Error::PoolTimedOut) {
+                DbError::PoolExhausted
+            } else {
+                DbError::ConnectionFailed(e.to_string())
+            }
+        })?;
+
+        Ok(Self { pool })
+    }
+
+    /// Access the underlying SQLx connection pool directly.
+    ///
+    /// This is useful for running raw queries or passing the pool to higher-level
+    /// framework components like the Djangors ORM.
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    /// Run `f` inside a database transaction.
+    ///
+    /// If `f` returns `Ok`, the transaction is committed. If it returns an error `Err`,
+    /// the transaction is rolled back.
+    ///
+    /// This is the Djangors framework equivalent of Django's `transaction.atomic()`.
+    ///
+    /// # Design Note on Signatures
+    /// This function uses a `BoxFuture` return type for the closure `f` instead of a generic
+    /// `Fut` parameter to avoid Rust lifetime issues where a generic future type cannot easily
+    /// borrow from arguments passed to a higher-rank trait bound closure (`for<'c> FnOnce`).
+    pub async fn transaction<F, T, E>(&self, f: F) -> Result<T, DbError>
+    where
+        F: for<'c> FnOnce(&'c mut PgConnection) -> BoxFuture<'c, Result<T, E>> + Send,
+        T: Send,
+        E: Into<DbError> + Send,
+    {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+        let res = f(&mut tx).await;
+        match res {
+            Ok(val) => {
+                tx.commit()
+                    .await
+                    .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+                Ok(val)
+            }
+            Err(err) => {
+                let _ = tx.rollback().await;
+                Err(err.into())
+            }
+        }
+    }
+
+    /// Run `f` inside a database transaction with an explicit transaction isolation level.
+    ///
+    /// This behaves exactly like [`Database::transaction`], but executes a statement to set the
+    /// requested isolation level immediately after starting the transaction.
+    ///
+    /// This is the Djangors framework equivalent of Django's `transaction.atomic(isolation_level=...)`.
+    pub async fn transaction_with_isolation<F, T, E>(
+        &self,
+        level: IsolationLevel,
+        f: F,
+    ) -> Result<T, DbError>
+    where
+        F: for<'c> FnOnce(&'c mut PgConnection) -> BoxFuture<'c, Result<T, E>> + Send,
+        T: Send,
+        E: Into<DbError> + Send,
+    {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+        let sql = isolation_level_sql(level);
+        tx.execute(sql)
+            .await
+            .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+
+        let res = f(&mut tx).await;
+        match res {
+            Ok(val) => {
+                tx.commit()
+                    .await
+                    .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+                Ok(val)
+            }
+            Err(err) => {
+                let _ = tx.rollback().await;
+                Err(err.into())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_DB_URL: &str = "postgres://postgres:postgres@localhost/djangors_test";
+
+    #[test]
+    fn test_config_builder() {
+        let config = DatabaseConfig::new(TEST_DB_URL)
+            .max_connections(5)
+            .min_connections(2)
+            .connect_timeout_secs(15)
+            .idle_timeout_secs(Some(30));
+
+        assert_eq!(config.url, TEST_DB_URL);
+        assert_eq!(config.max_connections, 5);
+        assert_eq!(config.min_connections, 2);
+        assert_eq!(config.connect_timeout_secs, 15);
+        assert_eq!(config.idle_timeout_secs, Some(30));
+    }
+
+    #[test]
+    fn test_isolation_level_mapping() {
+        assert_eq!(
+            isolation_level_sql(IsolationLevel::ReadCommitted),
+            "SET TRANSACTION ISOLATION LEVEL READ COMMITTED"
+        );
+        assert_eq!(
+            isolation_level_sql(IsolationLevel::RepeatableRead),
+            "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
+        );
+        assert_eq!(
+            isolation_level_sql(IsolationLevel::Serializable),
+            "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_database_connect_and_query() {
+        let config = DatabaseConfig::new(TEST_DB_URL);
+        let db = Database::connect(&config).await.expect("Failed to connect");
+
+        let row: (i32,) = sqlx::query_as("SELECT 1")
+            .fetch_one(db.pool())
+            .await
+            .expect("Failed query");
+        assert_eq!(row.0, 1);
+    }
+
+    #[tokio::test]
+    async fn test_transaction_commit() {
+        let config = DatabaseConfig::new(TEST_DB_URL);
+        let db = Database::connect(&config).await.expect("Failed to connect");
+
+        let val = db
+            .transaction(|conn| {
+                Box::pin(async move {
+                    sqlx::query("CREATE TEMPORARY TABLE test_tx_commit (id INT)")
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(DbError::QueryFailed)?;
+
+                    sqlx::query("INSERT INTO test_tx_commit VALUES (42)")
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(DbError::QueryFailed)?;
+
+                    let row: (i32,) = sqlx::query_as("SELECT id FROM test_tx_commit")
+                        .fetch_one(&mut *conn)
+                        .await
+                        .map_err(DbError::QueryFailed)?;
+
+                    Ok::<i32, DbError>(row.0)
+                })
+            })
+            .await
+            .expect("Transaction failed");
+
+        assert_eq!(val, 42);
+    }
+
+    /// Regression note: this test previously used a `TEMPORARY TABLE`, created on a
+    /// separately-acquired connection and then written to (and checked) from a
+    /// second, distinct pooled connection inside `db.transaction(...)`. Postgres
+    /// temp tables are strictly session-scoped, so the transaction's `INSERT` was
+    /// actually failing with "relation does not exist" (SQLSTATE 42P01) — not the
+    /// intentional `Err` this test meant to trigger — meaning the test passed
+    /// regardless of whether `Database::transaction` ever called `.rollback()` at
+    /// all. Confirmed empirically by instrumenting the error and inspecting it
+    /// directly. Fixed by using a real (non-temporary) table, which — unlike a
+    /// temp table — is visible from every connection in the pool, so the INSERT
+    /// genuinely lands inside the transaction and the subsequent rollback is what
+    /// the final count actually proves.
+    #[tokio::test]
+    async fn test_transaction_rollback() {
+        let config = DatabaseConfig::new(TEST_DB_URL);
+        let db = Database::connect(&config).await.expect("Failed to connect");
+
+        sqlx::query("DROP TABLE IF EXISTS test_tx_rollback")
+            .execute(db.pool())
+            .await
+            .expect("Failed to drop pre-existing table");
+        sqlx::query("CREATE TABLE test_tx_rollback (id INT)")
+            .execute(db.pool())
+            .await
+            .expect("Failed to create table");
+
+        let tx_res = db
+            .transaction(|conn| {
+                Box::pin(async move {
+                    sqlx::query("INSERT INTO test_tx_rollback VALUES (100)")
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(DbError::QueryFailed)?;
+
+                    Err::<(), DbError>(DbError::TransactionFailed(
+                        "Intentional rollback".to_string(),
+                    ))
+                })
+            })
+            .await;
+
+        assert!(tx_res.is_err());
+        assert!(
+            matches!(&tx_res, Err(DbError::TransactionFailed(msg)) if msg == "Intentional rollback"),
+            "expected the intentional error to propagate unchanged, got: {tx_res:?}"
+        );
+
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM test_tx_rollback")
+            .fetch_one(db.pool())
+            .await
+            .expect("Failed to query table");
+
+        assert_eq!(
+            row.0, 0,
+            "row must not be visible — the transaction should have rolled back"
+        );
+
+        sqlx::query("DROP TABLE test_tx_rollback")
+            .execute(db.pool())
+            .await
+            .expect("Failed to clean up table");
+    }
+
+    #[tokio::test]
+    async fn test_transaction_isolation_levels() {
+        let config = DatabaseConfig::new(TEST_DB_URL);
+        let db = Database::connect(&config).await.expect("Failed to connect");
+
+        for level in &[
+            IsolationLevel::ReadCommitted,
+            IsolationLevel::RepeatableRead,
+            IsolationLevel::Serializable,
+        ] {
+            let actual_level = db
+                .transaction_with_isolation(*level, |conn| {
+                    Box::pin(async move {
+                        let row: (String,) = sqlx::query_as("SHOW transaction_isolation")
+                            .fetch_one(&mut *conn)
+                            .await
+                            .map_err(DbError::QueryFailed)?;
+                        Ok::<String, DbError>(row.0)
+                    })
+                })
+                .await
+                .expect("Transaction with isolation failed");
+
+            let expected = match level {
+                IsolationLevel::ReadCommitted => "read committed",
+                IsolationLevel::RepeatableRead => "repeatable read",
+                IsolationLevel::Serializable => "serializable",
+            };
+            assert_eq!(actual_level.to_lowercase(), expected);
+        }
+    }
+}

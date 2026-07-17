@@ -1,4 +1,12 @@
-//! Database backends for the Djangors web framework (placeholder release)
+//! Database backends and connection pool management for the Djangors web framework.
 //!
-//! This is a name-reserving placeholder. Djangors is under active development —
-//! a Django-inspired, batteries-included web framework for Rust.
+//! This crate provides connection pooling, config-driven database setup,
+//! and transaction support with explicit isolation levels, built on top of SQLx.
+
+pub mod config;
+pub mod database;
+pub mod error;
+
+pub use config::DatabaseConfig;
+pub use database::{isolation_level_sql, BoxFuture, Database, IsolationLevel};
+pub use error::DbError;
