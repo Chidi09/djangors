@@ -333,15 +333,15 @@ fn test_login_session_mechanics() {
     assert_eq!(session.get::<i64>(SESSION_USER_ID_KEY), Some(42));
 }
 
-#[test]
-fn test_logout_session_mechanics() {
+#[tokio::test]
+async fn test_logout_session_mechanics() {
     let session = djangors_sessions::Session::new_empty();
     session.set(SESSION_USER_ID_KEY, 42i64);
     session.set("other_key", "value".to_string());
 
     assert_eq!(session.get::<i64>(SESSION_USER_ID_KEY), Some(42));
 
-    logout(&session);
+    logout(&session).await;
 
     assert_eq!(session.get::<i64>(SESSION_USER_ID_KEY), None);
     assert!(session.is_empty());
@@ -509,4 +509,254 @@ async fn test_auth_extractor() {
         .execute(db.pool())
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_audit_signals_succeeded_and_failed() {
+    let _guard = DB_MUTEX.lock().unwrap();
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_orm::djangors_db::Database::connect(&config)
+        .await
+        .unwrap();
+
+    djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_user")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_user (
+            id BIGSERIAL PRIMARY KEY,
+            username VARCHAR(150) NOT NULL,
+            email VARCHAR(254) NOT NULL,
+            password TEXT NOT NULL,
+            is_active BOOLEAN NOT NULL,
+            is_staff BOOLEAN NOT NULL,
+            is_superuser BOOLEAN NOT NULL,
+            date_joined TIMESTAMPTZ NOT NULL,
+            last_login TIMESTAMPTZ
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let plaintext = "correct_password";
+    let hash = hash_password(plaintext).unwrap();
+    let now = chrono::Utc::now();
+
+    // 1. Create an active user
+    let active_user_raw = User {
+        id: 0,
+        username: "sig_active_user".to_string(),
+        email: "active@example.com".to_string(),
+        password: hash.clone(),
+        is_active: true,
+        is_staff: false,
+        is_superuser: false,
+        date_joined: now,
+        last_login: Some(now),
+    };
+    let _active_user = active_user_raw.save(&db).await.unwrap();
+
+    // 2. Create an inactive user
+    let inactive_user_raw = User {
+        id: 0,
+        username: "sig_inactive_user".to_string(),
+        email: "inactive@example.com".to_string(),
+        password: hash.clone(),
+        is_active: false,
+        is_staff: false,
+        is_superuser: false,
+        date_joined: now,
+        last_login: Some(now),
+    };
+    let _ = inactive_user_raw.save(&db).await.unwrap();
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let succeeded_counter = Arc::new(AtomicUsize::new(0));
+    let failed_counter = Arc::new(AtomicUsize::new(0));
+
+    let succeeded_clone = succeeded_counter.clone();
+    LOGIN_SUCCEEDED.connect(move |payload| {
+        let succeeded = succeeded_clone.clone();
+        async move {
+            if payload.username == "sig_active_user" {
+                succeeded.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
+
+    let failed_clone = failed_counter.clone();
+    LOGIN_FAILED.connect(move |payload| {
+        let failed = failed_clone.clone();
+        async move {
+            if payload.username == "sig_active_user"
+                || payload.username == "sig_inactive_user"
+                || payload.username == "sig_nonexistent"
+            {
+                failed.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
+
+    let backend = ModelBackend;
+
+    // Test correct credentials -> LOGIN_SUCCEEDED fires
+    let auth_res = backend
+        .authenticate(&db, "sig_active_user", plaintext)
+        .await
+        .unwrap();
+    assert!(auth_res.is_some());
+    assert_eq!(succeeded_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(failed_counter.load(Ordering::SeqCst), 0);
+
+    // Test wrong password -> LOGIN_FAILED fires
+    let auth_res = backend
+        .authenticate(&db, "sig_active_user", "wrong_password")
+        .await
+        .unwrap();
+    assert!(auth_res.is_none());
+    assert_eq!(succeeded_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(failed_counter.load(Ordering::SeqCst), 1);
+
+    // Test nonexistent username -> LOGIN_FAILED fires
+    let auth_res = backend
+        .authenticate(&db, "sig_nonexistent", plaintext)
+        .await
+        .unwrap();
+    assert!(auth_res.is_none());
+    assert_eq!(succeeded_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(failed_counter.load(Ordering::SeqCst), 2);
+
+    // Test inactive user with correct password -> LOGIN_FAILED fires
+    let auth_res = backend
+        .authenticate(&db, "sig_inactive_user", plaintext)
+        .await
+        .unwrap();
+    assert!(auth_res.is_none());
+    assert_eq!(succeeded_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(failed_counter.load(Ordering::SeqCst), 3);
+
+    // Cleanup
+    djangors_orm::sqlx::query("DROP TABLE auth_user")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn test_audit_signal_logged_out() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let logged_out_counter = Arc::new(AtomicUsize::new(0));
+    let logged_out_clone = logged_out_counter.clone();
+
+    LOGGED_OUT.connect(move |payload| {
+        let logged_out = logged_out_clone.clone();
+        async move {
+            if payload.user_id == Some(99) {
+                logged_out.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
+
+    let session = djangors_sessions::Session::new_empty();
+    session.set(SESSION_USER_ID_KEY, 99i64);
+
+    logout(&session).await;
+
+    assert_eq!(logged_out_counter.load(Ordering::SeqCst), 1);
+}
+
+struct TestDoubleBackend {
+    call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl AuthBackend for TestDoubleBackend {
+    type User = User;
+
+    async fn authenticate(
+        &self,
+        _db: &djangors_db::Database,
+        username: &str,
+        _password: &str,
+    ) -> Result<Option<Self::User>, AuthError> {
+        self.call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        LOGIN_FAILED
+            .send(LoginFailed {
+                username: username.to_string(),
+            })
+            .await;
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn test_rate_limited_backend_limits_attempts() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    let call_count = Arc::new(AtomicUsize::new(0));
+    let inner = TestDoubleBackend {
+        call_count: call_count.clone(),
+    };
+    let backend = RateLimitedBackend::new(inner, 3, Duration::from_millis(50));
+
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_orm::djangors_db::Database::connect(&config)
+        .await
+        .unwrap();
+
+    let failed_counter = Arc::new(AtomicUsize::new(0));
+    let failed_clone = failed_counter.clone();
+    LOGIN_FAILED.connect(move |payload| {
+        let failed = failed_clone.clone();
+        async move {
+            if payload.username == "throttled_user" {
+                failed.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    });
+
+    // 1st attempt: success (reaches inner)
+    let res = backend.authenticate(&db, "throttled_user", "pass").await;
+    assert!(res.unwrap().is_none());
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+    // 2nd attempt: success (reaches inner)
+    let res = backend.authenticate(&db, "throttled_user", "pass").await;
+    assert!(res.unwrap().is_none());
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+
+    // 3rd attempt: success (reaches inner)
+    let res = backend.authenticate(&db, "throttled_user", "pass").await;
+    assert!(res.unwrap().is_none());
+    assert_eq!(call_count.load(Ordering::SeqCst), 3);
+
+    // 4th attempt: rate limited (fails without reaching inner)
+    let res = backend.authenticate(&db, "throttled_user", "pass").await;
+    assert!(matches!(res.err().unwrap(), AuthError::RateLimited));
+    assert_eq!(call_count.load(Ordering::SeqCst), 3);
+
+    // Verify LOGIN_FAILED fired for the 4th attempt too (rejections also fire it)
+    assert_eq!(failed_counter.load(Ordering::SeqCst), 4);
+
+    // Different user is unaffected
+    let res_diff = backend.authenticate(&db, "other_user", "pass").await;
+    assert!(res_diff.unwrap().is_none());
+    assert_eq!(call_count.load(Ordering::SeqCst), 4);
+
+    // After window elapses, we can attempt again
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    let res = backend.authenticate(&db, "throttled_user", "pass").await;
+    assert!(res.unwrap().is_none());
+    assert_eq!(call_count.load(Ordering::SeqCst), 5);
 }

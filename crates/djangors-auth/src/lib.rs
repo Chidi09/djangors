@@ -5,8 +5,12 @@
 
 use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use djangors_core::signals::Signal;
 use djangors_macros::Model;
 use djangors_orm::Model as _;
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 /// Error type for authentication and user operations.
@@ -16,9 +20,35 @@ pub enum AuthError {
     Hashing(String),
     #[error("database error: {0}")]
     Database(#[from] djangors_orm::OrmError),
+    #[error("too many login attempts, try again later")]
+    RateLimited,
 }
 
 const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$dGVzdHBhc3N3b3Jk";
+
+#[derive(Debug, Clone)]
+pub struct LoginSucceeded {
+    pub user_id: i64,
+    pub username: String,
+}
+
+/// Payload for the [`LOGIN_FAILED`] signal.
+///
+/// NOTE: The `username` string is attacker-controlled input. It must never be
+/// used unescaped in any context where that could pose a security risk (e.g. html).
+#[derive(Debug, Clone)]
+pub struct LoginFailed {
+    pub username: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoggedOut {
+    pub user_id: Option<i64>,
+}
+
+pub static LOGIN_SUCCEEDED: LazyLock<Signal<LoginSucceeded>> = LazyLock::new(Signal::new);
+pub static LOGIN_FAILED: LazyLock<Signal<LoginFailed>> = LazyLock::new(Signal::new);
+pub static LOGGED_OUT: LazyLock<Signal<LoggedOut>> = LazyLock::new(Signal::new);
 
 #[async_trait::async_trait]
 pub trait AuthBackend {
@@ -64,11 +94,86 @@ impl AuthBackend for ModelBackend {
 
         if let Some(user) = user_opt {
             if verified && user.is_active() {
+                LOGIN_SUCCEEDED
+                    .send(LoginSucceeded {
+                        user_id: user.id(),
+                        username: username.to_string(),
+                    })
+                    .await;
                 return Ok(Some(user));
             }
         }
 
+        LOGIN_FAILED
+            .send(LoginFailed {
+                username: username.to_string(),
+            })
+            .await;
         Ok(None)
+    }
+}
+
+/// A single-process, in-memory sliding-window login rate limiter around an
+/// inner [`AuthBackend`]. State lives only in this process's memory, so it
+/// does not coordinate across multiple app instances/processes — a
+/// distributed (e.g. cache-backed) limiter is future work once a shared
+/// cache crate exists, not this v1.
+pub struct RateLimitedBackend<B: AuthBackend> {
+    inner: B,
+    limiter: Mutex<HashMap<String, Vec<Instant>>>,
+    max_attempts: u32,
+    window: Duration,
+}
+
+impl<B: AuthBackend> RateLimitedBackend<B> {
+    pub fn new(inner: B, max_attempts: u32, window: Duration) -> Self {
+        Self {
+            inner,
+            limiter: Mutex::new(HashMap::new()),
+            max_attempts,
+            window,
+        }
+    }
+
+    pub fn default_login_throttle(inner: B) -> Self {
+        Self::new(inner, 5, Duration::from_secs(15 * 60))
+    }
+}
+
+#[async_trait::async_trait]
+impl<B: AuthBackend + Send + Sync> AuthBackend for RateLimitedBackend<B> {
+    type User = B::User;
+
+    async fn authenticate(
+        &self,
+        db: &djangors_db::Database,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<Self::User>, AuthError> {
+        let now = Instant::now();
+        let limit_exceeded = {
+            let mut limiter = self.limiter.lock().unwrap();
+            let attempts = limiter.entry(username.to_string()).or_default();
+            attempts.retain(|&t| now.duration_since(t) < self.window);
+
+            if attempts.len() as u32 >= self.max_attempts {
+                true
+            } else {
+                attempts.push(now);
+                false
+            }
+        };
+
+        if limit_exceeded {
+            LOGIN_FAILED
+                .send(LoginFailed {
+                    username: username.to_string(),
+                })
+                .await;
+            return Err(AuthError::RateLimited);
+        }
+
+        self.inner.authenticate(db, username, password).await
     }
 }
 
@@ -88,8 +193,10 @@ pub fn login<U: AuthUser>(session: &djangors_sessions::Session, user: &U) {
 /// crates/djangors-sessions/src/lib.rs's `clear()`), so this alone already
 /// gives logout a fresh, unrelated session identity - no separate
 /// `cycle_key()` call needed here.
-pub fn logout(session: &djangors_sessions::Session) {
+pub async fn logout(session: &djangors_sessions::Session) {
+    let user_id = session.get::<i64>(SESSION_USER_ID_KEY);
     session.clear();
+    LOGGED_OUT.send(LoggedOut { user_id }).await;
 }
 
 /// Extracts the currently-authenticated user of type `U`.
