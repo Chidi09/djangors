@@ -118,6 +118,7 @@ pub struct SignedCookieStore {
     key: Vec<u8>,        // from settings.SECRET_KEY, NOT hardcoded, NOT optional
     cookie_name: String, // default "djangors_sessionid"
     max_age: Duration,   // default matches Django's 2-week default
+    secure: bool,
 }
 
 impl SignedCookieStore {
@@ -126,6 +127,7 @@ impl SignedCookieStore {
             key: secret_key.to_vec(),
             cookie_name: "djangors_sessionid".to_string(),
             max_age: Duration::from_secs(14 * 24 * 60 * 60), // 2 weeks
+            secure: false,
         }
     }
 
@@ -136,6 +138,11 @@ impl SignedCookieStore {
 
     pub fn with_max_age(mut self, max_age: Duration) -> Self {
         self.max_age = max_age;
+        self
+    }
+
+    pub fn with_secure(mut self, secure: bool) -> Self {
+        self.secure = secure;
         self
     }
 
@@ -320,10 +327,13 @@ where
             if should_save {
                 let cookie_value = store.encode(&session);
                 let max_age_secs = store.max_age.as_secs();
-                let set_cookie_val = format!(
+                let mut set_cookie_val = format!(
                     "{}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}",
                     store.cookie_name, cookie_value, max_age_secs
                 );
+                if store.secure {
+                    set_cookie_val.push_str("; Secure");
+                }
                 if let Ok(hdr_val) = HeaderValue::from_str(&set_cookie_val) {
                     resp.headers_mut().append(SET_COOKIE, hdr_val);
                 }
@@ -582,5 +592,58 @@ mod tests {
         use http_body_util::BodyExt;
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body[..], b"0");
+    }
+
+    #[tokio::test]
+    async fn test_session_cookie_secure() {
+        use tower::service_fn;
+        use tower::ServiceBuilder;
+
+        let router = Router::new().post("/set", set_handler);
+        let secret = b"super-secret-key-for-testing-purposes-only";
+
+        // 1. Default (secure not called or false)
+        let store_default = SignedCookieStore::new(secret);
+        let layer_default = SessionLayer::new(store_default);
+        let svc_fn1 = service_fn({
+            let router = router.clone();
+            move |req| {
+                let router = router.clone();
+                async move { Ok::<_, std::convert::Infallible>(router.dispatch(req).await) }
+            }
+        });
+        let mut svc_default = ServiceBuilder::new().layer(layer_default).service(svc_fn1);
+
+        let req1 = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri("/set")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let resp1 = svc_default.ready().await.unwrap().call(req1).await.unwrap();
+        let set_cookie_default = resp1.headers().get(SET_COOKIE).unwrap().to_str().unwrap();
+        assert!(!set_cookie_default.contains("; Secure"));
+
+        // 2. with_secure(true)
+        let store_secure = SignedCookieStore::new(secret).with_secure(true);
+        let layer_secure = SessionLayer::new(store_secure);
+        let svc_fn2 = service_fn({
+            let router = router.clone();
+            move |req| {
+                let router = router.clone();
+                async move { Ok::<_, std::convert::Infallible>(router.dispatch(req).await) }
+            }
+        });
+        let mut svc_secure = ServiceBuilder::new().layer(layer_secure).service(svc_fn2);
+
+        let req2 = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri("/set")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+
+        let resp2 = svc_secure.ready().await.unwrap().call(req2).await.unwrap();
+        let set_cookie_secure = resp2.headers().get(SET_COOKIE).unwrap().to_str().unwrap();
+        assert!(set_cookie_secure.contains("; Secure"));
     }
 }

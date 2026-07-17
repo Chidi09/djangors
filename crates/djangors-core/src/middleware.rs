@@ -62,6 +62,55 @@ pub fn security_headers_layer() -> SecurityHeadersLayer {
     SecurityHeadersLayer
 }
 
+/// Strict-Transport-Security (HSTS) header middleware.
+#[derive(Clone)]
+pub struct HstsLayer {
+    max_age_seconds: u64,
+    include_subdomains: bool,
+}
+
+impl HstsLayer {
+    /// Creates a new `HstsLayer` with the given `max_age_seconds`.
+    /// `include_subdomains` is disabled by default.
+    pub fn new(max_age_seconds: u64) -> Self {
+        Self {
+            max_age_seconds,
+            include_subdomains: false,
+        }
+    }
+
+    /// Configures whether to include the `includeSubDomains` directive in the HSTS header.
+    pub fn with_include_subdomains(mut self, yes: bool) -> Self {
+        self.include_subdomains = yes;
+        self
+    }
+}
+
+impl<S> Layer<S> for HstsLayer {
+    type Service = tower_http::set_header::SetResponseHeader<S, hyper::http::HeaderValue>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        let value_str = if self.include_subdomains {
+            format!("max-age={}; includeSubDomains", self.max_age_seconds)
+        } else {
+            format!("max-age={}", self.max_age_seconds)
+        };
+        let header_val = hyper::http::HeaderValue::from_str(&value_str)
+            .unwrap_or_else(|_| hyper::http::HeaderValue::from_static("max-age=0"));
+
+        tower_http::set_header::SetResponseHeaderLayer::overriding(
+            hyper::http::HeaderName::from_static("strict-transport-security"),
+            header_val,
+        )
+        .layer(inner)
+    }
+}
+
+/// Returns a [`HstsLayer`] with the given `max_age_seconds`.
+pub fn hsts_layer(max_age_seconds: u64) -> HstsLayer {
+    HstsLayer::new(max_age_seconds)
+}
+
 /// Normalizes request paths by trimming trailing slashes.
 /// Roughly equivalent to Django's `CommonMiddleware` trailing-slash behavior.
 pub fn normalize_path_layer() -> tower_http::normalize_path::NormalizePathLayer {
@@ -127,6 +176,7 @@ pub struct CsrfToken(pub String);
 pub struct CsrfLayer {
     cookie_name: String,
     header_name: String,
+    secure: bool,
 }
 
 impl CsrfLayer {
@@ -137,6 +187,7 @@ impl CsrfLayer {
         Self {
             cookie_name: "csrftoken".to_string(),
             header_name: "x-csrftoken".to_string(),
+            secure: false,
         }
     }
 
@@ -149,6 +200,12 @@ impl CsrfLayer {
     /// Sets a custom header name.
     pub fn with_header_name(mut self, name: String) -> Self {
         self.header_name = name;
+        self
+    }
+
+    /// Sets the Secure attribute on the cookie.
+    pub fn with_secure(mut self, secure: bool) -> Self {
+        self.secure = secure;
         self
     }
 }
@@ -172,6 +229,7 @@ impl<S> Layer<S> for CsrfLayer {
             inner,
             cookie_name: self.cookie_name.clone(),
             header_name: self.header_name.clone(),
+            secure: self.secure,
         }
     }
 }
@@ -181,6 +239,7 @@ pub struct CsrfService<S> {
     inner: S,
     cookie_name: String,
     header_name: String,
+    secure: bool,
 }
 
 fn extract_cookie(headers: &hyper::HeaderMap, cookie_name: &str) -> Option<String> {
@@ -246,6 +305,7 @@ where
         let mut inner = self.inner.clone();
         let cookie_name = self.cookie_name.clone();
         let header_name = self.header_name.clone();
+        let secure = self.secure;
 
         let cookie_val = extract_cookie(req.headers(), &cookie_name);
         let mut new_token_generated = false;
@@ -291,16 +351,122 @@ where
                 // the token must be readable by client-side JS to populate
                 // the X-CSRFToken header on AJAX requests, matching Django's
                 // own default behavior.
-                let set_cookie_val = format!(
+                let mut set_cookie_val = format!(
                     "{}={}; Path=/; SameSite=Lax; Max-Age=31536000",
                     cookie_name, token_value
                 );
+                if secure {
+                    set_cookie_val.push_str("; Secure");
+                }
                 if let Ok(hdr_val) = hyper::header::HeaderValue::from_str(&set_cookie_val) {
                     resp.headers_mut()
                         .append(hyper::header::SET_COOKIE, hdr_val);
                 }
             }
 
+            Ok(resp)
+        })
+    }
+}
+
+/// Host header validation middleware.
+/// Checks the incoming request's `Host` header (or URI authority if absent) against an allowed list of hosts.
+#[derive(Clone)]
+pub struct HostValidationLayer {
+    allowed_hosts: Vec<String>,
+}
+
+impl HostValidationLayer {
+    /// Creates a new `HostValidationLayer` with the given allowed hosts.
+    /// Hosts are lowercased at construction time.
+    pub fn new(allowed_hosts: Vec<String>) -> Self {
+        let allowed_hosts = allowed_hosts
+            .into_iter()
+            .map(|h| h.to_lowercase())
+            .collect();
+        Self { allowed_hosts }
+    }
+}
+
+impl<S> Layer<S> for HostValidationLayer {
+    type Service = HostValidationService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        HostValidationService {
+            inner,
+            allowed_hosts: self.allowed_hosts.clone(),
+        }
+    }
+}
+
+/// Service for `HostValidationLayer`.
+#[derive(Clone)]
+pub struct HostValidationService<S> {
+    inner: S,
+    allowed_hosts: Vec<String>,
+}
+
+impl<S, B> Service<hyper::Request<B>> for HostValidationService<S>
+where
+    S: Service<hyper::Request<B>, Response = hyper::Response<Full<Bytes>>, Error = Infallible>
+        + Clone
+        + Send
+        + 'static,
+    S::Future: Send + 'static,
+    B: Send + 'static,
+{
+    type Response = hyper::Response<Full<Bytes>>;
+    type Error = Infallible;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: hyper::Request<B>) -> Self::Future {
+        let mut inner = self.inner.clone();
+        let allowed_hosts = self.allowed_hosts.clone();
+
+        let host_str = match req.headers().get(hyper::header::HOST) {
+            Some(hdr) => hdr.to_str().ok(),
+            None => req.uri().authority().map(|a| a.as_str()),
+        };
+
+        // If allowed_hosts is empty, unrestricted (always valid)
+        let is_valid = if allowed_hosts.is_empty() {
+            true
+        } else if let Some(h) = host_str {
+            // Strip trailing port if present
+            let host_without_port = if h.starts_with('[') {
+                if let Some(close_bracket_idx) = h.find(']') {
+                    &h[..=close_bracket_idx]
+                } else {
+                    h
+                }
+            } else {
+                h.split(':').next().unwrap_or(h)
+            };
+            let host_lower = host_without_port.to_lowercase();
+            allowed_hosts.iter().any(|allowed| allowed == &host_lower)
+        } else {
+            false
+        };
+
+        if !is_valid {
+            let response = hyper::Response::builder()
+                .status(400)
+                .body(Full::new(Bytes::from("400 Bad Request: Disallowed Host")))
+                .unwrap();
+            return Box::pin(async move { Ok(response) });
+        }
+
+        Box::pin(async move {
+            let resp = inner.call(req).await?;
             Ok(resp)
         })
     }
@@ -524,5 +690,161 @@ mod tests {
 
         let resp3 = svc.ready().await.unwrap().call(req3).await.unwrap();
         assert_eq!(resp3.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn test_host_validation_success() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+
+        let inner_svc = service_fn(move |_req| {
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+            let resp = hyper::Response::builder()
+                .status(200)
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap();
+            async move { Ok::<_, Infallible>(resp) }
+        });
+
+        let mut svc =
+            HostValidationLayer::new(vec!["example.com".to_string(), "localhost".to_string()])
+                .layer(inner_svc);
+
+        // Case 1: allowed host
+        let req1 = hyper::Request::builder()
+            .header("Host", "example.com")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp1 = svc.ready().await.unwrap().call(req1).await.unwrap();
+        assert_eq!(resp1.status(), 200);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+
+        // Case 2: allowed host with port
+        let req2 = hyper::Request::builder()
+            .header("Host", "localhost:8080")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp2 = svc.ready().await.unwrap().call(req2).await.unwrap();
+        assert_eq!(resp2.status(), 200);
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_host_validation_failure() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+
+        let inner_svc = service_fn(move |_req| {
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+            let resp = hyper::Response::builder()
+                .status(200)
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap();
+            async move { Ok::<_, Infallible>(resp) }
+        });
+
+        let mut svc = HostValidationLayer::new(vec!["example.com".to_string()]).layer(inner_svc);
+
+        let req = hyper::Request::builder()
+            .header("Host", "attacker.com")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp = svc.ready().await.unwrap().call(req).await.unwrap();
+        assert_eq!(resp.status(), 400);
+        assert_eq!(counter.load(Ordering::SeqCst), 0); // never called
+    }
+
+    #[tokio::test]
+    async fn test_host_validation_empty_unrestricted() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+
+        let inner_svc = service_fn(move |_req| {
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+            let resp = hyper::Response::builder()
+                .status(200)
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap();
+            async move { Ok::<_, Infallible>(resp) }
+        });
+
+        let mut svc = HostValidationLayer::new(vec![]).layer(inner_svc);
+
+        let req = hyper::Request::builder()
+            .header("Host", "any-random-host.com")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp = svc.ready().await.unwrap().call(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_hsts_layer() {
+        let inner_svc = service_fn(move |_req| {
+            let resp = hyper::Response::builder()
+                .status(200)
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap();
+            async move { Ok::<_, Infallible>(resp) }
+        });
+
+        // 1. Without subdomains
+        let mut svc_no_sub = HstsLayer::new(31536000).layer(inner_svc);
+        let req1 = hyper::Request::builder()
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp1 = svc_no_sub.ready().await.unwrap().call(req1).await.unwrap();
+        let hsts_hdr1 = resp1.headers().get("strict-transport-security").unwrap();
+        assert_eq!(hsts_hdr1.to_str().unwrap(), "max-age=31536000");
+
+        // 2. With subdomains
+        let mut svc_sub = HstsLayer::new(31536000)
+            .with_include_subdomains(true)
+            .layer(inner_svc);
+        let req2 = hyper::Request::builder()
+            .method("POST")
+            .uri("/some-path")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp2 = svc_sub.ready().await.unwrap().call(req2).await.unwrap();
+        let hsts_hdr2 = resp2.headers().get("strict-transport-security").unwrap();
+        assert_eq!(
+            hsts_hdr2.to_str().unwrap(),
+            "max-age=31536000; includeSubDomains"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_csrf_secure_flag() {
+        let inner_svc = service_fn(move |_req| {
+            let resp = hyper::Response::builder()
+                .status(200)
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap();
+            async move { Ok::<_, Infallible>(resp) }
+        });
+
+        // 1. Default (secure: false)
+        let mut svc_default = CsrfLayer::new().layer(inner_svc);
+        let req1 = hyper::Request::builder()
+            .method("GET")
+            .uri("/")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp1 = svc_default.ready().await.unwrap().call(req1).await.unwrap();
+        let set_cookie1 = resp1.headers().get(SET_COOKIE).unwrap().to_str().unwrap();
+        assert!(!set_cookie1.contains("; Secure"));
+
+        // 2. secure: true
+        let mut svc_secure = CsrfLayer::new().with_secure(true).layer(inner_svc);
+        let req2 = hyper::Request::builder()
+            .method("GET")
+            .uri("/")
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp2 = svc_secure.ready().await.unwrap().call(req2).await.unwrap();
+        let set_cookie2 = resp2.headers().get(SET_COOKIE).unwrap().to_str().unwrap();
+        assert!(set_cookie2.contains("; Secure"));
     }
 }
