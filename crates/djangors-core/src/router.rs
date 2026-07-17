@@ -225,14 +225,42 @@ impl Router {
     /// Matches the request's path and method against registered routes, calls
     /// the matching handler, and returns the response. Returns a 404 error if
     /// no route matches.
+    ///
+    /// # Panic Isolation
+    ///
+    /// Handler execution is wrapped in a task spawned via `tokio::spawn` to catch
+    /// and isolate any panics. A panicking handler must not take down other
+    /// in-flight requests or crash the whole server process.
     pub async fn handle(&self, req: Request) -> Result<Response, DjangorsError> {
         let path = req.path().to_string();
         let method = req.method().clone();
 
         match self.match_path(&path, &method) {
             Some((idx, params)) => {
-                let handler = &self.routes[idx].handler;
-                handler.call(req, params).await
+                let handler = self.routes[idx].handler.clone();
+                // Spawn a new task to isolate the handler future. This allows catching
+                // any panics that occur during execution and safely converting them to errors.
+                let join_handle = tokio::spawn(async move { handler.call(req, params).await });
+                match join_handle.await {
+                    Ok(result) => result,
+                    Err(join_err) => {
+                        if join_err.is_panic() {
+                            let payload = join_err.into_panic();
+                            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                                s.to_string()
+                            } else if let Some(s) = payload.downcast_ref::<String>() {
+                                s.clone()
+                            } else {
+                                "unknown panic message".to_string()
+                            };
+                            Err(DjangorsError::Panicked(msg))
+                        } else {
+                            Err(DjangorsError::Internal(format!(
+                                "handler task execution failed: {join_err}"
+                            )))
+                        }
+                    }
+                }
             }
             None => Err(DjangorsError::NotFound),
         }
@@ -266,6 +294,50 @@ impl Router {
         match self.handle(req).await {
             Ok(resp) => resp.into_hyper(),
             Err(e) => e.into_response().into_hyper(),
+        }
+    }
+
+    /// Dispatch an incoming hyper request, and render a Django-style debug page
+    /// or a production-safe generic page depending on the `debug` setting.
+    pub async fn dispatch_debug<B>(
+        &self,
+        hyper_req: hyper::Request<B>,
+        debug: bool,
+    ) -> hyper::Response<http_body_util::Full<Bytes>>
+    where
+        B: hyper::body::Body<Data = Bytes> + Send,
+        B::Error: fmt::Display,
+    {
+        let (parts, body) = hyper_req.into_parts();
+
+        let body_bytes = match http_body_util::BodyExt::collect(body).await {
+            Ok(collected) => collected.to_bytes(),
+            Err(e) => {
+                let err = DjangorsError::Internal(format!("failed to read request body: {e}"));
+                let resp = if debug {
+                    let dummy_req =
+                        Request::new(parts.method, parts.uri, parts.headers, Bytes::new());
+                    crate::debug_page::render_debug_page(&err, &dummy_req)
+                } else {
+                    crate::debug_page::render_production_error_page(err.status_code())
+                };
+                return resp.into_hyper();
+            }
+        };
+
+        let req = Request::new(parts.method, parts.uri, parts.headers, body_bytes);
+        let req_clone = req.clone();
+
+        match self.handle(req).await {
+            Ok(resp) => resp.into_hyper(),
+            Err(e) => {
+                let resp = if debug {
+                    crate::debug_page::render_debug_page(&e, &req_clone)
+                } else {
+                    crate::debug_page::render_production_error_page(e.status_code())
+                };
+                resp.into_hyper()
+            }
         }
     }
 }
@@ -322,6 +394,10 @@ mod tests {
 
     async fn root_handler_fn(_: Request, _: PathParams) -> Result<Response, DjangorsError> {
         Ok(Response::text(StatusCode::OK, "root"))
+    }
+
+    async fn panicking_handler_fn(_: Request, _: PathParams) -> Result<Response, DjangorsError> {
+        panic!("boom");
     }
 
     #[tokio::test]
@@ -458,5 +534,61 @@ mod tests {
         let resp = router.handle(req).await.unwrap();
         let body = String::from_utf8(resp.body().to_vec()).unwrap();
         assert_eq!(body, "Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn test_handler_panic_recovery() {
+        let router = Router::new().get("/panic", panicking_handler_fn);
+        let req = make_request(Method::GET, "/panic");
+        let res = router.handle(req).await;
+
+        assert!(res.is_err());
+        let err = res.unwrap_err();
+        if let DjangorsError::Panicked(msg) = err {
+            assert_eq!(msg, "boom");
+        } else {
+            panic!("Expected DjangorsError::Panicked, got {:?}", err);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_debug_panic() {
+        let router = Router::new().get("/panic", panicking_handler_fn);
+
+        // Dispatch with debug = true
+        let hyper_req = hyper::Request::builder()
+            .method("GET")
+            .uri("/panic")
+            .body(http_body_util::Full::new(Bytes::new()))
+            .unwrap();
+        let hyper_resp = router.dispatch_debug(hyper_req, true).await;
+        assert_eq!(hyper_resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        use http_body_util::BodyExt;
+        let body_bytes = hyper_resp.into_body().collect().await.unwrap().to_bytes();
+        let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
+        assert!(body_str.contains("Handler Panicked"));
+        assert!(body_str.contains("boom"));
+        assert!(body_str.contains("DEBUG = true"));
+
+        // Dispatch with debug = false
+        let hyper_req_prod = hyper::Request::builder()
+            .method("GET")
+            .uri("/panic")
+            .body(http_body_util::Full::new(Bytes::new()))
+            .unwrap();
+        let hyper_resp_prod = router.dispatch_debug(hyper_req_prod, false).await;
+        assert_eq!(hyper_resp_prod.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let body_bytes_prod = hyper_resp_prod
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let body_str_prod = String::from_utf8(body_bytes_prod.to_vec()).unwrap();
+        assert!(!body_str_prod.contains("boom"));
+        assert!(!body_str_prod.contains("DEBUG = true"));
+        assert!(body_str_prod.contains("Internal Server Error"));
     }
 }

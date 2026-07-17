@@ -4,6 +4,7 @@
 //! types that form the foundation of Djangors's HTTP layer.
 
 pub mod app;
+pub mod debug_page;
 pub mod error;
 pub mod extract;
 pub mod handler;

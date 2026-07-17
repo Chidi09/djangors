@@ -13,6 +13,8 @@ pub enum DjangorsError {
     BadRequest(String),
     /// An internal server error occurred (500).
     Internal(String),
+    /// The handler panicked (500).
+    Panicked(String),
 }
 
 impl fmt::Display for DjangorsError {
@@ -21,6 +23,7 @@ impl fmt::Display for DjangorsError {
             DjangorsError::NotFound => write!(f, "Not Found"),
             DjangorsError::BadRequest(msg) => write!(f, "Bad Request: {msg}"),
             DjangorsError::Internal(msg) => write!(f, "Internal Error: {msg}"),
+            DjangorsError::Panicked(msg) => write!(f, "Handler panicked: {msg}"),
         }
     }
 }
@@ -28,16 +31,30 @@ impl fmt::Display for DjangorsError {
 impl std::error::Error for DjangorsError {}
 
 impl DjangorsError {
+    /// Return the HTTP status code for this error.
+    pub fn status_code(&self) -> StatusCode {
+        match self {
+            DjangorsError::NotFound => StatusCode::NOT_FOUND,
+            DjangorsError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            DjangorsError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            DjangorsError::Panicked(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
     /// Convert this error into an HTTP response.
     pub fn into_response(self) -> Response {
+        let status = self.status_code();
         match self {
-            DjangorsError::NotFound => Response::text(StatusCode::NOT_FOUND, "404 Not Found"),
+            DjangorsError::NotFound => Response::text(status, "404 Not Found"),
             DjangorsError::BadRequest(msg) => {
-                Response::text(StatusCode::BAD_REQUEST, &format!("400 Bad Request: {msg}"))
+                Response::text(status, &format!("400 Bad Request: {msg}"))
             }
-            DjangorsError::Internal(msg) => Response::text(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("500 Internal Server Error: {msg}"),
+            DjangorsError::Internal(msg) => {
+                Response::text(status, &format!("500 Internal Server Error: {msg}"))
+            }
+            DjangorsError::Panicked(msg) => Response::text(
+                status,
+                &format!("500 Internal Server Error: Handler panicked: {msg}"),
             ),
         }
     }
