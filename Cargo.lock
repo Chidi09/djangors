@@ -553,6 +553,9 @@ name = "djangors-cli"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "djangors-db",
+ "djangors-migrations",
+ "tokio",
 ]
 
 [[package]]

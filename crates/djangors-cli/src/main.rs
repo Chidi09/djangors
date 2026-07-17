@@ -4,7 +4,8 @@ mod commands;
 use clap::Parser;
 use cli::{Cli, Commands};
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
@@ -18,7 +19,7 @@ fn main() {
             commands::run(port);
         }
         Commands::Migrate => {
-            commands::migrate();
+            commands::migrate().await;
         }
         Commands::Makemigrations { check } => {
             commands::makemigrations(check);
