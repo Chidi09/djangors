@@ -26,6 +26,7 @@ pub struct TestUser {
     pub last_login: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+#[async_trait::async_trait]
 impl AuthUser for TestUser {
     fn id(&self) -> i64 {
         self.id
@@ -45,6 +46,10 @@ impl AuthUser for TestUser {
 
     fn is_active(&self) -> bool {
         self.is_active
+    }
+
+    async fn update_user(&self, db: &djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
+        self.update(db).await
     }
 }
 
@@ -759,4 +764,189 @@ async fn test_rate_limited_backend_limits_attempts() {
     let res = backend.authenticate(&db, "throttled_user", "pass").await;
     assert!(res.unwrap().is_none());
     assert_eq!(call_count.load(Ordering::SeqCst), 5);
+}
+
+struct TestMailBackend {
+    sent_messages: std::sync::Mutex<Vec<djangors_mail::Message>>,
+}
+
+impl TestMailBackend {
+    fn new() -> Self {
+        Self {
+            sent_messages: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl djangors_mail::MailBackend for TestMailBackend {
+    async fn send(&self, message: &djangors_mail::Message) -> Result<(), djangors_mail::MailError> {
+        self.sent_messages.lock().unwrap().push(message.clone());
+        Ok(())
+    }
+}
+
+#[test]
+fn test_password_reset_token_roundtrip_and_invalidation() {
+    let secret = b"my_super_secret_key";
+    let mut user = TestUser {
+        id: 42,
+        username: "test_user".to_string(),
+        email: "test@example.com".to_string(),
+        password: "hash_prefix_of_some_kind".to_string(),
+        is_active: true,
+        is_staff: false,
+        is_superuser: false,
+        date_joined: chrono::Utc::now(),
+        last_login: None,
+    };
+
+    // 1. token round-trip: valid token verifies successfully
+    let token = generate_password_reset_token(&user, secret, Duration::from_secs(3600));
+    assert!(verify_password_reset_token(&user, &token, secret));
+
+    // 2. token expired (past ttl) fails to verify
+    let expired_token = generate_password_reset_token(&user, secret, Duration::from_secs(0));
+    assert!(!verify_password_reset_token(&user, &expired_token, secret));
+
+    // 3. token generated for one user fails to verify against a different user
+    let mut other_user = user.clone();
+    other_user.id = 99;
+    assert!(!verify_password_reset_token(&other_user, &token, secret));
+
+    // 4. token verifies fine before a password change, then FAILS after the user's password_hash changes
+    assert!(verify_password_reset_token(&user, &token, secret));
+    user.set_password_hash("different_password_hash".to_string());
+    assert!(!verify_password_reset_token(&user, &token, secret));
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_db_password_reset_flow() {
+    let _guard = DB_MUTEX.lock().unwrap();
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_orm::djangors_db::Database::connect(&config)
+        .await
+        .unwrap();
+
+    // Clean up test table
+    djangors_orm::sqlx::query("DROP TABLE IF EXISTS test_auth_user")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    // Create test table
+    djangors_orm::sqlx::query(
+        "CREATE TABLE test_auth_user (
+            id BIGSERIAL PRIMARY KEY,
+            username VARCHAR(150) NOT NULL,
+            email VARCHAR(254) NOT NULL,
+            password TEXT NOT NULL,
+            is_active BOOLEAN NOT NULL,
+            is_staff BOOLEAN NOT NULL,
+            is_superuser BOOLEAN NOT NULL,
+            date_joined TIMESTAMPTZ NOT NULL,
+            last_login TIMESTAMPTZ
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // Create an active user
+    let raw_hash = hash_password("original_password").unwrap();
+    let user = TestUser {
+        id: 0,
+        username: "alice".to_string(),
+        email: "alice@example.com".to_string(),
+        password: raw_hash.clone(),
+        is_active: true,
+        is_staff: false,
+        is_superuser: false,
+        date_joined: chrono::Utc::now(),
+        last_login: Some(chrono::Utc::now()),
+    };
+    let user = user.save(&db).await.unwrap();
+
+    let secret = b"my_password_reset_secret";
+    let mail_backend = TestMailBackend::new();
+
+    // 5. request_password_reset with an existing active user calls MailBackend::send with a message containing the token
+    request_password_reset::<TestUser>(
+        &db,
+        &mail_backend,
+        "alice@example.com",
+        secret,
+        "https://example.com/reset/",
+    )
+    .await
+    .unwrap();
+
+    let sent = mail_backend.sent_messages.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].to, vec!["alice@example.com".to_string()]);
+    assert!(sent[0].body.contains("https://example.com/reset/"));
+
+    // Extract token from the email body
+    let body = &sent[0].body;
+    let url_start = body.find("https://example.com/reset/").unwrap();
+    let token_start = url_start + "https://example.com/reset/".len();
+    let token_end = body[token_start..]
+        .find(|c: char| c.is_whitespace())
+        .map(|idx| token_start + idx)
+        .unwrap_or(body.len());
+    let token = &body[token_start..token_end];
+
+    // 6. request_password_reset with a nonexistent email does NOT call send, but still returns Ok(())
+    let mail_backend_nonexistent = TestMailBackend::new();
+    let res = request_password_reset::<TestUser>(
+        &db,
+        &mail_backend_nonexistent,
+        "nonexistent@example.com",
+        secret,
+        "https://example.com/reset/",
+    )
+    .await;
+    assert!(res.is_ok());
+    assert!(mail_backend_nonexistent
+        .sent_messages
+        .lock()
+        .unwrap()
+        .is_empty());
+
+    // 7. confirm_password_reset with a valid token and new password actually changes the user's password
+    confirm_password_reset::<TestUser>(&db, user.id, token, "new_shiny_password", secret)
+        .await
+        .unwrap();
+
+    // Fetch user from DB and verify password
+    let updated_users = TestUser::objects()
+        .filter(q!(id = user.id))
+        .unwrap()
+        .all(&db)
+        .await
+        .unwrap();
+    assert_eq!(updated_users.len(), 1);
+    let updated_user = &updated_users[0];
+    assert!(verify_password("new_shiny_password", updated_user.password_hash()).unwrap());
+    assert!(!verify_password("original_password", updated_user.password_hash()).unwrap());
+
+    // 8. confirm_password_reset with an invalid/expired token leaves the password unchanged and returns an error
+    let invalid_token = "invalid.token.here";
+    let res_invalid =
+        confirm_password_reset::<TestUser>(&db, user.id, invalid_token, "another_password", secret)
+            .await;
+    assert!(res_invalid.is_err());
+
+    // Verify password is still "new_shiny_password"
+    let final_users = TestUser::objects()
+        .filter(q!(id = user.id))
+        .unwrap()
+        .all(&db)
+        .await
+        .unwrap();
+    let final_user = &final_users[0];
+    assert!(verify_password("new_shiny_password", final_user.password_hash()).unwrap());
+    assert!(!verify_password("another_password", final_user.password_hash()).unwrap());
 }

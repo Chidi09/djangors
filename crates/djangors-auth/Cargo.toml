@@ -13,11 +13,15 @@ djangors-macros = { path = "../djangors-macros" }
 djangors-core = { path = "../djangors-core" }
 djangors-db = { path = "../djangors-db" }
 djangors-sessions = { path = "../djangors-sessions" }
+djangors-mail = { path = "../djangors-mail" }
 async-trait = "0.1.86"
 argon2 = "0.5.3"
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 chrono = { version = "0.4.45", features = ["std", "serde"] }
 thiserror = "2.0.18"
+hmac = "0.12.1"
+sha2 = "0.10.9"
+base64 = "0.22.1"
 
 [dev-dependencies]
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros"] }

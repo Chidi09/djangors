@@ -5,13 +5,18 @@
 
 use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use base64::Engine as _;
 use djangors_core::signals::Signal;
 use djangors_macros::Model;
 use djangors_orm::Model as _;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use thiserror::Error;
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Error type for authentication and user operations.
 #[derive(Error, Debug)]
@@ -22,6 +27,10 @@ pub enum AuthError {
     Database(#[from] djangors_orm::OrmError),
     #[error("too many login attempts, try again later")]
     RateLimited,
+    #[error("invalid or expired token")]
+    InvalidToken,
+    #[error("mail sending error: {0}")]
+    Mail(String),
 }
 
 const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$dGVzdHBhc3N3b3Jk";
@@ -248,12 +257,14 @@ impl<U: AuthUser> djangors_core::extract::FromRequest for Auth<U> {
 
 /// Anything djangors-auth's login/session/permission machinery can operate on.
 /// Real apps that need custom user fields implement this on their own struct instead of using the built-in `User`.
+#[async_trait::async_trait]
 pub trait AuthUser: djangors_orm::Model + djangors_orm::FromRow + Send + Sync + 'static {
     fn id(&self) -> i64;
     fn username(&self) -> &str;
     fn password_hash(&self) -> &str;
     fn set_password_hash(&mut self, hash: String);
     fn is_active(&self) -> bool;
+    async fn update_user(&self, db: &djangors_db::Database) -> Result<(), djangors_orm::OrmError>;
 }
 
 /// The default concrete `User` model implementing `AuthUser`.
@@ -281,6 +292,7 @@ pub struct User {
     pub last_login: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+#[async_trait::async_trait]
 impl AuthUser for User {
     fn id(&self) -> i64 {
         self.id
@@ -300,6 +312,10 @@ impl AuthUser for User {
 
     fn is_active(&self) -> bool {
         self.is_active
+    }
+
+    async fn update_user(&self, db: &djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
+        self.update(db).await
     }
 }
 
@@ -324,6 +340,200 @@ pub fn verify_password(password: &str, phc_hash: &str) -> Result<bool, AuthError
     Ok(Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
         .is_ok())
+}
+
+/// Generates a signed password reset token.
+///
+/// The token embeds the user's ID, an expiry timestamp, and a prefix of the user's current password hash.
+/// This ensures that the token becomes invalid as soon as the user's password changes.
+pub fn generate_password_reset_token<U: AuthUser>(
+    user: &U,
+    secret: &[u8],
+    ttl: Duration,
+) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO);
+    let expiry_unix_secs = (now + ttl).as_secs();
+
+    let user_id_str = user.id().to_string();
+    let b64_user_id = base64::engine::general_purpose::STANDARD.encode(user_id_str.as_bytes());
+    let b64_expiry =
+        base64::engine::general_purpose::STANDARD.encode(expiry_unix_secs.to_string().as_bytes());
+
+    let hash = user.password_hash();
+    let prefix_len = std::cmp::min(30, hash.len());
+    let password_hash_prefix = &hash[..prefix_len];
+
+    let msg = format!(
+        "{}.{}.{}",
+        user.id(),
+        expiry_unix_secs,
+        password_hash_prefix
+    );
+
+    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+    mac.update(msg.as_bytes());
+    let mac_result = mac.finalize().into_bytes();
+    let b64_mac = base64::engine::general_purpose::STANDARD.encode(mac_result);
+
+    format!("{}.{}.{}", b64_user_id, b64_expiry, b64_mac)
+}
+
+/// Verifies a signed password reset token against a user.
+///
+/// Returns `true` if the token is valid, has not expired, was generated for the correct user,
+/// and the user's password hash has not changed since the token was generated.
+pub fn verify_password_reset_token<U: AuthUser>(user: &U, token: &str, secret: &[u8]) -> bool {
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() != 3 {
+        return false;
+    }
+    let b64_user_id = parts[0];
+    let b64_expiry = parts[1];
+    let b64_mac = parts[2];
+
+    // Decode and verify user_id
+    let user_id_bytes = match base64::engine::general_purpose::STANDARD.decode(b64_user_id) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let user_id_str = match std::str::from_utf8(&user_id_bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let token_user_id: i64 = match user_id_str.parse() {
+        Ok(id) => id,
+        Err(_) => return false,
+    };
+    if token_user_id != user.id() {
+        return false;
+    }
+
+    // Decode and verify expiry
+    let expiry_bytes = match base64::engine::general_purpose::STANDARD.decode(b64_expiry) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+    let expiry_str = match std::str::from_utf8(&expiry_bytes) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let expiry_unix_secs: u64 = match expiry_str.parse() {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs(),
+        Err(_) => 0,
+    };
+    if expiry_unix_secs <= now {
+        return false;
+    }
+
+    // Verify HMAC using the user's current password hash prefix
+    let hash = user.password_hash();
+    let prefix_len = std::cmp::min(30, hash.len());
+    let password_hash_prefix = &hash[..prefix_len];
+
+    let msg = format!(
+        "{}.{}.{}",
+        user.id(),
+        expiry_unix_secs,
+        password_hash_prefix
+    );
+
+    let mac_bytes = match base64::engine::general_purpose::STANDARD.decode(b64_mac) {
+        Ok(b) => b,
+        Err(_) => return false,
+    };
+
+    let mut mac = match HmacSha256::new_from_slice(secret) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    mac.update(msg.as_bytes());
+    mac.verify_slice(&mac_bytes).is_ok()
+}
+
+/// Looks up an active user by email and, if found, sends a password reset link to them.
+///
+/// To prevent user enumeration attacks, this function always returns `Ok(())` and runs in
+/// a similar time frame regardless of whether the email was registered.
+pub async fn request_password_reset<U: AuthUser>(
+    db: &djangors_db::Database,
+    mail: &dyn djangors_mail::MailBackend,
+    email: &str,
+    secret: &[u8],
+    reset_link_base: &str,
+) -> Result<(), AuthError> {
+    let mut users = U::objects()
+        .filter(djangors_orm::q!(email = email))?
+        .all(db)
+        .await?;
+
+    let user_opt = if users.len() == 1 {
+        let u = users.remove(0);
+        if u.is_active() {
+            Some(u)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(user) = user_opt {
+        // Use a default 1-hour TTL for the token.
+        let token = generate_password_reset_token(&user, secret, Duration::from_secs(3600));
+        let reset_link = format!("{}{}", reset_link_base, token);
+        let message = djangors_mail::Message {
+            to: vec![email.to_string()],
+            from: "noreply@localhost".to_string(),
+            subject: "Password Reset Request".to_string(),
+            body: format!(
+                "You are receiving this email because you requested a password reset for your user account.\n\
+                 Please click the following link to choose a new password:\n\n\
+                 {}\n\n\
+                 If you did not request this reset, you can safely ignore this email.",
+                reset_link
+            ),
+        };
+        mail.send(&message)
+            .await
+            .map_err(|e| AuthError::Mail(e.to_string()))?;
+    }
+
+    Ok(())
+}
+
+/// Confirms the password reset by verifying the token, hashing the new password, and updating the database.
+pub async fn confirm_password_reset<U: AuthUser>(
+    db: &djangors_db::Database,
+    user_id: i64,
+    token: &str,
+    new_password: &str,
+    secret: &[u8],
+) -> Result<(), AuthError> {
+    let mut users = U::objects()
+        .filter(djangors_orm::q!(id = user_id))?
+        .all(db)
+        .await?;
+
+    if users.len() != 1 {
+        return Err(AuthError::InvalidToken);
+    }
+    let mut user = users.remove(0);
+
+    if !verify_password_reset_token(&user, token, secret) {
+        return Err(AuthError::InvalidToken);
+    }
+
+    let hashed = hash_password(new_password)?;
+    user.set_password_hash(hashed);
+    user.update_user(db).await?;
+
+    Ok(())
 }
 
 #[cfg(test)]

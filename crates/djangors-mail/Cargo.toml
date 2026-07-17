@@ -1,0 +1,15 @@
+[package]
+name = "djangors-mail"
+description = "Minimal mail library for Djangors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait = "0.1.86"
+thiserror = "2.0.18"
+tracing = "0.1.44"
+
+[dev-dependencies]
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros"] }

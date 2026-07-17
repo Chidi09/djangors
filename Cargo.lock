@@ -579,15 +579,19 @@ version = "0.0.1"
 dependencies = [
  "argon2",
  "async-trait",
+ "base64",
  "bytes",
  "chrono",
  "djangors-core",
  "djangors-db",
  "djangors-macros",
+ "djangors-mail",
  "djangors-orm",
  "djangors-sessions",
+ "hmac 0.12.1",
  "hyper",
  "rand_core 0.6.4",
+ "sha2 0.10.9",
  "sqlx",
  "thiserror",
  "tokio",
@@ -657,6 +661,16 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "trybuild",
+]
+
+[[package]]
+name = "djangors-mail"
+version = "0.0.1"
+dependencies = [
+ "async-trait",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

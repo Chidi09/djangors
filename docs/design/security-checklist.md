@@ -75,8 +75,21 @@ licenses/advisories — **not yet wired up** (Phase 0/CI scope, not done as of t
 hashing, timing-oracle-resistant `ModelBackend::authenticate` (dummy-hash path always exercised),
 session-fixation protection (`login()`'s `cycle_key()`), login rate limiting
 (`RateLimitedBackend`, opt-in, single-process — gap noted in threat model), re-validated
-active-user check on every authenticated request (`Auth<U>`). **Gap:** no password-reset flow,
-no account-lockout-notification/audit-visible-to-user story, no MFA (`djangors-contrib-otp` is
+active-user check on every authenticated request (`Auth<U>`). Password reset now exists
+(`generate_password_reset_token`/`verify_password_reset_token`/`request_password_reset`/
+`confirm_password_reset`, part 4d slice 1, [[4.14-password-reset-email]]): a signed token embeds
+the user id, an expiry, and a prefix of the user's *current* password hash, so any previously
+issued token self-invalidates the moment the password actually changes — no separate
+used-token table needed. **Minor gap found during review:** unlike `ModelBackend::authenticate`'s
+deliberate equal-cost dummy-hash path for both found/not-found usernames,
+`request_password_reset` does *not* do equivalent dummy work when the email doesn't match any
+user — it returns early without generating a token or calling the mail backend, so a
+sufficiently precise timing measurement could in principle distinguish "email registered" from
+"email not registered." Accepted as low-severity for v1: this endpoint is inherently
+lower-frequency than login, and the dominant timing signal would be mail-backend I/O latency
+(itself noisy/variable), not a precise crypto operation like Argon2 — a much weaker oracle than
+the login case. Tracked here rather than silently accepted. **Gap:** no
+account-lockout-notification/audit-visible-to-user story, no MFA (`djangors-contrib-otp` is
 Phase 7).
 
 ## A08:2021 – Software and Data Integrity Failures
@@ -122,10 +135,13 @@ CI/OSS-Fuzz for continuous coverage — future work.
 2. `Secure` cookie flag is opt-in on both session and CSRF cookies, not on by default.
 3. No default Content-Security-Policy.
 4. Rate limiting is single-process/in-memory, not distributed.
-5. No groups/per-model permissions yet (part 4d).
-6. No password-reset flow yet (blocked on Phase 7's email backend).
+5. No groups/per-model permissions yet (still unscheduled — not required by Phase 4's DoD).
+6. `request_password_reset` doesn't do dummy-work timing equalization for nonexistent emails
+   (accepted low-severity, see A07 above).
 7. `cargo-deny` not yet wired into CI.
 8. Audit signals fire but have no default durable-storage subscriber (Phase 7's
    `djangors-contrib-audit`).
 9. No multipart body parser (and therefore no file-upload support) yet — Phase 3 gap.
 10. Fuzzing is local-smoke-only, not continuous.
+11. `djangors-mail`'s `ConsoleBackend` is a deliberately minimal Phase-4-only pull-forward (no
+    SMTP/file/HTML backends) — the real Phase 7 `djangors-mail` is separate, unscheduled work.

@@ -118,10 +118,26 @@ parameterizing correctly," which is exercised by the ORM's own test suite, not t
 - **Threat:** XSS via signal payload data. **Mitigation:** `LoginFailed.username`'s doc comment
   explicitly flags it as attacker-controlled, warning against ever rendering it unescaped as HTML
   in a future logging/admin UI consumer of the signal.
-- **Known gap, not yet built (part 4d):** no groups or per-model permissions exist yet — every
-  active user is currently equally privileged from `djangors-auth`'s own point of view (an app can
-  still gate on `is_staff`/`is_superuser` fields directly, but there's no `has_perm`-style API).
-  No password-reset flow exists (blocked on an email backend, Phase 7's `djangors-mail`).
+- **Known gap, not yet built:** no groups or per-model permissions exist yet — every active user
+  is currently equally privileged from `djangors-auth`'s own point of view (an app can still gate
+  on `is_staff`/`is_superuser` fields directly, but there's no `has_perm`-style API). Unscheduled.
+- **Threat:** password-reset link forged/reused after the password already changed. **Mitigation:**
+  `generate_password_reset_token`/`verify_password_reset_token`
+  (`crates/djangors-auth/src/lib.rs`, part 4d slice 1, [[4.14-password-reset-email]]) sign a
+  token embedding the user id, an expiry, and a prefix of the *current* password hash — verified
+  via `Mac::verify_slice` (constant-time). Once the password changes (including via the reset
+  itself completing), the embedded hash prefix stops matching and every previously issued token
+  for that user fails verification, without needing a separate used-token DB table.
+- **Threat:** password-reset request used to enumerate registered emails. **Mitigation:**
+  `request_password_reset` always returns `Ok(())`, whether or not the email matched a user — an
+  attacker can't distinguish "sent" from "no such account" via the return value. **Caught during
+  review, accepted as a documented gap, not fixed:** the *timing* isn't fully equalized — the
+  no-match path returns early without generating a token or calling the mail backend, unlike
+  `ModelBackend::authenticate`'s deliberate equal-cost dummy-hash path for login. Considered lower
+  severity than the login case: this endpoint is inherently much lower-frequency, and the dominant
+  timing signal on the match path would be mail-backend I/O latency (noisy, backend-dependent),
+  not a precise, low-variance crypto operation like Argon2 — a much weaker practical oracle. See
+  `security-checklist.md`'s A07 section for the same note.
 
 ### Query strings / cookies parsing (`crates/djangors-core/src/request.rs`, and the cookie-header
 parsers in `middleware.rs`/`djangors-sessions`)
