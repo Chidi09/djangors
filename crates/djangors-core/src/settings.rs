@@ -282,9 +282,8 @@ mod tests {
     fn test_validate() {
         let mut settings = DjangorsSettings::default();
 
-        // Dev/debug mode with empty secret key should be valid
-        settings.debug = true;
-        settings.secret_key = "".to_string();
+        // Dev/debug mode with empty secret key should be valid (this is
+        // exactly Default::default()'s state — debug: true, secret_key: "").
         assert!(settings.validate().is_ok());
 
         // Production mode with empty secret key should fail validation
