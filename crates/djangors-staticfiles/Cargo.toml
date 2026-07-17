@@ -1,0 +1,21 @@
+[package]
+name = "djangors-staticfiles"
+description = "Static files support for Djangors"
+repository = "https://github.com/djangors/djangors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror = "2.0.18"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+djangors-core = { path = "../djangors-core" }
+sha2 = "0.10.9"
+hyper = "1.10"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.53.0", features = ["full"] }
+bytes = "1.12"

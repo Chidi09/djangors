@@ -38,6 +38,16 @@ impl Response {
         res
     }
 
+    /// Create a response from raw bytes with a specified Content-Type.
+    pub fn bytes(status: StatusCode, content_type: &str, body: Vec<u8>) -> Self {
+        let mut res = Response::new(status);
+        if let Ok(val) = HeaderValue::from_str(content_type) {
+            res.headers.insert(CONTENT_TYPE, val);
+        }
+        res.body = Bytes::from(body);
+        res
+    }
+
     /// Create an HTML response.
     ///
     /// Sets `Content-Type: text/html; charset=utf-8`.
@@ -166,6 +176,14 @@ mod tests {
         let body_str = String::from_utf8(resp.body.to_vec()).unwrap();
         assert!(body_str.contains("\"key\""));
         assert!(body_str.contains("\"val\""));
+    }
+
+    #[test]
+    fn bytes_response() {
+        let resp = Response::bytes(StatusCode::OK, "image/png", vec![1, 2, 3]);
+        assert_eq!(resp.status, StatusCode::OK);
+        assert_eq!(&resp.body[..], &[1, 2, 3]);
+        assert_eq!(resp.headers.get(CONTENT_TYPE).unwrap(), "image/png");
     }
 
     #[test]
