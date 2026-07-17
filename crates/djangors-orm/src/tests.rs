@@ -361,7 +361,7 @@ async fn test_queryset_operations() {
     let saved = initial.save(&db).await.unwrap();
     assert_ne!(saved.id, 0);
     assert_eq!(saved.name, "David");
-    assert_eq!(saved.is_active, true);
+    assert!(saved.is_active);
 
     // Confirm it exists in DB directly
     let db_count = sqlx::query("SELECT COUNT(*) FROM test_queryset_model WHERE id = $1 AND name = 'David' AND is_active = true")
@@ -637,7 +637,7 @@ async fn test_queryset_bulk_update() {
         .unwrap();
     assert_eq!(row1.votes, 15);
     assert_eq!(row1.price, 3.0);
-    assert_eq!(row1.is_active, false);
+    assert!(!row1.is_active);
 
     // Verify row 2
     let row2 = BulkUpdateTestModel::objects()
@@ -648,7 +648,7 @@ async fn test_queryset_bulk_update() {
         .unwrap();
     assert_eq!(row2.votes, 25);
     assert_eq!(row2.price, 5.0);
-    assert_eq!(row2.is_active, false);
+    assert!(!row2.is_active);
 
     // Verify row 3 (unaffected because it was not active)
     let row3 = BulkUpdateTestModel::objects()
@@ -659,7 +659,7 @@ async fn test_queryset_bulk_update() {
         .unwrap();
     assert_eq!(row3.votes, 30);
     assert_eq!(row3.price, 3.5);
-    assert_eq!(row3.is_active, false);
+    assert!(!row3.is_active);
 
     // Test 2: Double sequential increment
     let affected_seq = BulkUpdateTestModel::objects()
@@ -732,6 +732,145 @@ async fn test_queryset_bulk_update() {
 
     // Clean up
     sqlx::query("DROP TABLE test_bulk_update_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_select_related_parent")]
+pub struct SelectRelatedParent {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_select_related_child")]
+pub struct SelectRelatedChild {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    #[djangors(foreign_key(on_delete = "cascade", related_name = "children"))]
+    pub parent: ForeignKey<SelectRelatedParent>,
+}
+
+#[tokio::test]
+async fn test_queryset_select_related() {
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    // Clean up tables if they exist
+    sqlx::query("DROP TABLE IF EXISTS test_select_related_child")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE IF EXISTS test_select_related_parent")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    // Create parent table
+    sqlx::query(
+        "CREATE TABLE test_select_related_parent (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // Create child table
+    sqlx::query(
+        "CREATE TABLE test_select_related_child (
+            id BIGSERIAL PRIMARY KEY,
+            parent BIGINT NOT NULL REFERENCES test_select_related_parent(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // Insert test data
+    let parent1 = SelectRelatedParent {
+        id: 0,
+        name: "Parent A".to_string(),
+    }
+    .save(&db)
+    .await
+    .unwrap();
+
+    let parent2 = SelectRelatedParent {
+        id: 0,
+        name: "Parent B".to_string(),
+    }
+    .save(&db)
+    .await
+    .unwrap();
+
+    let child1 = SelectRelatedChild {
+        id: 0,
+        parent: ForeignKey::new(parent1.id),
+    }
+    .save(&db)
+    .await
+    .unwrap();
+
+    let child2 = SelectRelatedChild {
+        id: 0,
+        parent: ForeignKey::new(parent2.id),
+    }
+    .save(&db)
+    .await
+    .unwrap();
+
+    // Run select_related
+    let results = SelectRelatedChild::objects()
+        .select_related::<SelectRelatedParent>(&db, "parent")
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 2);
+
+    // Verify child1 points to parent1
+    let (c1, p1_opt) = results.iter().find(|(c, _)| c.id == child1.id).unwrap();
+    assert_eq!(c1.parent.id, parent1.id);
+    let p1 = p1_opt.as_ref().unwrap();
+    assert_eq!(p1.id, parent1.id);
+    assert_eq!(p1.name, "Parent A");
+
+    // Verify child2 points to parent2
+    let (c2, p2_opt) = results.iter().find(|(c, _)| c.id == child2.id).unwrap();
+    assert_eq!(c2.parent.id, parent2.id);
+    let p2 = p2_opt.as_ref().unwrap();
+    assert_eq!(p2.id, parent2.id);
+    assert_eq!(p2.name, "Parent B");
+
+    // Test validation: typo'd field name
+    let typo_res = SelectRelatedChild::objects()
+        .select_related::<SelectRelatedParent>(&db, "nonexistent")
+        .await;
+    assert!(matches!(
+        typo_res,
+        Err(crate::error::OrmError::FieldNotFound { .. })
+    ));
+
+    // Test validation: mismatched R type parameter
+    let mismatch_res = SelectRelatedChild::objects()
+        .select_related::<SelectRelatedChild>(&db, "parent")
+        .await;
+    assert!(matches!(
+        mismatch_res,
+        Err(crate::error::OrmError::FieldNotFound { .. })
+    ));
+
+    // Clean up
+    sqlx::query("DROP TABLE test_select_related_child")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE test_select_related_parent")
         .execute(db.pool())
         .await
         .unwrap();

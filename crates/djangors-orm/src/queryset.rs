@@ -492,6 +492,117 @@ impl<T: Model + FromRow> QuerySet<T> {
         let res = query.execute(db.pool()).await?;
         Ok(res.rows_affected())
     }
+
+    /// Eagerly loads the given relation, avoiding an N+1 query. Returns each
+    /// matching `T` alongside its related `R` (or `None` if the relation is
+    /// nullable and actually null for that row).
+    pub async fn select_related<R: Model + FromRow + Clone>(
+        &self,
+        db: &djangors_db::Database,
+        relation_field: &'static str,
+    ) -> Result<Vec<(T, Option<R>)>, OrmError> {
+        let meta = T::meta();
+
+        // 1. Validate relation_field exists in T::meta().relations
+        let relation = meta
+            .relations
+            .iter()
+            .find(|r| r.field_name == relation_field)
+            .ok_or_else(|| OrmError::FieldNotFound {
+                field: relation_field.to_string(),
+                model: meta.struct_name,
+            })?;
+
+        // Validate that R matches the target of the relation
+        let target_meta = (relation.target)();
+        let r_meta = R::meta();
+        if target_meta.struct_name != r_meta.struct_name {
+            return Err(OrmError::FieldNotFound {
+                field: format!(
+                    "{} (target model mismatch: expected {}, found {})",
+                    relation_field, r_meta.struct_name, target_meta.struct_name
+                ),
+                model: meta.struct_name,
+            });
+        }
+
+        // 2 & 3. Run T's query and select the relation's raw FK column explicitly
+        let select_list = format!("*, {} AS __select_related_fk", relation_field);
+        let (sql, params) = self.compile_select_custom(&select_list);
+
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for val in &params {
+            query = match val {
+                Value::I64(v) => query.bind(*v),
+                Value::F64(v) => query.bind(*v),
+                Value::Text(v) => query.bind(v.clone()),
+                Value::Bool(v) => query.bind(*v),
+                Value::DateTime(v) => query.bind(*v),
+                Value::Null => query.bind(None::<i64>),
+            };
+        }
+        let rows = query.fetch_all(db.pool()).await?;
+
+        // 4. Collect distinct non-null ids and map T records
+        let mut t_records = Vec::new();
+        let mut relation_ids = std::collections::HashSet::new();
+
+        for row in rows {
+            let t = T::from_row(&row)?;
+            use sqlx::Row;
+            let fk_id: Option<i64> = row.try_get("__select_related_fk")?;
+            if let Some(id) = fk_id {
+                relation_ids.insert(id);
+            }
+            t_records.push((t, fk_id));
+        }
+
+        if relation_ids.is_empty() {
+            return Ok(t_records.into_iter().map(|(t, _)| (t, None)).collect());
+        }
+
+        // 5. Run ONE query for related records
+        let r_pk_field = r_meta
+            .fields
+            .iter()
+            .find(|f| f.primary_key)
+            .ok_or_else(|| OrmError::FieldNotFound {
+                field: "primary_key".to_string(),
+                model: r_meta.struct_name,
+            })?;
+        let r_pk_col = r_pk_field.column_name;
+
+        let r_sql = format!(
+            "SELECT * FROM {} WHERE {} = ANY($1)",
+            r_meta.table_name, r_pk_col
+        );
+
+        let relation_ids_vec: Vec<i64> = relation_ids.into_iter().collect();
+        let mut r_query = sqlx::query(sqlx::AssertSqlSafe(r_sql));
+        r_query = r_query.bind(relation_ids_vec);
+
+        let r_rows = r_query.fetch_all(db.pool()).await?;
+
+        let mut r_map = std::collections::HashMap::new();
+        for r_row in r_rows {
+            let r = R::from_row(&r_row)?;
+            use sqlx::Row;
+            let pk_val: i64 = r_row.try_get(r_pk_col)?;
+            r_map.insert(pk_val, r);
+        }
+
+        // 6. Zip T records with R records
+        let mut final_results = Vec::new();
+        for (t, fk_id_opt) in t_records {
+            let r_opt = match fk_id_opt {
+                Some(id) => r_map.get(&id).cloned(),
+                None => None,
+            };
+            final_results.push((t, r_opt));
+        }
+
+        Ok(final_results)
+    }
 }
 
 fn split_field_lookup(s: &'static str) -> (&'static str, &'static str) {
