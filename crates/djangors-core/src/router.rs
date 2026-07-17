@@ -385,6 +385,53 @@ impl Router {
     }
 }
 
+/// A wrapper around [`Router`] that implements [`tower::Service`], carrying a
+/// `debug` flag through to [`Router::dispatch_debug`] so a layered serving
+/// path (see [`crate::app::Djangors::serve_service`]) still gets the
+/// dev debug page / production error page distinction.
+///
+/// `Router` itself also implements `tower::Service` directly (see
+/// `crate::service`), but that impl always calls the plain
+/// [`Router::dispatch`] (no debug page) since it predates the `debug` flag
+/// having anywhere to come from in that context — this wrapper is not
+/// redundant with it, it exists specifically to carry that flag.
+#[derive(Clone)]
+pub struct RouterService {
+    router: Router,
+    debug: bool,
+}
+
+impl RouterService {
+    /// Create a new `RouterService` wrapping the given router.
+    pub fn new(router: Router, debug: bool) -> Self {
+        Self { router, debug }
+    }
+}
+
+impl tower::Service<hyper::Request<hyper::body::Incoming>> for RouterService {
+    type Response = hyper::Response<http_body_util::Full<Bytes>>;
+    type Error = std::convert::Infallible;
+    type Future = std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>,
+    >;
+
+    fn poll_ready(
+        &mut self,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, req: hyper::Request<hyper::body::Incoming>) -> Self::Future {
+        let router = self.router.clone();
+        let debug = self.debug;
+        Box::pin(async move {
+            let resp = router.dispatch_debug(req, debug).await;
+            Ok(resp)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
