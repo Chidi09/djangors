@@ -1,0 +1,16 @@
+[package]
+name = "polls"
+description = "Aspirational API spec for Djangors — the Django tutorial's polls app. Intentionally does NOT compile yet; see README.md."
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+# This crate is NOT part of the workspace `members` list (see /root/dev/Rango/Cargo.toml —
+# it only globs `crates/*`) and is not built by `cargo build --workspace`. That's deliberate:
+# this is a design spec for APIs that don't exist yet (the ORM, migrations, admin, forms),
+# not real code. See README.md for how to use this file as you build each phase.
+
+[dependencies]
+# Left empty on purpose. Once djangors-orm/djangors-admin/djangors-forms/djangors-macros
+# exist, this becomes a real dependency list and the crate should start actually compiling,
+# module by module, as each referenced API lands for real.
