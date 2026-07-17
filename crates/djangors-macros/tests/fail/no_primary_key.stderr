@@ -1,0 +1,5 @@
+error: model must have exactly one #[djangors(primary_key)] field
+ --> tests/fail/no_primary_key.rs:5:12
+  |
+5 | pub struct NoPrimaryKey {
+  |            ^^^^^^^^^^^^

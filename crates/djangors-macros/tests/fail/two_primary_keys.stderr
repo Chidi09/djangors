@@ -1,0 +1,5 @@
+error: model has multiple primary key fields: id1, id2
+ --> tests/fail/two_primary_keys.rs:5:12
+  |
+5 | pub struct TwoPrimaryKeys {
+  |            ^^^^^^^^^^^^^^

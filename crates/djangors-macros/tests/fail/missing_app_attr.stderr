@@ -1,0 +1,5 @@
+error: models must specify #[djangors(app = "...")]
+ --> tests/fail/missing_app_attr.rs:4:12
+  |
+4 | pub struct MissingAppAttr {
+  |            ^^^^^^^^^^^^^^

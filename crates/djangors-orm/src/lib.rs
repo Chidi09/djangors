@@ -6,6 +6,8 @@
 
 pub mod meta;
 
+pub use inventory;
+
 pub use meta::{
     all_registered_models, DefaultValue, FieldKind, FieldMeta, ForeignKey, IndexMeta, Model,
     ModelMeta, ModelRegistration, OnDelete, RelationKind, RelationMeta,
