@@ -1,0 +1,42 @@
+[package]
+name = "rango-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+djangors-core = { path = "../crates/djangors-core" }
+djangors-sessions = { path = "../crates/djangors-sessions" }
+
+hyper = { version = "1.10.1", features = ["full"] }
+tower = { version = "0.5.3", features = ["util"] }
+tokio = { version = "1.53.0", features = ["full"] }
+http-body-util = "0.1.4"
+bytes = "1.12.1"
+
+[[bin]]
+name = "query_string"
+path = "fuzz_targets/query_string.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cookie_header"
+path = "fuzz_targets/cookie_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "session_cookie_decode"
+path = "fuzz_targets/session_cookie_decode.rs"
+test = false
+doc = false
+
+[workspace]
+# Empty workspace to avoid cargo parent workspace error
+

@@ -1,0 +1,131 @@
+# Security checklist — OWASP Top 10 self-assessment (Phase 4 DoD)
+
+**Status:** point-in-time self-assessment as of Phase 4 part 4e, satisfying `PLAN.md`'s Phase 4
+DoD line ("OWASP top-10 self-assessment written"). Companion to [[threat-model]] (which explains
+*why* each mitigation exists and what its limits are — this doc is the flatter, checklist-shaped
+view). Every "Mitigated" claim below points at a real file/function/test; nothing here is
+aspirational. Revisit at the start of every future phase that touches request handling, auth, or
+data access.
+
+Categories follow OWASP Top 10:2021.
+
+## A01:2021 – Broken Access Control
+
+**Partially mitigated.** `Auth<U>` extractor (`crates/djangors-auth/src/lib.rs`) re-validates the
+session's user against the DB on every request (active-status check included) — see
+[[threat-model]]'s Authentication section. **Gap:** no per-model/object-level permission system
+exists yet (groups/permissions are explicitly deferred to part 4d, and
+`djangors-contrib-guardian` object-level permissions are Phase 7). Until then, access control
+beyond "authenticated or not" / manual `is_staff`/`is_superuser` field checks is entirely
+app-responsibility, not framework-provided.
+
+## A02:2021 – Cryptographic Failures
+
+**Mitigated for what's built.** Passwords: Argon2id via the `argon2` crate, never hand-rolled
+(`hash_password`/`verify_password`, `crates/djangors-auth/src/lib.rs`). Session integrity:
+HMAC-SHA256 via the `hmac`/`sha2` crates (`SignedCookieStore`,
+`crates/djangors-sessions/src/lib.rs`), constant-time verification via `Mac::verify_slice`.
+Random values (session keys, CSRF tokens): `rand::thread_rng()` (CSPRNG-backed), not
+`std::hash`/predictable sources. **Gap:** `Secure` cookie flag is opt-in
+(`with_secure(bool)`), not on by default on either the session or CSRF cookie — see
+[[threat-model]]'s Sessions section.
+
+## A03:2021 – Injection
+
+**Mitigated by design.** All DB access goes through the ORM's parameterized query builder
+(`djangors_orm::Model::objects()`/`filter(q!(...))`) — no raw SQL string interpolation path exists
+in framework code today (a raw-SQL escape hatch is planned per `PLAN.md` Phase 2 but not yet
+built, so there's no first-party SQL-injection surface to assess beyond the ORM's own query-builder
+correctness, covered by the ORM crate's own test suite, out of scope for this doc). No template
+engine is exercised by anything in Phase 4 (djangors-template auto-escapes by default per its own
+design, per `PLAN.md` Phase 3 — not re-verified here since it's outside this phase's scope).
+
+## A04:2021 – Insecure Design
+
+**Addressed via this project's own working pattern**, not a one-time checklist item: every
+non-trivial piece of Phase 4 was preceded by a `docs/design/4.N-*.md` doc that explicitly states
+what's deferred and why (see [[4.7-sessions]] through [[4.13-security-review-fuzzing]]), rather
+than ad hoc implementation. The [[threat-model]] doc is the living artifact this checklist expects
+to be kept current.
+
+## A05:2021 – Security Misconfiguration
+
+**Partially mitigated, opt-in-heavy.** `SecurityHeadersLayer` (X-Frame-Options,
+X-Content-Type-Options, Referrer-Policy) is unconditional wherever wired in, but *wiring it in* is
+still an app/example-app decision — no framework-level "secure by default, opt out" project
+scaffold exists yet (that's Phase 6's `djangors new` generator territory). `HstsLayer` and
+`HostValidationLayer` are both fully opt-in with an insecure-if-unconfigured default
+(`HostValidationLayer::new(vec![])` is unrestricted — mirrors Django's own
+`ALLOWED_HOSTS = []` DEBUG-mode behavior, not a Djangors-specific weakness, but still worth
+flagging). **No default Content-Security-Policy** — `PLAN.md`'s "CSP helper" line item is not yet
+built. **Gap**, tracked, not yet scheduled.
+
+## A06:2021 – Vulnerable and Outdated Components
+
+**Process, not a one-time state.** This project has an established discipline (enforced during
+every dispatch-review cycle this session) of checking `Cargo.lock` for an already-resolved
+version before pinning any new dependency, to avoid duplicate/incompatible crate versions in the
+build graph — caught and fixed twice this session (a `sha2` version mismatch in djangors-sessions,
+an unused `tracing` dependency). `PLAN.md`'s Phase 0 line calls for `cargo-deny` in CI for
+licenses/advisories — **not yet wired up** (Phase 0/CI scope, not done as of this doc). **Gap.**
+
+## A07:2021 – Identification and Authentication Failures
+
+**Mitigated for what's built**, see [[threat-model]]'s Authentication section in full: Argon2id
+hashing, timing-oracle-resistant `ModelBackend::authenticate` (dummy-hash path always exercised),
+session-fixation protection (`login()`'s `cycle_key()`), login rate limiting
+(`RateLimitedBackend`, opt-in, single-process — gap noted in threat model), re-validated
+active-user check on every authenticated request (`Auth<U>`). **Gap:** no password-reset flow,
+no account-lockout-notification/audit-visible-to-user story, no MFA (`djangors-contrib-otp` is
+Phase 7).
+
+## A08:2021 – Software and Data Integrity Failures
+
+**Not yet applicable / not yet assessed.** No CI/CD pipeline signing, no deserialization of
+untrusted data beyond JSON/form bodies (handled via `serde`'s typed deserialization, not
+`eval`-style dynamic loading), no auto-update mechanism exists in this framework. Revisit when
+Phase 6 (CLI/deployment) or Phase 8 (background tasks, which may deserialize queued job payloads)
+land.
+
+## A09:2021 – Security Logging and Monitoring Failures
+
+**Partially mitigated.** Audit signals exist for the auth-relevant events —
+`LOGIN_SUCCEEDED`/`LOGIN_FAILED`/`LOGGED_OUT`
+(`crates/djangors-auth/src/lib.rs`, part 4c) — and general request logging exists via
+`logging_layer()` (`tower_http::trace::TraceLayer`, `crates/djangors-core/src/middleware.rs`).
+**Gap:** nothing *consumes* the audit signals yet (no default subscriber writing them to a
+durable audit log/table — that's `djangors-contrib-audit`, Phase 7). A signal firing with zero
+subscribers is a no-op in practice for any app that hasn't wired one up itself.
+
+## A10:2021 – Server-Side Request Forgery (SSRF)
+
+**Not applicable yet.** No framework code makes outbound HTTP requests to app/user-supplied URLs
+(no webhook delivery, no URL-preview/fetch feature, no image-proxy). Revisit if/when such a
+feature is built (none currently planned in `PLAN.md`).
+
+## Parser robustness (fuzzing) — supplementary to the Top 10 above
+
+Query-string parsing (`Request::parse_query`), both cookie-header parsers (`extract_cookie` in
+`djangors-core`/`djangors-sessions`), and signed session-cookie decoding
+(`SignedCookieStore::decode`) are all attacker-facing (values a browser fully controls) and are
+now covered by `cargo-fuzz` targets in `/root/dev/Rango/fuzz/` (see
+[[4.13-security-review-fuzzing]] Part 1 for exact target scope and how each was smoke-tested).
+**Gap:** no multipart parser exists yet (Phase 3 scope, not built) — nothing to fuzz there because
+nothing parses multipart bodies today; this is a genuine functionality gap, not a security gap
+being silently skipped. **Gap:** fuzzing is a one-off local smoke run per target, not wired into
+CI/OSS-Fuzz for continuous coverage — future work.
+
+## Summary of open gaps (all tracked above, repeated here for scanning)
+
+1. CSRF v1 only validates the header, not a form-body field — plain `<form>` POSTs without JS are
+   unprotected.
+2. `Secure` cookie flag is opt-in on both session and CSRF cookies, not on by default.
+3. No default Content-Security-Policy.
+4. Rate limiting is single-process/in-memory, not distributed.
+5. No groups/per-model permissions yet (part 4d).
+6. No password-reset flow yet (blocked on Phase 7's email backend).
+7. `cargo-deny` not yet wired into CI.
+8. Audit signals fire but have no default durable-storage subscriber (Phase 7's
+   `djangors-contrib-audit`).
+9. No multipart body parser (and therefore no file-upload support) yet — Phase 3 gap.
+10. Fuzzing is local-smoke-only, not continuous.
