@@ -9,6 +9,7 @@ pub mod expr;
 pub mod meta;
 pub mod queryset;
 
+pub use djangors_db;
 pub use inventory;
 pub use sqlx;
 

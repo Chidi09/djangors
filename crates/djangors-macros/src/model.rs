@@ -136,10 +136,21 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         relation_meta_tokens: TokenStream,
     }
 
+    struct ModelField {
+        ident: Ident,
+        column_name: String,
+        is_auto: bool,
+        is_primary_key: bool,
+        is_relation: bool,
+        last_ident: Option<String>,
+        is_nullable: bool,
+    }
+
     let mut parsed_fields = Vec::new();
     let mut parsed_relations = Vec::new();
     let mut column_names = std::collections::HashMap::new();
     let mut from_row_assignments = Vec::new();
+    let mut model_fields = Vec::new();
 
     for field in named_fields.named {
         let field_ident = field
@@ -268,10 +279,20 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             from_row_assignments.push(quote! {
                 #field_ident: djangors_orm::ForeignKey::new(row.try_get(#field_name_str).map_err(djangors_orm::OrmError::from)?)
             });
+            model_fields.push(ModelField {
+                ident: field_ident.clone(),
+                column_name: field_name_str.clone(),
+                is_auto: false,
+                is_primary_key: false,
+                is_relation: true,
+                last_ident: None,
+                is_nullable: false,
+            });
         } else {
             // It is a regular field!
             let (inner_ty, nullable) = resolve_option_type(&field.ty);
             let last_ident = get_last_path_segment_ident(inner_ty);
+            let last_ident_str = last_ident.map(|id| id.to_string());
             let is_string = last_ident.map(|id| id == "String").unwrap_or(false);
 
             if max_length.is_some() && !is_string {
@@ -296,6 +317,21 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                     return Err(syn::Error::new_spanned(
                         &field_ident,
                         "Decimal field is missing decimal_places",
+                    ));
+                }
+            }
+
+            // Check for unsupported types for save/update/delete codegen
+            if let Some(ref type_name) = last_ident_str {
+                if type_name == "NaiveDate"
+                    || type_name == "NaiveTime"
+                    || type_name == "Duration"
+                    || type_name == "Uuid"
+                    || type_name == "Decimal"
+                {
+                    return Err(syn::Error::new_spanned(
+                        &field.ty,
+                        format!("Field '{}' has unsupported type '{}' for save/update operations in djangors-orm", field_name_str, type_name),
                     ));
                 }
             }
@@ -386,6 +422,15 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             from_row_assignments.push(quote! {
                 #field_ident: row.try_get(#final_column).map_err(djangors_orm::OrmError::from)?
             });
+            model_fields.push(ModelField {
+                ident: field_ident.clone(),
+                column_name: final_column.clone(),
+                is_auto: auto,
+                is_primary_key: primary_key,
+                is_relation: false,
+                last_ident: last_ident_str,
+                is_nullable: nullable,
+            });
         }
     }
 
@@ -434,6 +479,170 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         None => quote! { &[] },
     };
 
+    // 5. Generate save, update, delete SQL building & binds
+    let save_fields: Vec<&ModelField> = model_fields.iter().filter(|f| !f.is_auto).collect();
+    let save_cols: Vec<String> = save_fields.iter().map(|f| f.column_name.clone()).collect();
+    let save_placeholders: Vec<String> =
+        (1..=save_fields.len()).map(|i| format!("${}", i)).collect();
+    let save_sql = format!(
+        "INSERT INTO {} ({}) VALUES ({}) RETURNING *",
+        table_name,
+        save_cols.join(", "),
+        save_placeholders.join(", ")
+    );
+    let save_binds = save_fields.iter().map(|f| {
+        let ident = &f.ident;
+        if f.is_relation {
+            quote! { djangors_orm::expr::Value::from(self.#ident.id) }
+        } else {
+            let last_ident_str = f.last_ident.as_deref().unwrap_or("");
+            if f.is_nullable {
+                match last_ident_str {
+                    "String" => quote! {
+                        match &self.#ident {
+                            Some(v) => djangors_orm::expr::Value::from(v.clone()),
+                            None => djangors_orm::expr::Value::Null,
+                        }
+                    },
+                    "i32" => quote! {
+                        match self.#ident {
+                            Some(v) => djangors_orm::expr::Value::from(v as i64),
+                            None => djangors_orm::expr::Value::Null,
+                        }
+                    },
+                    "f32" => quote! {
+                        match self.#ident {
+                            Some(v) => djangors_orm::expr::Value::from(v as f64),
+                            None => djangors_orm::expr::Value::Null,
+                        }
+                    },
+                    _ => quote! {
+                        match self.#ident {
+                            Some(v) => djangors_orm::expr::Value::from(v),
+                            None => djangors_orm::expr::Value::Null,
+                        }
+                    },
+                }
+            } else {
+                match last_ident_str {
+                    "String" => quote! { djangors_orm::expr::Value::from(self.#ident.clone()) },
+                    "i32" => quote! { djangors_orm::expr::Value::from(self.#ident as i64) },
+                    "f32" => quote! { djangors_orm::expr::Value::from(self.#ident as f64) },
+                    _ => quote! { djangors_orm::expr::Value::from(self.#ident) },
+                }
+            }
+        }
+    });
+
+    let pk_field = model_fields.iter().find(|f| f.is_primary_key).unwrap();
+    let update_fields: Vec<&ModelField> =
+        model_fields.iter().filter(|f| !f.is_primary_key).collect();
+    let mut update_set_clauses = Vec::new();
+    for (i, f) in update_fields.iter().enumerate() {
+        update_set_clauses.push(format!("{} = ${}", f.column_name, i + 1));
+    }
+    let update_sql = format!(
+        "UPDATE {} SET {} WHERE {} = ${}",
+        table_name,
+        update_set_clauses.join(", "),
+        pk_field.column_name,
+        update_fields.len() + 1
+    );
+    let update_binds = update_fields
+        .iter()
+        .chain(std::iter::once(&pk_field))
+        .map(|f| {
+            let ident = &f.ident;
+            if f.is_relation {
+                quote! { djangors_orm::expr::Value::from(self.#ident.id) }
+            } else {
+                let last_ident_str = f.last_ident.as_deref().unwrap_or("");
+                if f.is_nullable {
+                    match last_ident_str {
+                        "String" => quote! {
+                            match &self.#ident {
+                                Some(v) => djangors_orm::expr::Value::from(v.clone()),
+                                None => djangors_orm::expr::Value::Null,
+                            }
+                        },
+                        "i32" => quote! {
+                            match self.#ident {
+                                Some(v) => djangors_orm::expr::Value::from(v as i64),
+                                None => djangors_orm::expr::Value::Null,
+                            }
+                        },
+                        "f32" => quote! {
+                            match self.#ident {
+                                Some(v) => djangors_orm::expr::Value::from(v as f64),
+                                None => djangors_orm::expr::Value::Null,
+                            }
+                        },
+                        _ => quote! {
+                            match self.#ident {
+                                Some(v) => djangors_orm::expr::Value::from(v),
+                                None => djangors_orm::expr::Value::Null,
+                            }
+                        },
+                    }
+                } else {
+                    match last_ident_str {
+                        "String" => quote! { djangors_orm::expr::Value::from(self.#ident.clone()) },
+                        "i32" => quote! { djangors_orm::expr::Value::from(self.#ident as i64) },
+                        "f32" => quote! { djangors_orm::expr::Value::from(self.#ident as f64) },
+                        _ => quote! { djangors_orm::expr::Value::from(self.#ident) },
+                    }
+                }
+            }
+        });
+
+    let delete_sql = format!(
+        "DELETE FROM {} WHERE {} = $1",
+        table_name, pk_field.column_name
+    );
+    let delete_bind = {
+        let ident = &pk_field.ident;
+        if pk_field.is_relation {
+            quote! { djangors_orm::expr::Value::from(self.#ident.id) }
+        } else {
+            let last_ident_str = pk_field.last_ident.as_deref().unwrap_or("");
+            if pk_field.is_nullable {
+                match last_ident_str {
+                    "String" => quote! {
+                        match &self.#ident {
+                            Some(v) => djangors_orm::expr::Value::from(v.clone()),
+                            None => djangors_orm::expr::Value::Null,
+                        }
+                    },
+                    "i32" => quote! {
+                        match self.#ident {
+                            Some(v) => djangors_orm::expr::Value::from(v as i64),
+                            None => djangors_orm::expr::Value::Null,
+                        }
+                    },
+                    "f32" => quote! {
+                        match self.#ident {
+                            Some(v) => djangors_orm::expr::Value::from(v as f64),
+                            None => djangors_orm::expr::Value::Null,
+                        }
+                    },
+                    _ => quote! {
+                        match self.#ident {
+                            Some(v) => djangors_orm::expr::Value::from(v),
+                            None => djangors_orm::expr::Value::Null,
+                        }
+                    },
+                }
+            } else {
+                match last_ident_str {
+                    "String" => quote! { djangors_orm::expr::Value::from(self.#ident.clone()) },
+                    "i32" => quote! { djangors_orm::expr::Value::from(self.#ident as i64) },
+                    "f32" => quote! { djangors_orm::expr::Value::from(self.#ident as f64) },
+                    _ => quote! { djangors_orm::expr::Value::from(self.#ident) },
+                }
+            }
+        }
+    };
+
     Ok(quote! {
         impl #struct_name_ident {
             pub fn meta() -> &'static djangors_orm::ModelMeta {
@@ -460,6 +669,86 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 Ok(Self {
                     #(#from_row_assignments),*
                 })
+            }
+
+            /// Save a new row to the database.
+            ///
+            /// This is INSERT-only (i.e. always creates a new row). Fields with `auto`
+            /// set to true are ignored during insertion and populated by the database.
+            /// Returns a new instance populated from the inserted database row.
+            pub async fn save(&self, db: &djangors_orm::djangors_db::Database) -> Result<Self, djangors_orm::OrmError> {
+                let sql = #save_sql;
+                let params = vec![
+                    #(#save_binds),*
+                ];
+                let mut query = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(sql));
+                for val in &params {
+                    query = match val {
+                        djangors_orm::expr::Value::I64(v) => query.bind(*v),
+                        djangors_orm::expr::Value::F64(v) => query.bind(*v),
+                        djangors_orm::expr::Value::Text(v) => query.bind(v.clone()),
+                        djangors_orm::expr::Value::Bool(v) => query.bind(*v),
+                        djangors_orm::expr::Value::DateTime(v) => query.bind(*v),
+                        djangors_orm::expr::Value::Null => query.bind(None::<i64>),
+                    };
+                }
+                let row = query.fetch_one(db.pool()).await?;
+                Self::from_row(&row)
+            }
+
+            /// Update an existing row in the database.
+            ///
+            /// Every non-primary-key column is set to the instance's current field values,
+            /// matching on the primary key. Returns `OrmError::NotFound` if no row was updated.
+            pub async fn update(&self, db: &djangors_orm::djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
+                let sql = #update_sql;
+                let params = vec![
+                    #(#update_binds),*
+                ];
+                let mut query = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(sql));
+                for val in &params {
+                    query = match val {
+                        djangors_orm::expr::Value::I64(v) => query.bind(*v),
+                        djangors_orm::expr::Value::F64(v) => query.bind(*v),
+                        djangors_orm::expr::Value::Text(v) => query.bind(v.clone()),
+                        djangors_orm::expr::Value::Bool(v) => query.bind(*v),
+                        djangors_orm::expr::Value::DateTime(v) => query.bind(*v),
+                        djangors_orm::expr::Value::Null => query.bind(None::<i64>),
+                    };
+                }
+                let rows_affected = query.execute(db.pool()).await?.rows_affected();
+                if rows_affected == 0 {
+                    Err(djangors_orm::OrmError::NotFound {
+                        model: Self::meta().struct_name,
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+
+            /// Delete an existing row from the database.
+            ///
+            /// Deletes the row matching the primary key. Returns `OrmError::NotFound` if no row was deleted.
+            pub async fn delete(&self, db: &djangors_orm::djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
+                let sql = #delete_sql;
+                let val = #delete_bind;
+                let mut query = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(sql));
+                query = match &val {
+                    djangors_orm::expr::Value::I64(v) => query.bind(*v),
+                    djangors_orm::expr::Value::F64(v) => query.bind(*v),
+                    djangors_orm::expr::Value::Text(v) => query.bind(v.clone()),
+                    djangors_orm::expr::Value::Bool(v) => query.bind(*v),
+                    djangors_orm::expr::Value::DateTime(v) => query.bind(*v),
+                    djangors_orm::expr::Value::Null => query.bind(None::<i64>),
+                };
+                let rows_affected = query.execute(db.pool()).await?.rows_affected();
+                if rows_affected == 0 {
+                    Err(djangors_orm::OrmError::NotFound {
+                        model: Self::meta().struct_name,
+                    })
+                } else {
+                    Ok(())
+                }
             }
         }
 

@@ -352,6 +352,75 @@ async fn test_queryset_operations() {
     // have executed any SQL at all).
     assert_eq!(QuerySetTestModel::objects().count(&db).await.unwrap(), 3);
 
+    // 10. Test model lifecycle (save, update, delete)
+    let initial = QuerySetTestModel {
+        id: 0,
+        name: "David".to_string(),
+        is_active: true,
+    };
+    let saved = initial.save(&db).await.unwrap();
+    assert_ne!(saved.id, 0);
+    assert_eq!(saved.name, "David");
+    assert_eq!(saved.is_active, true);
+
+    // Confirm it exists in DB directly
+    let db_count = sqlx::query("SELECT COUNT(*) FROM test_queryset_model WHERE id = $1 AND name = 'David' AND is_active = true")
+        .bind(saved.id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    use sqlx::Row;
+    let count: i64 = db_count.try_get(0).unwrap();
+    assert_eq!(count, 1);
+
+    // 11. Test update()
+    let mut to_update = saved;
+    to_update.name = "David Updated".to_string();
+    to_update.update(&db).await.unwrap();
+
+    // Re-fetch via QuerySet
+    let fetched = QuerySetTestModel::objects()
+        .filter(q!(id = to_update.id))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(fetched.name, "David Updated");
+
+    // 12. Test update() on non-existent PK
+    let non_existent = QuerySetTestModel {
+        id: 999999,
+        name: "Ghost".to_string(),
+        is_active: false,
+    };
+    let update_res = non_existent.update(&db).await;
+    assert!(matches!(
+        update_res,
+        Err(crate::error::OrmError::NotFound { .. })
+    ));
+
+    // 13. Test delete()
+    assert_eq!(QuerySetTestModel::objects().count(&db).await.unwrap(), 4);
+    fetched.delete(&db).await.unwrap();
+    assert_eq!(QuerySetTestModel::objects().count(&db).await.unwrap(), 3);
+
+    let get_deleted = QuerySetTestModel::objects()
+        .filter(q!(id = fetched.id))
+        .unwrap()
+        .get(&db)
+        .await;
+    assert!(matches!(
+        get_deleted,
+        Err(crate::error::OrmError::NotFound { .. })
+    ));
+
+    // 14. Test delete() on non-existent PK
+    let delete_res = non_existent.delete(&db).await;
+    assert!(matches!(
+        delete_res,
+        Err(crate::error::OrmError::NotFound { .. })
+    ));
+
     // Cleanup table
     sqlx::query("DROP TABLE test_queryset_model")
         .execute(db.pool())
