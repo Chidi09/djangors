@@ -1,6 +1,6 @@
 # Phase 5 roadmap — status, sequencing, and the deferred-items ledger
 
-**Last updated:** 2026-07-17 (after commit 9b2fd47). This is the authoritative status document
+**Last updated:** 2026-07-17 (after commit 9f016fe). This is the authoritative status document
 for Phase 5 (THE ADMIN) and the single place where every deliberately-deferred item across the
 project is tracked, so no session ever has to re-derive project state from git archaeology.
 Update this file whenever a slice lands or a new deferral is made.
@@ -18,6 +18,7 @@ Phase 5 slices landed so far:
 | 5.1 | `5.1-admin-registry-login.md` | 9edf249 | `AdminSite` + registry, `ModelAdmin` trait + `DefaultModelAdmin`, staff-gated `/` index, `Forbidden` (403) error variant. Registry snapshot captured in handler closures because `Router::mount` never carries sub-router state. |
 | 5.2 | `5.2-admin-changelist.md` | ac647f9 | Changelist at `/{app}/{model}/`: all fields as columns via derive-emitted `Model::field_values()`/`field_names()`, click-to-sort (`?o=`, validated by `order_by` against `ModelMeta` — injection/reflected-XSS safe by construction), page-100 pagination, cells escaped via now-public `djangors_core::html_escape`. Also fixed a Phase-2-latent ORM bug: `count()`/`exists()`/`aggregate()` emitted `ORDER BY` from default `meta.ordering`, which Postgres rejects in aggregate queries. |
 | 5.3 | `5.3-createsuperuser-polls-admin.md` | 9b2fd47 | Real `dj createsuperuser` (non-interactive, `DJANGORS_SUPERUSER_PASSWORD` env, argon2, duplicate check) + admin mounted in `examples/polls` (`admin.rs` is now a real `admin.py`-equivalent), socket-level integration tests. Also fixed a latent macro bug: derived `save()`/`update()` bound every SQL NULL as `None::<i64>`, breaking any `None` value in a non-i64 nullable column (e.g. `last_login: None` against TIMESTAMPTZ); NULL binds are now typed per-field. |
+| 5.4 | `5.4-admin-change-form.md` | 9f016fe | Add + edit pages (`/{app}/{model}/add/`, `/{app}/{model}/{pk}/change/`), no macro changes — edit reuses the already-generic `QuerySet::update()`, add gets one new generic `QuerySet::insert_raw()` built from `ModelMeta` alone. `parse_field_value()` (form string → `Value`) collects every field error at once instead of failing fast. Changelist rows now link to their change page. Known gap: CSRF is header-only, so a raw `<form>` POST needs client-side JS to actually submit — not fixed here, tracked below. |
 
 Working infrastructure a new session should know exists (all proven by tests):
 - `Model::field_values(&self) -> Vec<(&'static str, Value)>` and `Model::field_names()` —
@@ -27,37 +28,33 @@ Working infrastructure a new session should know exists (all proven by tests):
 - `ModelAdmin` is `#[async_trait]` + object-safe; registry holds `Arc<dyn ModelAdmin>`;
   `DefaultModelAdmin<M>` drives the typed QuerySet. `require_staff()` gate helper.
 - `CHANGELIST_PER_PAGE = 100` (`pub(crate)` const in djangors-admin).
+- `QuerySet::<T>::insert_raw(db, Vec<(&'static str, Value)>) -> Result<i64, OrmError>` — generic
+  INSERT built purely from `ModelMeta`, no typed `Self` needed. `QuerySet::update()` is the
+  pre-existing generic UPDATE path (`Vec<(&'static str, SetExpr)>`). Both now route `Value::Null`
+  through a shared `null_bind_kind_for()` resolver (private to `queryset.rs`) so NULL is bound
+  with the right SQL type per field — see the 5.4 ledger entry below for why this mattered.
+- `ModelAdmin::{get_by_pk, update_from_form, create_from_form}` (5.4) — form-string parsing via
+  `parse_field_value()`/`parse_relation_value()`, all-errors-at-once validation.
 
 ## Recommended sequencing for the remaining Phase 5 bullets
 
-1. **5.4 — Change form v1 (add + edit), the next big rock.** The missing primitive is the
-   *reverse* of `field_values()`: constructing/updating a model instance from form-submitted
-   strings. Design questions to resolve in the doc before dispatch:
-   - Probably a derive-emitted `fn apply_field_values(&mut self, ...)` or
-     `fn from_field_strings(...)` with per-`FieldKind` parsing (String passthrough, i32/i64
-     parse, bool checkbox semantics, DateTime parse of `%Y-%m-%d %H:%M:%S`, FK id parse),
-     returning per-field validation errors — this is also the seed of Phase 6's ModelForm.
-   - POST target routes `/{app}/{model}/{pk}/change/` and `/{app}/{model}/add/`; CSRF already
-     works (polls proves the token/cookie/header flow); render plain-format! forms with
-     `html_escape`d values.
-   - `auto`/pk fields readonly; `Option` fields get an empty-string→None rule.
-   - Changelist first-column links to the change form once it exists (Django convention,
-     explicitly deferred in 5.2).
-2. **5.5 — Delete confirmation** (GET confirm page + POST delete). Full related-object
+1. **5.5 — Delete confirmation** (GET confirm page + POST delete), next up. Full related-object
    collection needs FK metadata traversal (`RelationMeta` exists); v1 can list direct FK
    dependents only. Depends on nothing else.
-3. **5.6 — Changelist customization**: `list_display` (subset of fields + computed methods —
+2. **5.6 — Changelist customization**: `list_display` (subset of fields + computed methods —
    needs a `ModelAdmin` method returning column closures), `search_fields` (ILIKE across
    named fields), `list_filter` v1 (bool/choices fields), then `date_hierarchy`,
    `list_editable`, bulk actions (delete first, then CSV export — XLSX needs a new dependency,
    justify it then), saved views last.
-4. **5.7 — Permissions**: requires groups/model-level permissions, which were *deferred out of
+3. **5.7 — Permissions**: requires groups/model-level permissions, which were *deferred out of
    Phase 4* — that work (auth tables, permission checks) has to land before "permission
    enforcement everywhere" is possible. Design it as its own auth-side doc first.
-5. **5.8 — History/audit, theming, extension points**: after CRUD is complete. Theming is the
+4. **5.8 — History/audit, theming, extension points**: after CRUD is complete. Theming is the
    right moment to introduce djangors-template into the admin (every page is plain `format!`
-   HTML until then, deliberately).
-6. **School example + DoD**: the Phase 5 DoD references a school example that does not exist
+   HTML until then, deliberately). This is also the natural point to revisit the CSRF
+   header-only limitation (5.4's ledger entry) since server-rendered forms become the primary
+   POST surface once theming replaces the plain `format!` HTML.
+5. **School example + DoD**: the Phase 5 DoD references a school example that does not exist
    yet — building it (models: students, enrollment, grades) is its own slice near the end,
    and is the real acceptance test for "a non-programmer can CRUD comfortably".
 
@@ -88,8 +85,13 @@ forgotten-by-accident; do not silently re-defer past the milestone listed.
 - **Multipart/file-upload parsing** (Phase 2 deferral): no admin file widgets until it exists
   (Phase 6/7 territory).
 - **CSRF form-body-field validation** (Phase 4, `4.8`): header+cookie double-submit only;
-  hidden-input tokens unsupported. Matters more once server-rendered admin forms (5.4) are the
-  main POST surface — revisit during 5.4.
+  hidden-input tokens unsupported. 5.4's admin add/change pages are real `<form method="post">`
+  pages now, so this is live: a plain browser submission of those forms has no way to populate
+  the `X-CSRFToken` header, and the middleware does not check a body field, so the POST will
+  403 unless something (client-side JS reading the cookie, or an API client setting the header
+  directly) supplies it. Deliberately not patched with a fake hidden `csrfmiddlewaretoken`
+  input in 5.4 — that would look like protection without being checked. Revisit at 5.8
+  (theming), when server-rendered forms become the primary POST surface.
 - **Distributed rate limiting** (Phase 4, `4.12`): `RateLimitedBackend` is single-process
   in-memory, documented on the type. Phase 8 (deployment) territory.
 - **Full djangors-mail** (Phase 4, `4.14`): console backend only, explicitly scoped as the
