@@ -3,6 +3,7 @@
 //! Provides the core [`Request`], [`Response`], [`Router`], and [`Handler`]
 //! types that form the foundation of Djangors's HTTP layer.
 
+pub mod app;
 pub mod error;
 pub mod handler;
 pub mod middleware;
@@ -13,6 +14,7 @@ pub mod router;
 pub mod service;
 pub mod settings;
 
+pub use app::Djangors;
 pub use error::DjangorsError;
 pub use handler::Handler;
 pub use path_params::PathParams;
