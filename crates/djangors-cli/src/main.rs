@@ -1,3 +1,36 @@
+mod cli;
+mod commands;
+
+use clap::Parser;
+use cli::{Cli, Commands};
+
 fn main() {
-    println!("dj — the Djangors CLI. Placeholder release; development in progress.");
+    let cli = Cli::parse();
+
+    match cli.command {
+        Commands::New { name } => {
+            commands::new(&name);
+        }
+        Commands::NewApp { name } => {
+            commands::new_app(&name);
+        }
+        Commands::Run { port } => {
+            commands::run(port);
+        }
+        Commands::Migrate => {
+            commands::migrate();
+        }
+        Commands::Makemigrations { check } => {
+            commands::makemigrations(check);
+        }
+        Commands::Createsuperuser => {
+            commands::createsuperuser();
+        }
+        Commands::Shell => {
+            commands::shell();
+        }
+        Commands::Test => {
+            commands::test();
+        }
+    }
 }
