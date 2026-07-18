@@ -1,6 +1,6 @@
 # Phase 5 roadmap — status, sequencing, and the deferred-items ledger
 
-**Last updated:** 2026-07-18 (after commit cba2109). This is the authoritative status document
+**Last updated:** 2026-07-18 (after commit 47459ee). This is the authoritative status document
 for Phase 5 (THE ADMIN) and the single place where every deliberately-deferred item across the
 project is tracked, so no session ever has to re-derive project state from git archaeology.
 Update this file whenever a slice lands or a new deferral is made.
@@ -22,6 +22,7 @@ Phase 5 slices landed so far:
 | 5.5 | `5.5-admin-delete-confirmation.md` | aba0ff9 | Delete confirmation (`GET`/`POST /{app}/{model}/{pk}/delete/`), no macro changes — one new generic `QuerySet::delete_by_pk()`, sibling to 5.4's `insert_raw()`. `collect_related_objects()` walks the pre-existing `inventory`-based global model registry (`djangors_orm::meta::all_registered_models()`) to find any registered model (not just admin-registered ones) with a relation pointing at the object, one hop, counts only, `on_delete` shown for information only (still not enforced by the ORM). First slice this segment where independent review found zero bugs. |
 | 5.6.1 | `5.6-changelist-list-display-search.md` | a6ad28f | First customizable-admin registration path: `ModelAdminConfig { list_display, search_fields }` + `AdminSite::register_with()`, validated (panics) at registration time. `list_display` projects changelist columns to a real-field subset/reorder; `search_fields` adds an OR'd-ILIKE search box via a new generic `QuerySet::filter_or_icontains()`. Fixed two bugs found in review before they shipped: (1) the changelist row edit-link used to derive the pk from its position among displayed columns, which silently breaks once `list_display` can omit the pk — fixed by adding a parallel `ChangelistPage::pks` field always populated from full field values; (2) the search term was embedded into pagination hrefs via HTML-escaping only, not URL percent-encoding, so a term containing `&`/`#` could inject query params or truncate the link — fixed with `url_encode_query_value()`. |
 | 5.6.2 | `5.6.2-changelist-list-filter.md` | cba2109 | `list_filter` v1, Boolean fields only (no choices metadata exists anywhere in the ORM — choice-field filtering is a deferred, separate feature, see ledger). Pure wiring on the existing generic `filter()`/`UnresolvedExpr` — no new `QuerySet` method needed. Route handler only ever applies a filter present in the admin's own `list_filter_fields()` allowlist. Introduced `build_query_string()` and used it to replace 5.6.1's hand-spliced `o`/`q` link construction at every changelist link site, now that four dimensions (order/search/pagination/filters) must compose correctly together. **Process note:** the dispatch's own pasted "all tests passed" log for this slice contained fabricated test output (test names like `test_model::tests::test_user_metadata_derived` that do not exist anywhere in this repo) — independent verification (forced rebuild + real `cargo test --workspace` run) confirmed the actual code and tests were genuinely correct regardless, but this is the first time a dispatch's *pasted verification output itself*, not just its self-summary, was fabricated. Never skip the independent re-run, even when a dispatch pastes what looks like clean command output. |
+| 5.6.3 | `5.6.3-changelist-bulk-delete.md` | 47459ee | Bulk delete: one hardcoded action (no action-picker dropdown for a single action), same two-step confirm-then-act flow as 5.5's single-object delete on one POST-only route (`POST /{app}/{model}/bulk-delete/`, distinguished by a hidden `confirm=1` field). Reuses 5.5's `delete_by_pk` trait method in a loop — no new `QuerySet` method. Uses `Form<Vec<(String, String)>>` instead of the `Form<HashMap<String, String>>` every other admin POST handler uses, since a `HashMap` target silently drops all but the last value for repeated form keys (every checked "selected" checkbox shares that name) — flagged and designed around before it could ship as a real bug. No related-object collection on the bulk confirm page and no "select all" checkbox — both deliberate v1 cuts. |
 
 Working infrastructure a new session should know exists (all proven by tests):
 - `Model::field_values(&self) -> Vec<(&'static str, Value)>` and `Model::field_names()` —
@@ -59,15 +60,23 @@ Working infrastructure a new session should know exists (all proven by tests):
   v1. `admin_changelist`'s `build_query_string(pairs: &[(&str, Option<&str>)]) -> String`
   helper composes every changelist link (order/search/pagination/filters together,
   percent-encoded); use it for any new changelist link rather than hand-splicing query strings.
+- `POST /{app}/{model}/bulk-delete/` (5.6.3) — single hardcoded bulk-delete action, two-step
+  confirm via a hidden `confirm=1` field on the same route. **Any future multi-valued form
+  field (checkboxes sharing a name, multi-select) must use `Form<Vec<(String, String)>>`, not
+  `Form<HashMap<String, String>>`** — the latter silently keeps only the last value per key.
+  This is now the established pattern for that case in this codebase.
 
 ## Recommended sequencing for the remaining Phase 5 bullets
 
-1. **5.6.3+ — remaining changelist customization**: `date_hierarchy`, `list_editable`, bulk
-   actions (delete first — can likely reuse `delete_by_pk` in a loop, then CSV export — XLSX
-   needs a new dependency, justify it then), saved views last. `list_display` computed-method
-   columns (closures, not just real field names) and choices-based `list_filter` (needs new
-   `FieldMeta` choices metadata that doesn't exist yet) were both explicitly deferred and
-   belong here too, whenever their prerequisites exist.
+1. **5.6.4+ — remaining changelist customization**: `date_hierarchy`, `list_editable`, then a
+   real bulk-actions dispatch mechanism if/when a second action (e.g. CSV export — XLSX needs a
+   new dependency, justify it then) is added (5.6.3's single hardcoded "delete selected" button
+   deliberately has no action-picker), saved views last. `list_display` computed-method columns
+   (closures, not just real field names) and choices-based `list_filter` (needs new `FieldMeta`
+   choices metadata that doesn't exist yet) were both explicitly deferred and belong here too,
+   whenever their prerequisites exist. A future improvement to the bulk-delete confirm page
+   (per-selected-object related-object warnings, deliberately cut from 5.6.3 — see its design
+   doc) is optional, not blocking.
 2. **5.7 — Permissions**: requires groups/model-level permissions, which were *deferred out of
    Phase 4* — that work (auth tables, permission checks) has to land before "permission
    enforcement everywhere" is possible. Design it as its own auth-side doc first.
