@@ -53,6 +53,7 @@ pub struct ModelAdminConfig {
     /// Boolean field names only.
     pub list_filter: Option<&'static [&'static str]>,
     pub date_hierarchy: Option<&'static str>,
+    pub list_editable: Option<&'static [&'static str]>,
 }
 
 #[async_trait]
@@ -74,6 +75,7 @@ pub trait ModelAdmin: Send + Sync {
     fn search_fields(&self) -> &[&'static str];
     fn list_filter_fields(&self) -> &[&'static str];
     fn date_hierarchy_field(&self) -> Option<&'static str>;
+    fn list_editable_fields(&self) -> &[&'static str];
 
     async fn get_by_pk(
         &self,
@@ -82,6 +84,13 @@ pub trait ModelAdmin: Send + Sync {
     ) -> Result<Option<Vec<(&'static str, djangors_orm::expr::Value)>>, DjangorsError>;
 
     async fn update_from_form(
+        &self,
+        db: &djangors_db::Database,
+        pk: i64,
+        form: &std::collections::HashMap<String, String>,
+    ) -> Result<Result<(), std::collections::HashMap<String, String>>, DjangorsError>;
+
+    async fn update_fields_from_form(
         &self,
         db: &djangors_db::Database,
         pk: i64,
@@ -129,6 +138,10 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
 
     fn date_hierarchy_field(&self) -> Option<&'static str> {
         self.config.date_hierarchy
+    }
+
+    fn list_editable_fields(&self) -> &[&'static str] {
+        self.config.list_editable.unwrap_or(&[])
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -324,6 +337,57 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
             .filter(unresolved_cmp)
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
 
+        qs.update(db, sets)
+            .await
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+
+        Ok(Ok(()))
+    }
+
+    async fn update_fields_from_form(
+        &self,
+        db: &djangors_db::Database,
+        pk: i64,
+        form: &std::collections::HashMap<String, String>,
+    ) -> Result<Result<(), std::collections::HashMap<String, String>>, DjangorsError> {
+        let meta = M::meta();
+        let mut errors = std::collections::HashMap::new();
+        let mut sets = Vec::new();
+
+        for field in meta.fields {
+            if field.auto {
+                continue;
+            }
+            let Some(raw) = form.get(field.name) else {
+                continue; // not part of this edit - leave the column untouched
+            };
+            match parse_field_value(field, Some(raw.as_str())) {
+                Ok(val) => sets.push((field.name, djangors_orm::expr::SetExpr::Literal(val))),
+                Err(err_msg) => {
+                    errors.insert(field.name.to_string(), err_msg);
+                }
+            }
+        }
+
+        if !errors.is_empty() {
+            return Ok(Err(errors));
+        }
+        if sets.is_empty() {
+            return Ok(Ok(())); // nothing in `form` matched a real field - a no-op, not an error
+        }
+
+        let pk_field =
+            meta.fields.iter().find(|f| f.primary_key).ok_or_else(|| {
+                DjangorsError::Internal("Primary key field not found".to_string())
+            })?;
+        let unresolved_cmp =
+            djangors_orm::expr::UnresolvedExpr::And(vec![djangors_orm::expr::UnresolvedCompare {
+                field: pk_field.name,
+                value: djangors_orm::expr::Value::I64(pk),
+            }]);
+        let qs = M::objects()
+            .filter(unresolved_cmp)
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?;
         qs.update(db, sets)
             .await
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
@@ -681,6 +745,56 @@ impl AdminSite {
             );
         }
 
+        if let Some(list_editable) = config.list_editable {
+            let effective_columns: Vec<&'static str> = config
+                .list_display
+                .map(|c| c.to_vec())
+                .unwrap_or_else(M::field_names);
+            for name in list_editable {
+                let field = meta
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "list_editable field '{}' does not exist on model '{}'",
+                            name, meta.struct_name
+                        )
+                    });
+                assert!(
+                    matches!(
+                        field.kind,
+                        djangors_orm::meta::FieldKind::Char
+                            | djangors_orm::meta::FieldKind::Text
+                            | djangors_orm::meta::FieldKind::Email
+                            | djangors_orm::meta::FieldKind::Url
+                            | djangors_orm::meta::FieldKind::Slug
+                            | djangors_orm::meta::FieldKind::Integer
+                            | djangors_orm::meta::FieldKind::BigInt
+                            | djangors_orm::meta::FieldKind::Float
+                    ),
+                    "list_editable field '{}' on model '{}' is not a supported type \
+                     (Boolean and other kinds are not supported in v1 — see design doc)",
+                    name,
+                    meta.struct_name
+                );
+                let col_index = effective_columns.iter().position(|c| c == name);
+                assert!(
+                    col_index.is_some(),
+                    "list_editable field '{}' on model '{}' must also be in list_display",
+                    name,
+                    meta.struct_name
+                );
+                assert!(
+                    col_index != Some(0),
+                    "list_editable field '{}' on model '{}' cannot be the first list_display \
+                     column (that column is always the row's edit link)",
+                    name,
+                    meta.struct_name
+                );
+            }
+        }
+
         let mut reg = self.registry.lock().unwrap();
         reg.push(Arc::new(DefaultModelAdmin::<M> {
             config,
@@ -719,6 +833,7 @@ impl AdminSite {
         let delete_get_admins = admins.clone();
         let delete_post_admins = admins.clone();
         let bulk_delete_admins = admins.clone();
+        let save_changelist_admins = admins.clone();
 
         Router::new()
             .get("/", move |req: Request, params: PathParams| {
@@ -770,6 +885,12 @@ impl AdminSite {
                 "/{app:slug}/{model:slug}/bulk-delete/",
                 move |req: Request, params: PathParams| {
                     admin_bulk_delete_post(req, params, bulk_delete_admins.clone())
+                },
+            )
+            .post(
+                "/{app:slug}/{model:slug}/save-changelist/",
+                move |req: Request, params: PathParams| {
+                    admin_save_changelist_post(req, params, save_changelist_admins.clone())
                 },
             )
     }
@@ -987,6 +1108,7 @@ async fn admin_changelist(
         header_html.push_str(&format!("<th><a href=\"{}\">{}</a></th>", link, col));
     }
 
+    let editable_fields = admin.list_editable_fields();
     let mut body_html = String::new();
     for (row_index, row) in page_data.rows.into_iter().enumerate() {
         body_html.push_str("<tr>");
@@ -997,10 +1119,16 @@ async fn admin_changelist(
         ));
         for (i, cell) in row.into_iter().enumerate() {
             let escaped = djangors_core::html_escape(&cell);
+            let col_name = page_data.columns.get(i).copied().unwrap_or("");
             if i == 0 {
                 body_html.push_str(&format!(
                     "<td><a href=\"{}/change/\">{}</a></td>",
                     pk_val, escaped
+                ));
+            } else if editable_fields.contains(&col_name) {
+                body_html.push_str(&format!(
+                    "<td><input type=\"text\" name=\"edit-{}-{}\" value=\"{}\"></td>",
+                    pk_val, col_name, escaped
                 ));
             } else {
                 body_html.push_str(&format!("<td>{}</td>", escaped));
@@ -1219,9 +1347,17 @@ async fn admin_changelist(
         date_hierarchy_html.push_str("</div>");
     }
 
+    let mut action_buttons = String::from(
+        "<button type=\"submit\" formaction=\"bulk-delete/\">Delete selected</button>",
+    );
+    if !editable_fields.is_empty() {
+        action_buttons
+            .push_str("<button type=\"submit\" formaction=\"save-changelist/\">Save</button>");
+    }
+
     let html = format!(
-        "{}{}{}<form method=\"post\" action=\"bulk-delete/\"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table><input type=\"submit\" value=\"Delete selected\"><div>{}</div></form>",
-        date_hierarchy_html, search_html, filter_html, header_html, body_html, pager_html
+        "{}{}{}<form method=\"post\" action=\"bulk-delete/\"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table>{}<div>{}</div></form>",
+        date_hierarchy_html, search_html, filter_html, header_html, body_html, action_buttons, pager_html
     );
 
     Ok(Response::html(StatusCode::OK, html))
@@ -1662,6 +1798,87 @@ async fn admin_bulk_delete_post(
         admin.delete_by_pk(db, pk).await?;
     }
     Ok(Response::redirect(&format!("/{}/{}/", app, model)))
+}
+
+async fn admin_save_changelist_post(
+    req: Request,
+    params: PathParams,
+    admins: Vec<Arc<dyn ModelAdmin>>,
+) -> Result<Response, DjangorsError> {
+    require_staff(&req).await?;
+
+    let app = params.get("app").unwrap_or("");
+    let model = params.get("model").unwrap_or("");
+    let admin = admins
+        .iter()
+        .find(|a| {
+            let meta = a.model_meta();
+            meta.app_label == app && meta.struct_name.to_lowercase() == model
+        })
+        .ok_or(DjangorsError::NotFound)?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    let editable_fields = admin.list_editable_fields();
+    let Form(pairs) = Form::<Vec<(String, String)>>::from_request(&req).await?;
+
+    // Group by pk, allowlisting field names against list_editable_fields() -
+    // a key naming a field that isn't configured as editable is silently
+    // dropped, not applied and not an error (defense in depth: mirrors
+    // list_filter's route-level allowlist check, in case a crafted request
+    // names a real-but-not-editable field).
+    let mut by_pk: std::collections::HashMap<i64, std::collections::HashMap<String, String>> =
+        std::collections::HashMap::new();
+    for (key, value) in &pairs {
+        let Some(rest) = key.strip_prefix("edit-") else {
+            continue;
+        };
+        let Some((pk_str, field_name)) = rest.split_once('-') else {
+            continue;
+        };
+        let pk = pk_str
+            .parse::<i64>()
+            .map_err(|_| DjangorsError::BadRequest("invalid pk in edit field".to_string()))?;
+        if !editable_fields.contains(&field_name) {
+            continue;
+        }
+        by_pk
+            .entry(pk)
+            .or_default()
+            .insert(field_name.to_string(), value.clone());
+    }
+
+    let mut row_errors: Vec<(i64, std::collections::HashMap<String, String>)> = Vec::new();
+    for (pk, fields) in &by_pk {
+        match admin.update_fields_from_form(db, *pk, fields).await? {
+            Ok(()) => {}
+            Err(errors) => row_errors.push((*pk, errors)),
+        }
+    }
+
+    if row_errors.is_empty() {
+        return Ok(Response::redirect(&format!("/{}/{}/", app, model)));
+    }
+
+    let mut items_html = String::new();
+    for (pk, errors) in &row_errors {
+        for (field, msg) in errors {
+            items_html.push_str(&format!(
+                "<li>Row {}: {}: {}</li>",
+                pk,
+                djangors_core::html_escape(field),
+                djangors_core::html_escape(msg)
+            ));
+        }
+    }
+    let html = format!(
+        "<p>Some rows could not be saved (rows without errors were saved):</p><ul>{}</ul>\
+         <a href=\"/{}/{}/\">Back to changelist</a>",
+        items_html, app, model
+    );
+    Ok(Response::html(StatusCode::OK, html))
 }
 
 #[cfg(test)]
@@ -3729,6 +3946,323 @@ mod tests {
 
         // Clean up
         let _ = sqlx::query("DROP TABLE IF EXISTS test_model_f")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn test_phase5_part6_5_list_editable() {
+        let _guard = DB_MUTEX.lock().unwrap();
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        // Drop/create tables
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_e")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE test_model_d (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE test_model_e (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        use chrono::Utc;
+        let now = Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff".to_string(),
+            email: "staff@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+
+        let pk1 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Row1".to_string())),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("Content1".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let pk2 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Row2".to_string())),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("Content2".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        // 1. Register ModelD and check GET changelist -> 200, input field, save button
+        let site = AdminSite::new();
+        site.register_with::<ModelD>(ModelAdminConfig {
+            list_display: Some(&["name", "content"]),
+            list_editable: Some(&["content"]),
+            ..Default::default()
+        });
+
+        let router = Router::new().mount("/admin", site.urls());
+
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req1 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modeld/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res1 = router.handle(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::OK);
+        let body1 = String::from_utf8(res1.body().to_vec()).unwrap();
+        assert!(body1.contains(&format!("name=\"edit-{}-content\"", pk1)));
+        assert!(!body1.contains(&format!("name=\"edit-{}-name\"", pk1)));
+        assert!(body1.contains("formaction=\"save-changelist/\""));
+
+        // 2. Registration-validation panics
+        // (a) list_editable naming a field not in list_display
+        let site_panic = AdminSite::new();
+        let res_a = std::panic::catch_unwind(|| {
+            site_panic.register_with::<ModelD>(ModelAdminConfig {
+                list_display: Some(&["name"]),
+                list_editable: Some(&["content"]),
+                ..Default::default()
+            });
+        });
+        assert!(res_a.is_err());
+
+        // (b) list_editable naming list_display's first column
+        let res_b = std::panic::catch_unwind(|| {
+            site_panic.register_with::<ModelD>(ModelAdminConfig {
+                list_display: Some(&["name", "content"]),
+                list_editable: Some(&["name"]),
+                ..Default::default()
+            });
+        });
+        assert!(res_b.is_err());
+
+        // (c) list_editable naming a Boolean field
+        let res_c = std::panic::catch_unwind(|| {
+            site_panic.register_with::<ModelE>(ModelAdminConfig {
+                list_display: Some(&["name", "is_active"]),
+                list_editable: Some(&["is_active"]),
+                ..Default::default()
+            });
+        });
+        assert!(res_c.is_err());
+
+        // (d) list_editable naming a nonexistent field
+        let res_d = std::panic::catch_unwind(|| {
+            site_panic.register_with::<ModelD>(ModelAdminConfig {
+                list_display: Some(&["name", "content"]),
+                list_editable: Some(&["nonexistent"]),
+                ..Default::default()
+            });
+        });
+        assert!(res_d.is_err());
+
+        // 3. POST save-changelist/ with edit-<pk1>-content=Updated1 for one row -> 302 redirect
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req3 = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modeld/save-changelist/"),
+            headers.clone(),
+            Bytes::from(format!("edit-{}-content=Updated1", pk1)),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res3 = router.handle(req3).await.unwrap();
+        assert_eq!(res3.status(), StatusCode::FOUND);
+
+        // Verify updated in DB
+        let check1 = djangors_orm::queryset::QuerySet::<ModelD>::new()
+            .filter(djangors_orm::q!(id = pk1))
+            .unwrap()
+            .get(&db)
+            .await
+            .unwrap();
+        assert_eq!(check1.content, "Updated1");
+
+        // 4. POST with edits for TWO different pks in the same request (edit-<pk1>-content=A and edit-<pk2>-content=B) -> 302 redirect, BOTH rows updated correctly
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req4 = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modeld/save-changelist/"),
+            headers.clone(),
+            Bytes::from(format!("edit-{}-content=A&edit-{}-content=B", pk1, pk2)),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res4 = router.handle(req4).await.unwrap();
+        assert_eq!(res4.status(), StatusCode::FOUND);
+
+        let check1 = djangors_orm::queryset::QuerySet::<ModelD>::new()
+            .filter(djangors_orm::q!(id = pk1))
+            .unwrap()
+            .get(&db)
+            .await
+            .unwrap();
+        assert_eq!(check1.content, "A");
+        let check2 = djangors_orm::queryset::QuerySet::<ModelD>::new()
+            .filter(djangors_orm::q!(id = pk2))
+            .unwrap()
+            .get(&db)
+            .await
+            .unwrap();
+        assert_eq!(check2.content, "B");
+
+        // 5. POST with edit-<pk>-content= (empty string) where content is non-nullable -> 200 (not a redirect), response body mentions content in error message, and DB row's content is UNCHANGED
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req5 = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modeld/save-changelist/"),
+            headers.clone(),
+            Bytes::from(format!("edit-{}-content=", pk1)),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res5 = router.handle(req5).await.unwrap();
+        assert_eq!(res5.status(), StatusCode::OK);
+        let body5 = String::from_utf8(res5.body().to_vec()).unwrap();
+        assert!(body5.contains("content"));
+        // content is still "A"
+        let check1 = djangors_orm::queryset::QuerySet::<ModelD>::new()
+            .filter(djangors_orm::q!(id = pk1))
+            .unwrap()
+            .get(&db)
+            .await
+            .unwrap();
+        assert_eq!(check1.content, "A");
+
+        // 6. POST with an edit-<pk>-name=Malicious key, where name is NOT in list_editable -> redirect, DB row's name is UNCHANGED
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req6 = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modeld/save-changelist/"),
+            headers.clone(),
+            Bytes::from(format!("edit-{}-name=Malicious", pk1)),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res6 = router.handle(req6).await.unwrap();
+        assert_eq!(res6.status(), StatusCode::FOUND);
+        let check1 = djangors_orm::queryset::QuerySet::<ModelD>::new()
+            .filter(djangors_orm::q!(id = pk1))
+            .unwrap()
+            .get(&db)
+            .await
+            .unwrap();
+        assert_eq!(check1.name, "Row1");
+
+        // 7. POST with a non-numeric pk in an edit- key (e.g. edit-abc-content=X) -> 400 Bad Request
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req7 = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modeld/save-changelist/"),
+            headers.clone(),
+            Bytes::from("edit-abc-content=X"),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res7 = router.handle(req7).await;
+        assert!(res7.is_err());
+        assert_eq!(res7.unwrap_err().status_code(), StatusCode::BAD_REQUEST);
+
+        // 8. Unauthenticated / non-staff POST to save-changelist/ -> 401 / 403
+        // Unauthenticated:
+        let req8_unauth = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modeld/save-changelist/"),
+            headers.clone(),
+            Bytes::from(format!("edit-{}-content=Unauth", pk1)),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res8_unauth = router.handle(req8_unauth).await;
+        assert!(res8_unauth.is_err());
+        assert!(matches!(
+            res8_unauth.unwrap_err().status_code(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ));
+
+        // Clean up
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_e")
             .execute(db.pool())
             .await;
         let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
