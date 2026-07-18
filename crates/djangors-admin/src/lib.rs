@@ -20,6 +20,10 @@ static ADMIN_TEMPLATES: std::sync::LazyLock<djangors_template::TemplateEngine> =
                 "admin/delete_confirm.html",
                 include_str!("../templates/admin/delete_confirm.html"),
             ),
+            (
+                "admin/bulk_delete_confirm.html",
+                include_str!("../templates/admin/bulk_delete_confirm.html"),
+            ),
         ])
         .expect("admin templates are compiled into the binary and must always be valid")
     });
@@ -1909,6 +1913,13 @@ struct DeleteConfirmContext {
     related: Vec<DeleteConfirmRelated>,
 }
 
+#[derive(serde::Serialize)]
+struct BulkDeleteConfirmContext {
+    count: usize,
+    items: Vec<String>,
+    pks: Vec<i64>,
+}
+
 async fn admin_delete_get(
     req: Request,
     params: PathParams,
@@ -2047,7 +2058,7 @@ async fn admin_bulk_delete_post(
 
     if !is_confirm {
         // Step 1: render the confirm page, listing each selected object.
-        let mut items_html = String::new();
+        let mut items = Vec::new();
         for &pk in &pks {
             if let Some(row_vals) = admin.get_by_pk(db, pk).await? {
                 let display = row_vals
@@ -2055,27 +2066,21 @@ async fn admin_bulk_delete_post(
                     .map(|(_, v)| v.to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
-                items_html.push_str(&format!(
-                    "<li>{}</li>",
-                    djangors_core::html_escape(&display)
-                ));
+                items.push(display);
             }
             // A pk that no longer exists (already deleted concurrently) is just
             // skipped from the listing - it'll be a no-op in step 2 as well.
         }
-        let hidden_inputs: String = pks
-            .iter()
-            .map(|pk| format!("<input type=\"hidden\" name=\"selected\" value=\"{}\">", pk))
-            .collect();
-        let html = format!(
-            "<p>Delete {} selected object(s)?</p><ul>{}</ul>\
-             <form method=\"post\">{}<input type=\"hidden\" name=\"confirm\" value=\"1\">\
-             <input type=\"submit\" value=\"Confirm Delete\"></form>",
-            pks.len(),
-            items_html,
-            hidden_inputs
+        let count = pks.len();
+        return djangors_template::render(
+            &ADMIN_TEMPLATES,
+            "admin/bulk_delete_confirm.html",
+            BulkDeleteConfirmContext {
+                count,
+                items,
+                pks: pks.clone(),
+            },
         );
-        return Ok(Response::html(StatusCode::OK, html));
     }
 
     // Step 2: actually delete. Best-effort per pk - a pk already gone (race, or
