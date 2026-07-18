@@ -11,10 +11,16 @@ pub(crate) const CHANGELIST_PER_PAGE: i64 = 100;
 
 static ADMIN_TEMPLATES: std::sync::LazyLock<djangors_template::TemplateEngine> =
     std::sync::LazyLock::new(|| {
-        djangors_template::TemplateEngine::from_embedded(&[(
-            "admin/index.html",
-            include_str!("../templates/admin/index.html"),
-        )])
+        djangors_template::TemplateEngine::from_embedded(&[
+            (
+                "admin/index.html",
+                include_str!("../templates/admin/index.html"),
+            ),
+            (
+                "admin/delete_confirm.html",
+                include_str!("../templates/admin/delete_confirm.html"),
+            ),
+        ])
         .expect("admin templates are compiled into the binary and must always be valid")
     });
 
@@ -1883,6 +1889,26 @@ async fn date_hierarchy_drilldown_values(
         .map_err(|e| DjangorsError::Internal(e.to_string()))
 }
 
+#[derive(serde::Serialize)]
+struct DeleteConfirmField {
+    name: String,
+    value: String,
+}
+
+#[derive(serde::Serialize)]
+struct DeleteConfirmRelated {
+    struct_name: String,
+    table_name: String,
+    count: i64,
+    on_delete: String,
+}
+
+#[derive(serde::Serialize)]
+struct DeleteConfirmContext {
+    fields: Vec<DeleteConfirmField>,
+    related: Vec<DeleteConfirmRelated>,
+}
+
 async fn admin_delete_get(
     req: Request,
     params: PathParams,
@@ -1916,39 +1942,36 @@ async fn admin_delete_get(
     let meta = admin.model_meta();
     let related = collect_related_objects(db, meta, pk).await?;
 
-    let mut obj_html = String::new();
+    let mut fields = Vec::new();
     for (name, val) in row_vals {
-        let name_esc = djangors_core::html_escape(name);
-        let val_esc = djangors_core::html_escape(&val.to_string());
-        obj_html.push_str(&format!(
-            "<div><strong>{}:</strong> {}</div>",
-            name_esc, val_esc
-        ));
+        fields.push(DeleteConfirmField {
+            name: name.to_string(),
+            value: val.to_string(),
+        });
     }
 
-    let mut warnings_html = String::new();
-    if !related.is_empty() {
-        warnings_html.push_str("<h3>Related Objects:</h3><ul>");
-        for rel in related {
-            let struct_name_esc = djangors_core::html_escape(rel.struct_name);
-            let on_delete_esc = djangors_core::html_escape(&format!("{:?}", rel.on_delete));
-            let table_name = djangors_orm::meta::all_registered_models()
-                .find(|m| m.app_label == rel.app_label && m.struct_name == rel.struct_name)
-                .map(|m| m.table_name)
-                .unwrap_or("");
-            let table_name_esc = djangors_core::html_escape(table_name);
-            warnings_html.push_str(&format!(
-                "<li>{} (table: {}, count: {}, on_delete: {})</li>",
-                struct_name_esc, table_name_esc, rel.count, on_delete_esc
-            ));
-        }
-        warnings_html.push_str("</ul>");
+    let mut related_context = Vec::new();
+    for rel in related {
+        let table_name = djangors_orm::meta::all_registered_models()
+            .find(|m| m.app_label == rel.app_label && m.struct_name == rel.struct_name)
+            .map(|m| m.table_name)
+            .unwrap_or("");
+        related_context.push(DeleteConfirmRelated {
+            struct_name: rel.struct_name.to_string(),
+            table_name: table_name.to_string(),
+            count: rel.count,
+            on_delete: format!("{:?}", rel.on_delete),
+        });
     }
 
-    let form_html = "<form method=\"post\"><input type=\"submit\" value=\"Confirm Delete\"></form>";
-    let full_html = format!("<div>{}</div>{}{}", obj_html, warnings_html, form_html);
-
-    Ok(Response::html(StatusCode::OK, full_html))
+    djangors_template::render(
+        &ADMIN_TEMPLATES,
+        "admin/delete_confirm.html",
+        DeleteConfirmContext {
+            fields,
+            related: related_context,
+        },
+    )
 }
 
 async fn admin_delete_post(
