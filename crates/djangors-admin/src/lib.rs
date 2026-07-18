@@ -72,6 +72,16 @@ pub trait ModelAdmin: Send + Sync {
         date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
     ) -> Result<ChangelistPage, DjangorsError>;
 
+    #[allow(clippy::too_many_arguments)]
+    async fn export_csv_rows(
+        &self,
+        db: &djangors_db::Database,
+        order: Option<&str>,
+        search: Option<&str>,
+        filters: &[(&'static str, bool)],
+        date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    ) -> Result<(Vec<&'static str>, Vec<Vec<String>>), DjangorsError>;
+
     fn search_fields(&self) -> &[&'static str];
     fn list_filter_fields(&self) -> &[&'static str];
     fn date_hierarchy_field(&self) -> Option<&'static str>;
@@ -116,6 +126,72 @@ pub struct DefaultModelAdmin<M: Model> {
     _marker: PhantomData<M>,
 }
 
+impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> DefaultModelAdmin<M> {
+    fn effective_columns(&self) -> Vec<&'static str> {
+        self.config
+            .list_display
+            .map(|cols| cols.to_vec())
+            .unwrap_or_else(M::field_names)
+    }
+
+    fn build_filtered_queryset(
+        &self,
+        order: Option<&str>,
+        search: Option<&str>,
+        filters: &[(&'static str, bool)],
+        date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    ) -> Result<djangors_orm::queryset::QuerySet<M>, DjangorsError> {
+        let mut qs = M::objects();
+        if let Some(o) = order {
+            qs = qs.order_by(o).map_err(|e| match e {
+                djangors_orm::error::OrmError::FieldNotFound { .. } => {
+                    DjangorsError::BadRequest(e.to_string())
+                }
+                _ => DjangorsError::Internal(e.to_string()),
+            })?;
+        }
+        if let (Some(term), Some(fields)) = (search, self.config.search_fields) {
+            if !term.is_empty() {
+                qs = qs
+                    .filter_or_icontains(fields, term)
+                    .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            }
+        }
+        if !filters.is_empty() {
+            let compares = filters
+                .iter()
+                .map(|(field, val)| djangors_orm::expr::UnresolvedCompare {
+                    field,
+                    value: djangors_orm::expr::Value::Bool(*val),
+                })
+                .collect();
+            qs = qs
+                .filter(djangors_orm::expr::UnresolvedExpr::And(compares))
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        }
+        if let (Some(field), Some((gte, lt))) = (self.config.date_hierarchy, date_range) {
+            qs = qs
+                .filter_datetime_range(field, gte, lt)
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        }
+        Ok(qs)
+    }
+
+    fn row_values(&self, item: &M, columns: &[&'static str]) -> Vec<String> {
+        let field_values = item.field_values();
+        columns
+            .iter()
+            .map(|col| {
+                field_values
+                    .iter()
+                    .find(|(name, _)| name == col)
+                    .map(|(_, v)| v.to_string())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+}
+
 #[async_trait]
 impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
     for DefaultModelAdmin<M>
@@ -155,39 +231,7 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         filters: &[(&'static str, bool)],
         date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
     ) -> Result<ChangelistPage, DjangorsError> {
-        let mut qs = M::objects();
-        if let Some(o) = order {
-            qs = qs.order_by(o).map_err(|e| match e {
-                djangors_orm::error::OrmError::FieldNotFound { .. } => {
-                    DjangorsError::BadRequest(e.to_string())
-                }
-                _ => DjangorsError::Internal(e.to_string()),
-            })?;
-        }
-        if let (Some(term), Some(fields)) = (search, self.config.search_fields) {
-            if !term.is_empty() {
-                qs = qs
-                    .filter_or_icontains(fields, term)
-                    .map_err(|e| DjangorsError::Internal(e.to_string()))?;
-            }
-        }
-        if !filters.is_empty() {
-            let compares = filters
-                .iter()
-                .map(|(field, val)| djangors_orm::expr::UnresolvedCompare {
-                    field,
-                    value: djangors_orm::expr::Value::Bool(*val),
-                })
-                .collect();
-            qs = qs
-                .filter(djangors_orm::expr::UnresolvedExpr::And(compares))
-                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
-        }
-        if let (Some(field), Some((gte, lt))) = (self.config.date_hierarchy, date_range) {
-            qs = qs
-                .filter_datetime_range(field, gte, lt)
-                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
-        }
+        let mut qs = self.build_filtered_queryset(order, search, filters, date_range)?;
 
         let total = qs
             .clone()
@@ -202,11 +246,7 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
             .await
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
 
-        let columns: Vec<&'static str> = self
-            .config
-            .list_display
-            .map(|cols| cols.to_vec())
-            .unwrap_or_else(M::field_names);
+        let columns = self.effective_columns();
 
         let meta = M::meta();
         let pk_field_name = meta
@@ -220,19 +260,10 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         let mut pks = Vec::new();
 
         for item in &items {
-            let field_values = item.field_values();
-            let row_vals: Vec<String> = columns
-                .iter()
-                .map(|col| {
-                    field_values
-                        .iter()
-                        .find(|(name, _)| name == col)
-                        .map(|(_, v)| v.to_string())
-                        .unwrap_or_default()
-                })
-                .collect();
+            let row_vals = self.row_values(item, &columns);
             rows.push(row_vals);
 
+            let field_values = item.field_values();
             let pk_val = field_values
                 .iter()
                 .find(|(name, _)| name == &pk_field_name)
@@ -249,6 +280,28 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
             page,
             per_page,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn export_csv_rows(
+        &self,
+        db: &djangors_db::Database,
+        order: Option<&str>,
+        search: Option<&str>,
+        filters: &[(&'static str, bool)],
+        date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    ) -> Result<(Vec<&'static str>, Vec<Vec<String>>), DjangorsError> {
+        let qs = self.build_filtered_queryset(order, search, filters, date_range)?;
+        let items = qs
+            .all(db)
+            .await
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        let columns = self.effective_columns();
+        let rows = items
+            .iter()
+            .map(|item| self.row_values(item, &columns))
+            .collect();
+        Ok((columns, rows))
     }
 
     async fn get_by_pk(
@@ -834,6 +887,7 @@ impl AdminSite {
         let delete_post_admins = admins.clone();
         let bulk_delete_admins = admins.clone();
         let save_changelist_admins = admins.clone();
+        let export_csv_admins = admins.clone();
 
         Router::new()
             .get("/", move |req: Request, params: PathParams| {
@@ -843,6 +897,12 @@ impl AdminSite {
                 "/{app:slug}/{model:slug}/",
                 move |req: Request, params: PathParams| {
                     admin_changelist(req, params, changelist_admins.clone())
+                },
+            )
+            .get(
+                "/{app:slug}/{model:slug}/export-csv/",
+                move |req: Request, params: PathParams| {
+                    admin_export_csv(req, params, export_csv_admins.clone())
                 },
             )
             .get(
@@ -896,6 +956,81 @@ impl AdminSite {
     }
 }
 
+fn csv_escape_field(s: &str) -> String {
+    if s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r') {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+fn rows_to_csv(columns: &[&'static str], rows: &[Vec<String>]) -> String {
+    let mut out = String::new();
+    out.push_str(
+        &columns
+            .iter()
+            .map(|c| csv_escape_field(c))
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    out.push_str("\r\n");
+    for row in rows {
+        out.push_str(
+            &row.iter()
+                .map(|v| csv_escape_field(v))
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        out.push_str("\r\n");
+    }
+    out
+}
+
+async fn admin_export_csv(
+    req: Request,
+    params: PathParams,
+    admins: Vec<Arc<dyn ModelAdmin>>,
+) -> Result<Response, DjangorsError> {
+    require_staff(&req).await?;
+
+    let app = params.get("app").unwrap_or("");
+    let model = params.get("model").unwrap_or("");
+    let admin = admins
+        .iter()
+        .find(|a| {
+            let meta = a.model_meta();
+            meta.app_label == app && meta.struct_name.to_lowercase() == model
+        })
+        .ok_or(DjangorsError::NotFound)?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    let state = parse_changelist_query_state(&req, admin.as_ref())?;
+    let (columns, rows) = admin
+        .export_csv_rows(
+            db,
+            state.order,
+            state.search,
+            &state.filters,
+            state.date_range,
+        )
+        .await?;
+    let csv_body = rows_to_csv(&columns, &rows);
+
+    let filename = format!("{}.csv", admin.model_meta().struct_name.to_lowercase());
+    Ok(Response::bytes(
+        StatusCode::OK,
+        "text/csv; charset=utf-8",
+        csv_body.into_bytes(),
+    )
+    .header(
+        "Content-Disposition",
+        &format!("attachment; filename=\"{}\"", filename),
+    ))
+}
+
 async fn require_staff(req: &Request) -> Result<(), DjangorsError> {
     let auth = Auth::<User>::from_request(req).await?;
     if !auth.0.is_staff {
@@ -945,42 +1080,22 @@ fn get_month_name(m: u32) -> &'static str {
     }
 }
 
-async fn admin_changelist(
-    req: Request,
-    params: PathParams,
-    admins: Vec<Arc<dyn ModelAdmin>>,
-) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
+struct ChangelistQueryState<'a> {
+    order: Option<&'a str>,
+    search: Option<&'a str>,
+    filters: Vec<(&'static str, bool)>,
+    year: Option<i32>,
+    month: Option<u32>,
+    day: Option<u32>,
+    date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+}
 
-    let app = params.get("app").unwrap_or("");
-    let model = params.get("model").unwrap_or("");
-
-    let admin = admins
-        .iter()
-        .find(|a| {
-            let meta = a.model_meta();
-            meta.app_label == app && meta.struct_name.to_lowercase() == model
-        })
-        .ok_or(DjangorsError::NotFound)?;
-
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
-
-    let o = req.query("o");
-    let q = req.query("q");
-    let page = match req.query("page") {
-        Some(p_str) => {
-            let p = p_str
-                .parse::<i64>()
-                .map_err(|_| DjangorsError::BadRequest("invalid page parameter".to_string()))?;
-            if p < 1 {
-                return Err(DjangorsError::BadRequest("page must be >= 1".to_string()));
-            }
-            p
-        }
-        None => 1,
-    };
+fn parse_changelist_query_state<'a>(
+    req: &'a Request,
+    admin: &dyn ModelAdmin,
+) -> Result<ChangelistQueryState<'a>, DjangorsError> {
+    let order = req.query("o");
+    let search = req.query("q");
 
     let year: Option<i32> = match req.query("year") {
         Some(s) => Some(
@@ -1003,10 +1118,6 @@ async fn admin_changelist(
         ),
         None => None,
     };
-
-    let year_str = year.map(|y| y.to_string());
-    let month_str = month.map(|m| m.to_string());
-    let day_str = day.map(|d| d.to_string());
 
     use chrono::{Duration, TimeZone, Utc};
 
@@ -1075,6 +1186,67 @@ async fn admin_changelist(
             }
         }
     }
+
+    Ok(ChangelistQueryState {
+        order,
+        search,
+        filters: active_filters,
+        year,
+        month,
+        day,
+        date_range,
+    })
+}
+
+async fn admin_changelist(
+    req: Request,
+    params: PathParams,
+    admins: Vec<Arc<dyn ModelAdmin>>,
+) -> Result<Response, DjangorsError> {
+    require_staff(&req).await?;
+
+    let app = params.get("app").unwrap_or("");
+    let model = params.get("model").unwrap_or("");
+
+    let admin = admins
+        .iter()
+        .find(|a| {
+            let meta = a.model_meta();
+            meta.app_label == app && meta.struct_name.to_lowercase() == model
+        })
+        .ok_or(DjangorsError::NotFound)?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    let state = parse_changelist_query_state(&req, admin.as_ref())?;
+    let o = state.order;
+    let q = state.search;
+    let active_filters = state.filters;
+    let year = state.year;
+    let month = state.month;
+    let day = state.day;
+    let date_range = state.date_range;
+
+    let year_str = year.map(|y| y.to_string());
+    let month_str = month.map(|m| m.to_string());
+    let day_str = day.map(|d| d.to_string());
+
+    let list_filter_fields = admin.list_filter_fields();
+
+    let page = match req.query("page") {
+        Some(p_str) => {
+            let p = p_str
+                .parse::<i64>()
+                .map_err(|_| DjangorsError::BadRequest("invalid page parameter".to_string()))?;
+            if p < 1 {
+                return Err(DjangorsError::BadRequest("page must be >= 1".to_string()));
+            }
+            p
+        }
+        None => 1,
+    };
 
     let page_data = admin
         .changelist(
@@ -1355,9 +1527,19 @@ async fn admin_changelist(
             .push_str("<button type=\"submit\" formaction=\"save-changelist/\">Save</button>");
     }
 
+    let mut export_pairs = vec![("o", o), ("q", q)];
+    for &(f, val) in &active_filters {
+        export_pairs.push((f, Some(if val { "true" } else { "false" })));
+    }
+    export_pairs.push(("year", year_str.as_deref()));
+    export_pairs.push(("month", month_str.as_deref()));
+    export_pairs.push(("day", day_str.as_deref()));
+    let export_link = build_query_string(&export_pairs);
+    let export_html = format!("<a href=\"export-csv/{}\">Export CSV</a>", export_link);
+
     let html = format!(
-        "{}{}{}<form method=\"post\" action=\"bulk-delete/\"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table>{}<div>{}</div></form>",
-        date_hierarchy_html, search_html, filter_html, header_html, body_html, action_buttons, pager_html
+        "{}{}{}<form method=\"post\" action=\"bulk-delete/\"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table>{}<div>{}{}</div></form>",
+        date_hierarchy_html, search_html, filter_html, header_html, body_html, action_buttons, pager_html, export_html
     );
 
     Ok(Response::html(StatusCode::OK, html))
@@ -4263,6 +4445,240 @@ mod tests {
             .execute(db.pool())
             .await;
         let _ = sqlx::query("DROP TABLE IF EXISTS test_model_e")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn test_phase5_part6_6_csv_export() {
+        let _guard = DB_MUTEX.lock().unwrap();
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        // Drop/create tables
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE test_model_d (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        use chrono::Utc;
+        let now = Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff".to_string(),
+            email: "staff@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+
+        // Insert 3 ModelD rows
+        let _pk1 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Apple".to_string())),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("Fruit".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let _pk2 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                (
+                    "name",
+                    djangors_orm::expr::Value::Text("Banana".to_string()),
+                ),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("Yellow".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let _pk3 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                (
+                    "name",
+                    djangors_orm::expr::Value::Text("Cherry".to_string()),
+                ),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("Red".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        // 2. Register with default config
+        let site = AdminSite::new();
+        site.register_with::<ModelD>(ModelAdminConfig {
+            search_fields: Some(&["name", "content"]),
+            ..Default::default()
+        });
+
+        let router = Router::new().mount("/admin", site.urls());
+
+        // GET export-csv/ with no params
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req1 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modeld/export-csv/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res1 = router.handle(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::OK);
+        let content_type = res1
+            .headers()
+            .get("Content-Type")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(content_type.starts_with("text/csv"));
+        let content_disp = res1
+            .headers()
+            .get("Content-Disposition")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(content_disp.contains("attachment; filename=\"modeld.csv\""));
+
+        let body1 = String::from_utf8(res1.body().to_vec()).unwrap();
+        let lines: Vec<&str> = body1.split("\r\n").filter(|s| !s.is_empty()).collect();
+        assert_eq!(lines.len(), 4); // header + 3 rows
+        assert_eq!(lines[0], "id,name,content");
+        assert!(body1.contains("Apple"));
+        assert!(body1.contains("Banana"));
+        assert!(body1.contains("Cherry"));
+
+        // 3. GET export-csv/?q=Banana
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req2 = Request::new(
+            Method::GET,
+            "/admin/admin_test/modeld/export-csv/?q=Banana"
+                .parse::<Uri>()
+                .unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res2 = router.handle(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+        let body2 = String::from_utf8(res2.body().to_vec()).unwrap();
+        let lines2: Vec<&str> = body2.split("\r\n").filter(|s| !s.is_empty()).collect();
+        assert_eq!(lines2.len(), 2); // header + 1 row
+        assert!(!body2.contains("Apple"));
+        assert!(body2.contains("Banana"));
+        assert!(!body2.contains("Cherry"));
+
+        // 4. Insert row with comma:
+        let _pk4 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                (
+                    "name",
+                    djangors_orm::expr::Value::Text("Date, Fruit".to_string()),
+                ),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("Sweet, sticky".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req3 = Request::new(
+            Method::GET,
+            "/admin/admin_test/modeld/export-csv/?q=sticky"
+                .parse::<Uri>()
+                .unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res3 = router.handle(req3).await.unwrap();
+        assert_eq!(res3.status(), StatusCode::OK);
+        let body3 = String::from_utf8(res3.body().to_vec()).unwrap();
+        assert!(body3.contains("\"Date, Fruit\""));
+        assert!(body3.contains("\"Sweet, sticky\""));
+
+        // 5. Unauthenticated
+        let req4 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modeld/export-csv/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res4 = router.handle(req4).await;
+        assert!(res4.is_err());
+        assert!(matches!(
+            res4.unwrap_err().status_code(),
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+        ));
+
+        // Clean up
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
             .execute(db.pool())
             .await;
         let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
