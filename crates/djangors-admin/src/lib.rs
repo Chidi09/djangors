@@ -32,6 +32,10 @@ static ADMIN_TEMPLATES: std::sync::LazyLock<djangors_template::TemplateEngine> =
                 "admin/render_form.html",
                 include_str!("../templates/admin/render_form.html"),
             ),
+            (
+                "admin/changelist.html",
+                include_str!("../templates/admin/changelist.html"),
+            ),
         ])
         .expect("admin templates are compiled into the binary and must always be valid")
     });
@@ -1279,6 +1283,85 @@ fn parse_changelist_query_state<'a>(
     })
 }
 
+// As per design, all href, value, and label fields in the changelist context are treated
+// as plain String/Option<String> rather than Safe-wrapped minijinja::value::Value.
+// This is because build_query_string returns raw URLs with unescaped ampersands.
+// Entity-escaping via autoescape correctly turns '&' into '&amp;', which is spec-compliant
+// and doesn't break any test assertions.
+#[derive(serde::Serialize)]
+struct HeaderCellData {
+    href: String,
+    label: String,
+}
+
+#[derive(serde::Serialize)]
+struct ChangelistCellData {
+    kind: &'static str, // "pk_link" | "editable" | "plain"
+    value: String,
+    field_name: String, // only meaningful when kind == "editable"
+}
+
+#[derive(serde::Serialize)]
+struct ChangelistRowData {
+    pk: String,
+    cells: Vec<ChangelistCellData>,
+}
+
+#[derive(serde::Serialize)]
+struct PagerData {
+    prev_href: Option<String>,
+    page: i64,
+    total_pages: i64,
+    total: i64,
+    next_href: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct HiddenInputData {
+    name: String,
+    value: String,
+}
+
+#[derive(serde::Serialize)]
+struct SearchBoxData {
+    visible: bool,
+    hidden_inputs: Vec<HiddenInputData>,
+    q_value: String,
+}
+
+#[derive(serde::Serialize)]
+struct FilterBlockData {
+    field: String,
+    all_href: String,
+    yes_href: String,
+    no_href: String,
+}
+
+#[derive(serde::Serialize)]
+struct DateHierarchyLinkData {
+    href: String,
+    label: String,
+}
+
+#[derive(serde::Serialize)]
+struct DateHierarchyData {
+    visible: bool,
+    breadcrumbs: Vec<DateHierarchyLinkData>,
+    links: Vec<DateHierarchyLinkData>,
+}
+
+#[derive(serde::Serialize)]
+struct ChangelistTemplateContext {
+    date_hierarchy: DateHierarchyData,
+    search: SearchBoxData,
+    list_filter_blocks: Vec<FilterBlockData>,
+    header_cells: Vec<HeaderCellData>,
+    rows: Vec<ChangelistRowData>,
+    show_save_button: bool,
+    pager: PagerData,
+    export_query: String,
+}
+
 async fn admin_changelist(
     req: Request,
     params: PathParams,
@@ -1341,8 +1424,7 @@ async fn admin_changelist(
         )
         .await?;
 
-    let mut header_html = String::new();
-    header_html.push_str("<th></th>");
+    let mut header_cells = Vec::new();
     for col in &page_data.columns {
         let new_o = if o == Some(*col) {
             format!("-{}", col)
@@ -1358,36 +1440,41 @@ async fn admin_changelist(
         pairs.push(("day", day_str.as_deref()));
 
         let link = build_query_string(&pairs);
-        header_html.push_str(&format!("<th><a href=\"{}\">{}</a></th>", link, col));
+        header_cells.push(HeaderCellData {
+            href: link,
+            label: col.to_string(),
+        });
     }
 
     let editable_fields = admin.list_editable_fields();
-    let mut body_html = String::new();
+    let mut rows = Vec::new();
     for (row_index, row) in page_data.rows.into_iter().enumerate() {
-        body_html.push_str("<tr>");
-        let pk_val = page_data.pks.get(row_index).cloned().unwrap_or_default();
-        body_html.push_str(&format!(
-            "<td><input type=\"checkbox\" name=\"selected\" value=\"{}\"></td>",
-            pk_val
-        ));
+        let pk = page_data.pks.get(row_index).cloned().unwrap_or_default();
+        let mut cells = Vec::new();
         for (i, cell) in row.into_iter().enumerate() {
-            let escaped = djangors_core::html_escape(&cell);
             let col_name = page_data.columns.get(i).copied().unwrap_or("");
+            let escaped_value = djangors_core::html_escape(&cell);
             if i == 0 {
-                body_html.push_str(&format!(
-                    "<td><a href=\"{}/change/\">{}</a></td>",
-                    pk_val, escaped
-                ));
+                cells.push(ChangelistCellData {
+                    kind: "pk_link",
+                    value: escaped_value,
+                    field_name: String::new(),
+                });
             } else if editable_fields.contains(&col_name) {
-                body_html.push_str(&format!(
-                    "<td><input type=\"text\" name=\"edit-{}-{}\" value=\"{}\"></td>",
-                    pk_val, col_name, escaped
-                ));
+                cells.push(ChangelistCellData {
+                    kind: "editable",
+                    value: escaped_value,
+                    field_name: col_name.to_string(),
+                });
             } else {
-                body_html.push_str(&format!("<td>{}</td>", escaped));
+                cells.push(ChangelistCellData {
+                    kind: "plain",
+                    value: escaped_value,
+                    field_name: String::new(),
+                });
             }
         }
-        body_html.push_str("</tr>");
+        rows.push(ChangelistRowData { pk, cells });
     }
 
     let total_pages = if page_data.total == 0 {
@@ -1395,8 +1482,8 @@ async fn admin_changelist(
     } else {
         (page_data.total + CHANGELIST_PER_PAGE - 1) / CHANGELIST_PER_PAGE
     };
-    let mut pager_html = String::new();
-    if page > 1 {
+
+    let prev_href = if page > 1 {
         let prev_page_str = (page - 1).to_string();
         let mut pairs = vec![("page", Some(prev_page_str.as_str())), ("o", o), ("q", q)];
         for &(f, val) in &active_filters {
@@ -1405,15 +1492,12 @@ async fn admin_changelist(
         pairs.push(("year", year_str.as_deref()));
         pairs.push(("month", month_str.as_deref()));
         pairs.push(("day", day_str.as_deref()));
+        Some(build_query_string(&pairs))
+    } else {
+        None
+    };
 
-        let prev_link = build_query_string(&pairs);
-        pager_html.push_str(&format!("<a href=\"{}\">Previous</a> ", prev_link));
-    }
-    pager_html.push_str(&format!(
-        "Page {} of {}. Total: {}. ",
-        page, total_pages, page_data.total
-    ));
-    if page * CHANGELIST_PER_PAGE < page_data.total {
+    let next_href = if page * CHANGELIST_PER_PAGE < page_data.total {
         let next_page_str = (page + 1).to_string();
         let mut pairs = vec![("page", Some(next_page_str.as_str())), ("o", o), ("q", q)];
         for &(f, val) in &active_filters {
@@ -1422,55 +1506,61 @@ async fn admin_changelist(
         pairs.push(("year", year_str.as_deref()));
         pairs.push(("month", month_str.as_deref()));
         pairs.push(("day", day_str.as_deref()));
+        Some(build_query_string(&pairs))
+    } else {
+        None
+    };
 
-        let next_link = build_query_string(&pairs);
-        pager_html.push_str(&format!("<a href=\"{}\">Next</a>", next_link));
-    }
+    let pager = PagerData {
+        prev_href,
+        page,
+        total_pages,
+        total: page_data.total,
+        next_href,
+    };
 
     let search_fields = admin.search_fields();
-    let mut search_html = String::new();
-    if !search_fields.is_empty() {
-        let q_val_escaped = q.map(djangors_core::html_escape).unwrap_or_default();
-        search_html.push_str("<form method=\"get\">");
+    let search_visible = !search_fields.is_empty();
+    let mut hidden_inputs = Vec::new();
+    if search_visible {
         if let Some(order_val) = o {
-            search_html.push_str(&format!(
-                "<input type=\"hidden\" name=\"o\" value=\"{}\">",
-                djangors_core::html_escape(order_val)
-            ));
+            hidden_inputs.push(HiddenInputData {
+                name: "o".to_string(),
+                value: order_val.to_string(),
+            });
         }
         for &(f, val) in &active_filters {
-            search_html.push_str(&format!(
-                "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
-                djangors_core::html_escape(f),
-                if val { "true" } else { "false" }
-            ));
+            hidden_inputs.push(HiddenInputData {
+                name: f.to_string(),
+                value: (if val { "true" } else { "false" }).to_string(),
+            });
         }
         if let Some(ref y) = year_str {
-            search_html.push_str(&format!(
-                "<input type=\"hidden\" name=\"year\" value=\"{}\">",
-                djangors_core::html_escape(y)
-            ));
+            hidden_inputs.push(HiddenInputData {
+                name: "year".to_string(),
+                value: y.clone(),
+            });
         }
         if let Some(ref m) = month_str {
-            search_html.push_str(&format!(
-                "<input type=\"hidden\" name=\"month\" value=\"{}\">",
-                djangors_core::html_escape(m)
-            ));
+            hidden_inputs.push(HiddenInputData {
+                name: "month".to_string(),
+                value: m.clone(),
+            });
         }
         if let Some(ref d) = day_str {
-            search_html.push_str(&format!(
-                "<input type=\"hidden\" name=\"day\" value=\"{}\">",
-                djangors_core::html_escape(d)
-            ));
+            hidden_inputs.push(HiddenInputData {
+                name: "day".to_string(),
+                value: d.clone(),
+            });
         }
-
-        search_html.push_str(&format!(
-            "<input type=\"text\" name=\"q\" value=\"{}\"> <input type=\"submit\" value=\"Search\"></form>",
-            q_val_escaped
-        ));
     }
+    let search = SearchBoxData {
+        visible: search_visible,
+        hidden_inputs,
+        q_value: q.map(djangors_core::html_escape).unwrap_or_default(),
+    };
 
-    let mut filter_html = String::new();
+    let mut list_filter_blocks = Vec::new();
     if !list_filter_fields.is_empty() {
         for &filter_field in list_filter_fields {
             let mut pairs_all = vec![("o", o), ("q", q)];
@@ -1482,7 +1572,7 @@ async fn admin_changelist(
             pairs_all.push(("year", year_str.as_deref()));
             pairs_all.push(("month", month_str.as_deref()));
             pairs_all.push(("day", day_str.as_deref()));
-            let all_link = build_query_string(&pairs_all);
+            let all_href = build_query_string(&pairs_all);
 
             let mut pairs_yes = vec![("o", o), ("q", q), (filter_field, Some("true"))];
             for &(f, val) in &active_filters {
@@ -1493,7 +1583,7 @@ async fn admin_changelist(
             pairs_yes.push(("year", year_str.as_deref()));
             pairs_yes.push(("month", month_str.as_deref()));
             pairs_yes.push(("day", day_str.as_deref()));
-            let yes_link = build_query_string(&pairs_yes);
+            let yes_href = build_query_string(&pairs_yes);
 
             let mut pairs_no = vec![("o", o), ("q", q), (filter_field, Some("false"))];
             for &(f, val) in &active_filters {
@@ -1504,17 +1594,23 @@ async fn admin_changelist(
             pairs_no.push(("year", year_str.as_deref()));
             pairs_no.push(("month", month_str.as_deref()));
             pairs_no.push(("day", day_str.as_deref()));
-            let no_link = build_query_string(&pairs_no);
+            let no_href = build_query_string(&pairs_no);
 
-            filter_html.push_str(&format!(
-                "<div>Filter by {}:\n  <a href=\"{}\">All</a>\n  <a href=\"{}\">Yes</a>\n  <a href=\"{}\">No</a>\n</div>",
-                filter_field, all_link, yes_link, no_link
-            ));
+            list_filter_blocks.push(FilterBlockData {
+                field: filter_field.to_string(),
+                all_href,
+                yes_href,
+                no_href,
+            });
         }
     }
 
-    let mut date_hierarchy_html = String::new();
+    let mut date_hierarchy_visible = false;
+    let mut date_hierarchy_breadcrumbs = Vec::new();
+    let mut date_hierarchy_links = Vec::new();
+
     if let Some(field) = admin.date_hierarchy_field() {
+        date_hierarchy_visible = true;
         let values =
             date_hierarchy_drilldown_values(db, admin.model_meta().table_name, field, year, month)
                 .await?;
@@ -1542,24 +1638,40 @@ async fn admin_changelist(
         }
         let month_link = build_query_string(&pairs_m);
 
-        let mut breadcrumbs = Vec::new();
         if let Some(y) = year {
             if let Some(m) = month {
                 let m_name = get_month_name(m);
                 if let Some(d) = day {
-                    breadcrumbs.push(format!("<a href=\"{}\">{}</a>", all_link, y));
-                    breadcrumbs.push(format!("<a href=\"{}\">{}</a>", year_link, m_name));
-                    breadcrumbs.push(format!("<a href=\"{}\">{}</a>", month_link, d));
+                    date_hierarchy_breadcrumbs.push(DateHierarchyLinkData {
+                        href: all_link,
+                        label: y.to_string(),
+                    });
+                    date_hierarchy_breadcrumbs.push(DateHierarchyLinkData {
+                        href: year_link,
+                        label: m_name.to_string(),
+                    });
+                    date_hierarchy_breadcrumbs.push(DateHierarchyLinkData {
+                        href: month_link,
+                        label: d.to_string(),
+                    });
                 } else {
-                    breadcrumbs.push(format!("<a href=\"{}\">{}</a>", all_link, y));
-                    breadcrumbs.push(format!("<a href=\"{}\">{}</a>", year_link, m_name));
+                    date_hierarchy_breadcrumbs.push(DateHierarchyLinkData {
+                        href: all_link,
+                        label: y.to_string(),
+                    });
+                    date_hierarchy_breadcrumbs.push(DateHierarchyLinkData {
+                        href: year_link,
+                        label: m_name.to_string(),
+                    });
                 }
             } else {
-                breadcrumbs.push(format!("<a href=\"{}\">{}</a>", all_link, y));
+                date_hierarchy_breadcrumbs.push(DateHierarchyLinkData {
+                    href: all_link,
+                    label: y.to_string(),
+                });
             }
         }
 
-        let mut links_html = Vec::new();
         if day.is_none() {
             for val in values {
                 let val_str = val.to_string();
@@ -1583,30 +1695,21 @@ async fn admin_changelist(
                 };
 
                 let val_link = build_query_string(&pairs_val);
-                links_html.push(format!("<a href=\"{}\">{}</a>", val_link, link_text));
+                date_hierarchy_links.push(DateHierarchyLinkData {
+                    href: val_link,
+                    label: link_text,
+                });
             }
         }
-
-        date_hierarchy_html.push_str("<div class=\"date-hierarchy\">");
-        if !breadcrumbs.is_empty() {
-            date_hierarchy_html.push_str(&breadcrumbs.join(" &rsaquo; "));
-            if !links_html.is_empty() {
-                date_hierarchy_html.push_str(" &rsaquo; ");
-            }
-        }
-        if !links_html.is_empty() {
-            date_hierarchy_html.push_str(&links_html.join(" | "));
-        }
-        date_hierarchy_html.push_str("</div>");
     }
 
-    let mut action_buttons = String::from(
-        "<button type=\"submit\" formaction=\"bulk-delete/\">Delete selected</button>",
-    );
-    if !editable_fields.is_empty() {
-        action_buttons
-            .push_str("<button type=\"submit\" formaction=\"save-changelist/\">Save</button>");
-    }
+    let date_hierarchy = DateHierarchyData {
+        visible: date_hierarchy_visible,
+        breadcrumbs: date_hierarchy_breadcrumbs,
+        links: date_hierarchy_links,
+    };
+
+    let show_save_button = !editable_fields.is_empty();
 
     let mut export_pairs = vec![("o", o), ("q", q)];
     for &(f, val) in &active_filters {
@@ -1615,15 +1718,22 @@ async fn admin_changelist(
     export_pairs.push(("year", year_str.as_deref()));
     export_pairs.push(("month", month_str.as_deref()));
     export_pairs.push(("day", day_str.as_deref()));
-    let export_link = build_query_string(&export_pairs);
-    let export_html = format!("<a href=\"export-csv/{}\">Export CSV</a>", export_link);
+    let export_query = build_query_string(&export_pairs);
 
-    let html = format!(
-        "{}{}{}<form method=\"post\" action=\"bulk-delete/\"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table>{}<div>{}{}</div></form>",
-        date_hierarchy_html, search_html, filter_html, header_html, body_html, action_buttons, pager_html, export_html
-    );
-
-    Ok(Response::html(StatusCode::OK, html))
+    djangors_template::render(
+        &ADMIN_TEMPLATES,
+        "admin/changelist.html",
+        ChangelistTemplateContext {
+            date_hierarchy,
+            search,
+            list_filter_blocks,
+            header_cells,
+            rows,
+            show_save_button,
+            pager,
+            export_query,
+        },
+    )
 }
 
 async fn admin_add_get(
