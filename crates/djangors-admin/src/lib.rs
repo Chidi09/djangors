@@ -19,6 +19,20 @@ fn url_encode_query_value(s: &str) -> String {
     utf8_percent_encode(s, NON_ALPHANUMERIC).to_string()
 }
 
+/// Builds a `?key=value&key=value...` query string from already-string-ish
+/// parts, percent-encoding every value. Skips pairs whose value is `None`.
+fn build_query_string(pairs: &[(&str, Option<&str>)]) -> String {
+    let parts: Vec<String> = pairs
+        .iter()
+        .filter_map(|(k, v)| v.map(|val| format!("{}={}", k, url_encode_query_value(val))))
+        .collect();
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", parts.join("&"))
+    }
+}
+
 pub struct ChangelistPage {
     pub columns: Vec<&'static str>, // field names, declaration order
     pub rows: Vec<Vec<String>>,     // Display-rendered, NOT escaped (view escapes)
@@ -36,6 +50,8 @@ pub struct ModelAdminConfig {
     /// Real, text-like field names to ILIKE-match against `?q=`.
     /// `None` or empty = no search box rendered, `?q=` ignored if present.
     pub search_fields: Option<&'static [&'static str]>,
+    /// Boolean field names only.
+    pub list_filter: Option<&'static [&'static str]>,
 }
 
 #[async_trait]
@@ -49,9 +65,11 @@ pub trait ModelAdmin: Send + Sync {
         page: i64,           // already-validated >= 1
         per_page: i64,
         search: Option<&str>,
+        filters: &[(&'static str, bool)],
     ) -> Result<ChangelistPage, DjangorsError>;
 
     fn search_fields(&self) -> &[&'static str];
+    fn list_filter_fields(&self) -> &[&'static str];
 
     async fn get_by_pk(
         &self,
@@ -101,6 +119,10 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         self.config.search_fields.unwrap_or(&[])
     }
 
+    fn list_filter_fields(&self) -> &[&'static str] {
+        self.config.list_filter.unwrap_or(&[])
+    }
+
     async fn changelist(
         &self,
         db: &djangors_db::Database,
@@ -108,6 +130,7 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         page: i64,
         per_page: i64,
         search: Option<&str>,
+        filters: &[(&'static str, bool)],
     ) -> Result<ChangelistPage, DjangorsError> {
         let mut qs = M::objects();
         if let Some(o) = order {
@@ -124,6 +147,18 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
                     .filter_or_icontains(fields, term)
                     .map_err(|e| DjangorsError::Internal(e.to_string()))?;
             }
+        }
+        if !filters.is_empty() {
+            let compares = filters
+                .iter()
+                .map(|(field, val)| djangors_orm::expr::UnresolvedCompare {
+                    field,
+                    value: djangors_orm::expr::Value::Bool(*val),
+                })
+                .collect();
+            qs = qs
+                .filter(djangors_orm::expr::UnresolvedExpr::And(compares))
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
         }
 
         let total = qs
@@ -591,6 +626,27 @@ impl AdminSite {
                 );
             }
         }
+        if let Some(list_filter) = config.list_filter {
+            for name in list_filter {
+                let field = meta
+                    .fields
+                    .iter()
+                    .find(|f| f.name == *name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "list_filter field '{}' does not exist on model '{}'",
+                            name, meta.struct_name
+                        )
+                    });
+                assert!(
+                    matches!(field.kind, djangors_orm::meta::FieldKind::Boolean),
+                    "list_filter field '{}' on model '{}' is not a Boolean field (choices-based \
+                     list_filter is not supported — this ORM has no choices metadata yet)",
+                    name,
+                    meta.struct_name
+                );
+            }
+        }
 
         let mut reg = self.registry.lock().unwrap();
         reg.push(Arc::new(DefaultModelAdmin::<M> {
@@ -747,20 +803,34 @@ async fn admin_changelist(
         None => 1,
     };
 
+    let list_filter_fields = admin.list_filter_fields();
+    let mut active_filters: Vec<(&'static str, bool)> = Vec::new();
+    for &field_name in list_filter_fields {
+        if let Some(raw) = req.query(field_name) {
+            match raw {
+                "true" => active_filters.push((field_name, true)),
+                "false" => active_filters.push((field_name, false)),
+                _ => {} // anything else (including empty/"all") = not filtered on this field
+            }
+        }
+    }
+
     let page_data = admin
-        .changelist(db, o, page, CHANGELIST_PER_PAGE, q)
+        .changelist(db, o, page, CHANGELIST_PER_PAGE, q, &active_filters)
         .await?;
 
     let mut header_html = String::new();
     for col in &page_data.columns {
-        let mut link = if o == Some(*col) {
-            format!("?o=-{}", col)
+        let new_o = if o == Some(*col) {
+            format!("-{}", col)
         } else {
-            format!("?o={}", col)
+            col.to_string()
         };
-        if let Some(q_val) = q {
-            link.push_str(&format!("&q={}", url_encode_query_value(q_val)));
+        let mut pairs = vec![("o", Some(new_o.as_str())), ("q", q)];
+        for &(f, val) in &active_filters {
+            pairs.push((f, Some(if val { "true" } else { "false" })));
         }
+        let link = build_query_string(&pairs);
         header_html.push_str(&format!("<th><a href=\"{}\">{}</a></th>", link, col));
     }
 
@@ -789,13 +859,12 @@ async fn admin_changelist(
     };
     let mut pager_html = String::new();
     if page > 1 {
-        let mut prev_link = format!("?page={}", page - 1);
-        if let Some(order_val) = o {
-            prev_link.push_str(&format!("&o={}", order_val));
+        let prev_page_str = (page - 1).to_string();
+        let mut pairs = vec![("page", Some(prev_page_str.as_str())), ("o", o), ("q", q)];
+        for &(f, val) in &active_filters {
+            pairs.push((f, Some(if val { "true" } else { "false" })));
         }
-        if let Some(q_val) = q {
-            prev_link.push_str(&format!("&q={}", url_encode_query_value(q_val)));
-        }
+        let prev_link = build_query_string(&pairs);
         pager_html.push_str(&format!("<a href=\"{}\">Previous</a> ", prev_link));
     }
     pager_html.push_str(&format!(
@@ -803,13 +872,12 @@ async fn admin_changelist(
         page, total_pages, page_data.total
     ));
     if page * CHANGELIST_PER_PAGE < page_data.total {
-        let mut next_link = format!("?page={}", page + 1);
-        if let Some(order_val) = o {
-            next_link.push_str(&format!("&o={}", order_val));
+        let next_page_str = (page + 1).to_string();
+        let mut pairs = vec![("page", Some(next_page_str.as_str())), ("o", o), ("q", q)];
+        for &(f, val) in &active_filters {
+            pairs.push((f, Some(if val { "true" } else { "false" })));
         }
-        if let Some(q_val) = q {
-            next_link.push_str(&format!("&q={}", url_encode_query_value(q_val)));
-        }
+        let next_link = build_query_string(&pairs);
         pager_html.push_str(&format!("<a href=\"{}\">Next</a>", next_link));
     }
 
@@ -824,15 +892,56 @@ async fn admin_changelist(
                 djangors_core::html_escape(order_val)
             ));
         }
+        for &(f, val) in &active_filters {
+            search_html.push_str(&format!(
+                "<input type=\"hidden\" name=\"{}\" value=\"{}\">",
+                djangors_core::html_escape(f),
+                if val { "true" } else { "false" }
+            ));
+        }
         search_html.push_str(&format!(
             "<input type=\"text\" name=\"q\" value=\"{}\"> <input type=\"submit\" value=\"Search\"></form>",
             q_val_escaped
         ));
     }
 
+    let mut filter_html = String::new();
+    if !list_filter_fields.is_empty() {
+        for &filter_field in list_filter_fields {
+            let mut pairs_all = vec![("o", o), ("q", q)];
+            for &(f, val) in &active_filters {
+                if f != filter_field {
+                    pairs_all.push((f, Some(if val { "true" } else { "false" })));
+                }
+            }
+            let all_link = build_query_string(&pairs_all);
+
+            let mut pairs_yes = vec![("o", o), ("q", q), (filter_field, Some("true"))];
+            for &(f, val) in &active_filters {
+                if f != filter_field {
+                    pairs_yes.push((f, Some(if val { "true" } else { "false" })));
+                }
+            }
+            let yes_link = build_query_string(&pairs_yes);
+
+            let mut pairs_no = vec![("o", o), ("q", q), (filter_field, Some("false"))];
+            for &(f, val) in &active_filters {
+                if f != filter_field {
+                    pairs_no.push((f, Some(if val { "true" } else { "false" })));
+                }
+            }
+            let no_link = build_query_string(&pairs_no);
+
+            filter_html.push_str(&format!(
+                "<div>Filter by {}:\n  <a href=\"{}\">All</a>\n  <a href=\"{}\">Yes</a>\n  <a href=\"{}\">No</a>\n</div>",
+                filter_field, all_link, yes_link, no_link
+            ));
+        }
+    }
+
     let html = format!(
-        "{}<table><thead><tr>{}</tr></thead><tbody>{}</tbody></table><div>{}</div>",
-        search_html, header_html, body_html, pager_html
+        "{}{}<table><thead><tr>{}</tr></thead><tbody>{}</tbody></table><div>{}</div>",
+        search_html, filter_html, header_html, body_html, pager_html
     );
 
     Ok(Response::html(StatusCode::OK, html))
@@ -1186,6 +1295,17 @@ mod tests {
         id: i64,
         name: String,
         content: String,
+    }
+
+    #[derive(MacroModel, Debug, Clone)]
+    #[djangors(app = "admin_test", table_name = "test_model_e")]
+    #[allow(dead_code)]
+    struct ModelE {
+        #[djangors(primary_key, auto)]
+        id: i64,
+        name: String,
+        is_active: bool,
+        is_staff: bool,
     }
 
     #[tokio::test]
@@ -1587,7 +1707,10 @@ mod tests {
             config: ModelAdminConfig::default(),
             _marker: PhantomData,
         };
-        let page_data = admin_a.changelist(&db, None, 2, 2, None).await.unwrap();
+        let page_data = admin_a
+            .changelist(&db, None, 2, 2, None, &[])
+            .await
+            .unwrap();
         assert_eq!(page_data.total, 5);
         assert_eq!(page_data.rows.len(), 2); // Row 3 and Row 4
         assert_eq!(page_data.rows[0][1], "Row C");
@@ -2259,6 +2382,7 @@ mod tests {
         site.register_with::<ModelD>(ModelAdminConfig {
             list_display: Some(&["content", "name"]),
             search_fields: None,
+            ..Default::default()
         });
 
         let pk_d = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
@@ -2301,6 +2425,7 @@ mod tests {
             site2.register_with::<ModelD>(ModelAdminConfig {
                 list_display: Some(&["nonexistent"]),
                 search_fields: None,
+                ..Default::default()
             });
         });
         assert!(res2.is_err());
@@ -2311,6 +2436,7 @@ mod tests {
             site3.register_with::<ModelD>(ModelAdminConfig {
                 list_display: None,
                 search_fields: Some(&["id"]),
+                ..Default::default()
             });
         });
         assert!(res3.is_err());
@@ -2369,6 +2495,7 @@ mod tests {
         site_search.register_with::<ModelD>(ModelAdminConfig {
             list_display: None,
             search_fields: Some(&["name"]),
+            ..Default::default()
         });
         let router_search = Router::new().mount("/admin", site_search.urls());
 
@@ -2434,6 +2561,227 @@ mod tests {
 
         // Clean up
         let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_list_filter() {
+        let _guard = DB_MUTEX.lock().unwrap();
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        // Drop/create tables
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_e")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE test_model_e (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff".to_string(),
+            email: "staff@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+
+        // 1. register_with with list_filter: Some(&["is_active"]) on a model with a Boolean field -> registers successfully
+        let site = AdminSite::new();
+        site.register_with::<ModelE>(ModelAdminConfig {
+            list_filter: Some(&["is_active"]),
+            ..Default::default()
+        });
+
+        // Insert some rows to verify matching logic later
+        let _ = djangors_orm::queryset::QuerySet::<ModelE>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Alice".to_string())),
+                ("is_active", djangors_orm::expr::Value::Bool(true)),
+                ("is_staff", djangors_orm::expr::Value::Bool(false)),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let _ = djangors_orm::queryset::QuerySet::<ModelE>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Bob".to_string())),
+                ("is_active", djangors_orm::expr::Value::Bool(true)),
+                ("is_staff", djangors_orm::expr::Value::Bool(true)),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let _ = djangors_orm::queryset::QuerySet::<ModelE>::insert_raw(
+            &db,
+            vec![
+                (
+                    "name",
+                    djangors_orm::expr::Value::Text("Charlie".to_string()),
+                ),
+                ("is_active", djangors_orm::expr::Value::Bool(false)),
+                ("is_staff", djangors_orm::expr::Value::Bool(false)),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let router = Router::new().mount("/admin", site.urls());
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modele/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+
+        // contains the filter UI (All/Yes/No links for that field)
+        assert!(body.contains("Filter by is_active:"));
+        assert!(body.contains("<a href=\"\">All</a>"));
+        assert!(body.contains("<a href=\"?is_active=true\">Yes</a>"));
+        assert!(body.contains("<a href=\"?is_active=false\">No</a>"));
+
+        // 2. register_with with list_filter naming a field that doesn't exist -> panics
+        let site2 = AdminSite::new();
+        let res2 = std::panic::catch_unwind(|| {
+            site2.register_with::<ModelE>(ModelAdminConfig {
+                list_filter: Some(&["nonexistent"]),
+                ..Default::default()
+            });
+        });
+        assert!(res2.is_err());
+
+        // 3. register_with with list_filter naming a real but non-Boolean field -> panics
+        let site3 = AdminSite::new();
+        let res3 = std::panic::catch_unwind(|| {
+            site3.register_with::<ModelE>(ModelAdminConfig {
+                list_filter: Some(&["name"]),
+                ..Default::default()
+            });
+        });
+        assert!(res3.is_err());
+
+        // 4. GET with ?is_active=true -> only the matching rows appear, total count is correct
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req_filter = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modele/?is_active=true"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res_filter = router.handle(req_filter).await.unwrap();
+        assert_eq!(res_filter.status(), StatusCode::OK);
+        let body_filter = String::from_utf8(res_filter.body().to_vec()).unwrap();
+        assert!(body_filter.contains("Alice"));
+        assert!(body_filter.contains("Bob"));
+        assert!(!body_filter.contains("Charlie"));
+        assert!(body_filter.contains("Total: 2."));
+
+        // 5. Same setup, GET with ?is_active=true&q=<term> (both active, assuming search_fields configured)
+        let site_both = AdminSite::new();
+        site_both.register_with::<ModelE>(ModelAdminConfig {
+            search_fields: Some(&["name"]),
+            list_filter: Some(&["is_active"]),
+            ..Default::default()
+        });
+        let router_both = Router::new().mount("/admin", site_both.urls());
+
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req_both = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modele/?is_active=true&q=Bob"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res_both = router_both.handle(req_both).await.unwrap();
+        assert_eq!(res_both.status(), StatusCode::OK);
+        let body_both = String::from_utf8(res_both.body().to_vec()).unwrap();
+        assert!(!body_both.contains("Alice"));
+        assert!(body_both.contains("Bob"));
+        assert!(!body_both.contains("Charlie"));
+        assert!(body_both.contains("Total: 1."));
+
+        // 6. GET with a query parameter matching a field name that is real on the model but NOT in list_filter -> ignored entirely
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req_ignored = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modele/?is_staff=true"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res_ignored = router.handle(req_ignored).await.unwrap();
+        assert_eq!(res_ignored.status(), StatusCode::OK);
+        let body_ignored = String::from_utf8(res_ignored.body().to_vec()).unwrap();
+        assert!(body_ignored.contains("Alice"));
+        assert!(body_ignored.contains("Bob"));
+        assert!(body_ignored.contains("Charlie"));
+        assert!(body_ignored.contains("Total: 3."));
+
+        // Clean up
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_e")
             .execute(db.pool())
             .await;
         let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
