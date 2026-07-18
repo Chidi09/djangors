@@ -21,6 +21,10 @@ static ADMIN_TEMPLATES: std::sync::LazyLock<djangors_template::TemplateEngine> =
                 include_str!("../templates/admin/delete_confirm.html"),
             ),
             (
+                "admin/bulk_action_confirm.html",
+                include_str!("../templates/admin/bulk_action_confirm.html"),
+            ),
+            (
                 "admin/bulk_delete_confirm.html",
                 include_str!("../templates/admin/bulk_delete_confirm.html"),
             ),
@@ -35,6 +39,10 @@ static ADMIN_TEMPLATES: std::sync::LazyLock<djangors_template::TemplateEngine> =
             (
                 "admin/changelist.html",
                 include_str!("../templates/admin/changelist.html"),
+            ),
+            (
+                "admin/object_history.html",
+                include_str!("../templates/admin/object_history.html"),
             ),
             (
                 "admin/base.html",
@@ -89,6 +97,19 @@ pub struct ModelAdminConfig {
     pub list_filter: Option<&'static [&'static str]>,
     pub date_hierarchy: Option<&'static str>,
     pub list_editable: Option<&'static [&'static str]>,
+    // Computed columns for display
+    #[allow(clippy::type_complexity)]
+    pub computed_columns: Option<
+        &'static [(
+            &'static str,
+            fn(&[(&'static str, djangors_orm::expr::Value)]) -> String,
+        )],
+    >,
+    pub actions: Option<&'static [AdminAction]>,
+    pub fieldsets: Option<&'static [(&'static str, &'static [&'static str])]>,
+    pub readonly_fields: Option<&'static [&'static str]>,
+    pub raw_id_fields: Option<&'static [&'static str]>,
+    pub base_filter: Option<djangors_orm::UnresolvedExpr>,
 }
 
 #[async_trait]
@@ -121,6 +142,18 @@ pub trait ModelAdmin: Send + Sync {
     fn list_filter_fields(&self) -> &[&'static str];
     fn date_hierarchy_field(&self) -> Option<&'static str>;
     fn list_editable_fields(&self) -> &[&'static str];
+    fn actions(&self) -> Vec<AdminAction> {
+        Vec::new()
+    }
+    fn fieldsets(&self) -> Option<&'static [(&'static str, &'static [&'static str])]> {
+        None
+    }
+    fn readonly_fields(&self) -> &[&'static str] {
+        &[]
+    }
+    fn raw_id_fields(&self) -> &[&'static str] {
+        &[]
+    }
 
     async fn get_by_pk(
         &self,
@@ -209,6 +242,11 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> DefaultMod
                 .filter_datetime_range(field, gte, lt)
                 .map_err(|e| DjangorsError::Internal(e.to_string()))?;
         }
+        if let Some(bf) = &self.config.base_filter {
+            qs = qs
+                .filter(bf.clone())
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        }
         Ok(qs)
     }
 
@@ -217,6 +255,13 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> DefaultMod
         columns
             .iter()
             .map(|col| {
+                // Check computed columns first
+                if let Some(comp_cols) = self.config.computed_columns {
+                    if let Some((_, f)) = comp_cols.iter().find(|(n, _)| *n == *col) {
+                        return f(&field_values);
+                    }
+                }
+                // Fallback to normal field values
                 field_values
                     .iter()
                     .find(|(name, _)| name == col)
@@ -253,6 +298,36 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
 
     fn list_editable_fields(&self) -> &[&'static str] {
         self.config.list_editable.unwrap_or(&[])
+    }
+
+    fn actions(&self) -> Vec<AdminAction> {
+        let mut list = self.config.actions.map(|a| a.to_vec()).unwrap_or_default();
+        list.push(AdminAction {
+            name: "delete_selected",
+            label: "Delete selected",
+            requires_confirm: true,
+            handler: |db: &djangors_db::Database, pks: &[i64]| {
+                Box::pin(async move {
+                    for &pk in pks {
+                        let _ = djangors_orm::queryset::QuerySet::<M>::delete_by_pk(db, pk).await;
+                    }
+                    Ok(())
+                })
+            },
+        });
+        list
+    }
+
+    fn fieldsets(&self) -> Option<&'static [(&'static str, &'static [&'static str])]> {
+        self.config.fieldsets
+    }
+
+    fn readonly_fields(&self) -> &[&'static str] {
+        self.config.readonly_fields.unwrap_or(&[])
+    }
+
+    fn raw_id_fields(&self) -> &[&'static str] {
+        self.config.raw_id_fields.unwrap_or(&[])
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -637,9 +712,31 @@ struct FormFieldRow {
     value: String, // readonly span text, or the input's value="" attribute; unused for checkbox
     checked: bool, // only meaningful when kind == "checkbox"
     error: Option<String>,
+    section: Option<&'static str>,
+    lookup_href: Option<minijinja::value::Value>,
 }
 
 use djangors_macros::Model as DeriveModel;
+
+#[derive(Clone)]
+pub struct AdminAction {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub requires_confirm: bool,
+    #[allow(clippy::type_complexity)]
+    pub handler: for<'a> fn(
+        &'a djangors_db::Database,
+        &'a [i64],
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), DjangorsError>> + Send + 'a>,
+    >,
+}
+
+#[derive(serde::Serialize)]
+pub struct AdminActionRow {
+    pub name: String,
+    pub label: String,
+}
 
 pub const ACTION_ADDITION: i32 = 1;
 pub const ACTION_CHANGE: i32 = 2;
@@ -721,8 +818,12 @@ struct RenderFormContext {
     csrf_token: String,
     logo_url: Option<String>,
     accent_color: Option<String>,
+    has_change_permission: bool,
+    has_delete_permission: bool,
+    is_add: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_form(
     meta: &'static ModelMeta,
     field_names: &[&'static str],
@@ -731,58 +832,117 @@ fn render_form(
     is_add: bool,
     branding: &SiteBranding,
     csrf_token: String,
+    has_change_permission: bool,
+    has_delete_permission: bool,
+    fieldsets: Option<&'static [(&'static str, &'static [&'static str])]>,
+    readonly_fields: &[&'static str],
+    raw_id_fields: &[&'static str],
 ) -> Result<Response, DjangorsError> {
-    let mut rows = Vec::new();
-
-    for &name in field_names {
+    let build_row = |name: &'static str, section: Option<&'static str>| -> Option<FormFieldRow> {
         if let Some(field) = meta.fields.iter().find(|f| f.name == name) {
             if field.auto || field.primary_key {
                 if is_add {
-                    continue;
+                    return None;
                 } else {
                     let val = submitted_values.get(name).map(|s| s.as_str()).unwrap_or("");
-                    rows.push(FormFieldRow {
+                    return Some(FormFieldRow {
                         kind: "readonly",
                         name: name.to_string(),
                         value: val.to_string(),
                         checked: false,
                         error: None,
+                        section,
+                        lookup_href: None,
                     });
-                    continue;
                 }
             }
 
             let val = submitted_values.get(name).map(|s| s.as_str()).unwrap_or("");
             let err = errors.get(name).cloned();
 
-            let kind = match field.kind {
-                djangors_orm::meta::FieldKind::Boolean => "checkbox",
-                djangors_orm::meta::FieldKind::Integer
-                | djangors_orm::meta::FieldKind::BigInt
-                | djangors_orm::meta::FieldKind::Float => "number",
-                _ => "text",
+            let is_readonly = readonly_fields.contains(&name);
+            let kind = if is_readonly {
+                "readonly"
+            } else {
+                match field.kind {
+                    djangors_orm::meta::FieldKind::Boolean => "checkbox",
+                    djangors_orm::meta::FieldKind::Integer
+                    | djangors_orm::meta::FieldKind::BigInt
+                    | djangors_orm::meta::FieldKind::Float => "number",
+                    _ => "text",
+                }
             };
 
             let checked = kind == "checkbox" && (val == "on" || val == "true");
 
-            rows.push(FormFieldRow {
+            Some(FormFieldRow {
                 kind,
                 name: name.to_string(),
                 value: val.to_string(),
                 checked,
                 error: err,
-            });
-        } else if let Some(_rel) = meta.relations.iter().find(|r| r.field_name == name) {
+                section,
+                lookup_href: None,
+            })
+        } else if let Some(rel) = meta.relations.iter().find(|r| r.field_name == name) {
             let val = submitted_values.get(name).map(|s| s.as_str()).unwrap_or("");
             let err = errors.get(name).cloned();
 
-            rows.push(FormFieldRow {
-                kind: "number",
+            let is_readonly = readonly_fields.contains(&name);
+            let kind = if is_readonly { "readonly" } else { "number" };
+
+            let lookup_href = if raw_id_fields.contains(&name) {
+                let target_meta = (rel.target)();
+                Some(minijinja::value::Value::from_safe_string(format!(
+                    "/{}/{}/",
+                    target_meta.app_label,
+                    target_meta.struct_name.to_lowercase()
+                )))
+            } else {
+                None
+            };
+
+            Some(FormFieldRow {
+                kind,
                 name: name.to_string(),
                 value: val.to_string(),
                 checked: false,
                 error: err,
-            });
+                section,
+                lookup_href,
+            })
+        } else {
+            None
+        }
+    };
+
+    let mut rows = Vec::new();
+
+    if let Some(fsets) = fieldsets {
+        for &(section_title, names) in fsets {
+            for &name in names {
+                if let Some(row) = build_row(name, Some(section_title)) {
+                    rows.push(row);
+                }
+            }
+        }
+        // Also add any field names not in any fieldset
+        let all_fieldset_names: std::collections::HashSet<&'static str> = fsets
+            .iter()
+            .flat_map(|(_, names)| names.iter().copied())
+            .collect();
+        for &name in field_names {
+            if !all_fieldset_names.contains(name) {
+                if let Some(row) = build_row(name, None) {
+                    rows.push(row);
+                }
+            }
+        }
+    } else {
+        for &name in field_names {
+            if let Some(row) = build_row(name, None) {
+                rows.push(row);
+            }
         }
     }
 
@@ -796,6 +956,9 @@ fn render_form(
             csrf_token,
             logo_url: branding.logo_url.clone(),
             accent_color: branding.accent_color.clone(),
+            has_change_permission,
+            has_delete_permission,
+            is_add,
         },
     )
 }
@@ -803,6 +966,7 @@ fn render_form(
 pub struct AdminSite {
     registry: Mutex<Vec<Arc<dyn ModelAdmin>>>,
     branding: SiteBranding,
+    extra_routes: Vec<std::panic::AssertUnwindSafe<Router>>,
 }
 
 impl Default for AdminSite {
@@ -816,6 +980,7 @@ impl AdminSite {
         Self {
             registry: Mutex::new(Vec::new()),
             branding: SiteBranding::default(),
+            extra_routes: Vec::new(),
         }
     }
 
@@ -839,6 +1004,12 @@ impl AdminSite {
         self
     }
 
+    /// Register an extra route directly on the admin site.
+    pub fn extra_route(mut self, router: Router) -> Self {
+        self.extra_routes.push(std::panic::AssertUnwindSafe(router));
+        self
+    }
+
     /// Register a model with the default (no customization) ModelAdmin.
     pub fn register<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static>(&self) {
         self.register_with::<M>(ModelAdminConfig::default());
@@ -852,7 +1023,11 @@ impl AdminSite {
         if let Some(list_display) = config.list_display {
             for name in list_display {
                 assert!(
-                    meta.fields.iter().any(|f| f.name == *name),
+                    meta.fields.iter().any(|f| f.name == *name)
+                        || meta.relations.iter().any(|r| r.field_name == *name)
+                        || config
+                            .computed_columns
+                            .is_some_and(|cols| cols.iter().any(|(n, _)| *n == *name)),
                     "list_display field '{}' does not exist on model '{}'",
                     name,
                     meta.struct_name
@@ -1016,6 +1191,7 @@ impl AdminSite {
         let delete_get_admins = admins.clone();
         let delete_post_admins = admins.clone();
         let bulk_delete_admins = admins.clone();
+        let bulk_action_admins = admins.clone();
         let save_changelist_admins = admins.clone();
         let export_csv_admins = admins.clone();
 
@@ -1028,8 +1204,10 @@ impl AdminSite {
         let delete_get_branding = branding.clone();
         let bulk_delete_branding = branding.clone();
         let save_changelist_branding = branding.clone();
+        let bulk_action_branding = branding.clone();
+        let history_branding = branding.clone();
 
-        Router::new()
+        let mut router = Router::new()
             .get("/", move |req: Request, params: PathParams| {
                 admin_index(req, params, index_admins.clone(), index_branding.clone())
             })
@@ -1111,6 +1289,12 @@ impl AdminSite {
                     admin_delete_post(req, params, delete_post_admins.clone())
                 },
             )
+            .get(
+                "/{app:slug}/{model:slug}/{pk:i64}/history/",
+                move |req: Request, params: PathParams| {
+                    admin_history(req, params, admins.clone(), history_branding.clone())
+                },
+            )
             .post(
                 "/{app:slug}/{model:slug}/bulk-delete/",
                 move |req: Request, params: PathParams| {
@@ -1133,6 +1317,22 @@ impl AdminSite {
                     )
                 },
             )
+            .post(
+                "/{app:slug}/{model:slug}/bulk-action/",
+                move |req: Request, params: PathParams| {
+                    admin_bulk_action_post(
+                        req,
+                        params,
+                        bulk_action_admins.clone(),
+                        bulk_action_branding.clone(),
+                    )
+                },
+            );
+
+        for extra in self.extra_routes.iter() {
+            router = router.mount("", extra.0.clone());
+        }
+        router
     }
 }
 
@@ -1263,6 +1463,9 @@ struct IndexModelLink {
     // field that could ever carry request-derived or database-stored data.
     href: minijinja::value::Value,
     label: minijinja::value::Value,
+    has_view_permission: bool,
+    has_change_permission: bool,
+    has_add_permission: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -1298,14 +1501,32 @@ async fn admin_index(
 
     let mut models = Vec::new();
     for meta in &registry {
-        if !user.is_superuser {
+        let has_view = if user.is_superuser {
+            true
+        } else {
             let codename = action_codename(meta, "view");
-            let allowed = djangors_auth::has_perm(db, user.id, &codename)
+            djangors_auth::has_perm(db, user.id, &codename)
                 .await
-                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
-            if !allowed {
-                continue;
-            }
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?
+        };
+        let has_change = if user.is_superuser {
+            true
+        } else {
+            let codename = action_codename(meta, "change");
+            djangors_auth::has_perm(db, user.id, &codename)
+                .await
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?
+        };
+        let has_add = if user.is_superuser {
+            true
+        } else {
+            let codename = action_codename(meta, "add");
+            djangors_auth::has_perm(db, user.id, &codename)
+                .await
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?
+        };
+        if !has_view && !has_change && !has_add {
+            continue;
         }
         models.push(IndexModelLink {
             href: minijinja::value::Value::from_safe_string(format!(
@@ -1317,6 +1538,9 @@ async fn admin_index(
                 "{}.{}",
                 meta.app_label, meta.struct_name
             )),
+            has_view_permission: has_view,
+            has_change_permission: has_change,
+            has_add_permission: has_add,
         });
     }
 
@@ -1578,6 +1802,7 @@ struct ChangelistTemplateContext {
     date_hierarchy: DateHierarchyData,
     search: SearchBoxData,
     list_filter_blocks: Vec<FilterBlockData>,
+    actions: Vec<AdminActionRow>,
     header_cells: Vec<HeaderCellData>,
     rows: Vec<ChangelistRowData>,
     show_save_button: bool,
@@ -1588,6 +1813,9 @@ struct ChangelistTemplateContext {
     csrf_token: String,
     logo_url: Option<String>,
     accent_color: Option<String>,
+    has_add_permission: bool,
+    has_change_permission: bool,
+    has_delete_permission: bool,
 }
 
 async fn admin_changelist(
@@ -1611,7 +1839,42 @@ async fn admin_changelist(
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
 
-    require_perm(&req, db, admin.model_meta(), "view").await?;
+    let user = require_perm(&req, db, admin.model_meta(), "view").await?;
+
+    let meta = admin.model_meta();
+    let has_add = if user.is_superuser {
+        true
+    } else {
+        let codename = action_codename(meta, "add");
+        djangors_auth::has_perm(db, user.id, &codename)
+            .await
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+    };
+    let has_change = if user.is_superuser {
+        true
+    } else {
+        let codename = action_codename(meta, "change");
+        djangors_auth::has_perm(db, user.id, &codename)
+            .await
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+    };
+    let has_delete = if user.is_superuser {
+        true
+    } else {
+        let codename = action_codename(meta, "delete");
+        djangors_auth::has_perm(db, user.id, &codename)
+            .await
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+    };
+
+    let admin_actions = admin.actions();
+    let actions_rows: Vec<AdminActionRow> = admin_actions
+        .iter()
+        .map(|a| AdminActionRow {
+            name: a.name.to_string(),
+            label: a.label.to_string(),
+        })
+        .collect();
 
     let state = parse_changelist_query_state(&req, admin.as_ref())?;
     let o = state.order;
@@ -1970,6 +2233,10 @@ async fn admin_changelist(
             csrf_token,
             logo_url: branding.logo_url,
             accent_color: branding.accent_color,
+            actions: actions_rows,
+            has_add_permission: has_add,
+            has_change_permission: has_change,
+            has_delete_permission: has_delete,
         },
     )
 }
@@ -2014,6 +2281,11 @@ async fn admin_add_get(
         true,
         &branding,
         csrf_token,
+        true,
+        false,
+        admin.fieldsets(),
+        admin.readonly_fields(),
+        admin.raw_id_fields(),
     )
 }
 
@@ -2071,6 +2343,11 @@ async fn admin_add_post(
                 true,
                 &branding,
                 csrf_token,
+                true,
+                false,
+                admin.fieldsets(),
+                admin.readonly_fields(),
+                admin.raw_id_fields(),
             )
         }
     }
@@ -2100,7 +2377,17 @@ async fn admin_change_get(
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
 
-    require_perm(&req, db, admin.model_meta(), "change").await?;
+    let user = require_perm(&req, db, admin.model_meta(), "change").await?;
+
+    let meta = admin.model_meta();
+    let has_delete = if user.is_superuser {
+        true
+    } else {
+        let codename = action_codename(meta, "delete");
+        djangors_auth::has_perm(db, user.id, &codename)
+            .await
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+    };
 
     let row_vals = admin
         .get_by_pk(db, pk)
@@ -2112,7 +2399,6 @@ async fn admin_change_get(
         submitted_values.insert(name.to_string(), val.to_string());
     }
 
-    let meta = admin.model_meta();
     let field_names = admin.field_names();
     let errors = std::collections::HashMap::new();
 
@@ -2128,6 +2414,11 @@ async fn admin_change_get(
         false,
         &branding,
         csrf_token,
+        true,
+        has_delete,
+        admin.fieldsets(),
+        admin.readonly_fields(),
+        admin.raw_id_fields(),
     )
 }
 
@@ -2190,6 +2481,14 @@ async fn admin_change_post(
             }
 
             let meta = admin.model_meta();
+            let has_delete = if user.is_superuser {
+                true
+            } else {
+                let codename = action_codename(meta, "delete");
+                djangors_auth::has_perm(db, user.id, &codename)
+                    .await
+                    .map_err(|e| DjangorsError::Internal(e.to_string()))?
+            };
             let field_names = admin.field_names();
             let csrf_token = req
                 .ext::<djangors_core::middleware::CsrfToken>()
@@ -2203,6 +2502,11 @@ async fn admin_change_post(
                 false,
                 &branding,
                 csrf_token,
+                true,
+                has_delete,
+                admin.fieldsets(),
+                admin.readonly_fields(),
+                admin.raw_id_fields(),
             )
         }
     }
@@ -2214,6 +2518,7 @@ pub struct RelatedObjectSummary {
     pub field_name: &'static str,
     pub on_delete: djangors_orm::meta::OnDelete,
     pub count: i64,
+    pub nested: Vec<RelatedObjectSummary>,
 }
 
 async fn collect_related_objects(
@@ -2221,33 +2526,75 @@ async fn collect_related_objects(
     target_meta: &'static ModelMeta,
     pk: i64,
 ) -> Result<Vec<RelatedObjectSummary>, DjangorsError> {
-    let mut summaries = Vec::new();
-    for related_meta in djangors_orm::meta::all_registered_models() {
-        for relation in related_meta.relations {
-            if (relation.target)().table_name != target_meta.table_name {
-                continue;
-            }
-            let sql = format!(
-                "SELECT COUNT(*) FROM {} WHERE {} = $1",
-                related_meta.table_name, relation.field_name
-            );
-            let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-                .bind(pk)
-                .fetch_one(db.pool())
-                .await
-                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
-            if count > 0 {
-                summaries.push(RelatedObjectSummary {
-                    app_label: related_meta.app_label,
-                    struct_name: related_meta.struct_name,
-                    field_name: relation.field_name,
-                    on_delete: relation.on_delete,
-                    count,
-                });
+    collect_related_objects_with_depth(
+        db,
+        target_meta,
+        pk,
+        2,
+        &mut std::collections::HashSet::new(),
+    )
+    .await
+}
+
+fn collect_related_objects_with_depth<'a>(
+    db: &'a djangors_db::Database,
+    target_meta: &'static ModelMeta,
+    pk: i64,
+    depth: u32,
+    visited: &'a mut std::collections::HashSet<&'static str>,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Vec<RelatedObjectSummary>, DjangorsError>>
+            + Send
+            + 'a,
+    >,
+> {
+    Box::pin(async move {
+        let mut summaries = Vec::new();
+        for related_meta in djangors_orm::meta::all_registered_models() {
+            for relation in related_meta.relations {
+                if (relation.target)().table_name != target_meta.table_name {
+                    continue;
+                }
+                let sql = format!(
+                    "SELECT COUNT(*) FROM {} WHERE {} = $1",
+                    related_meta.table_name, relation.field_name
+                );
+                let count_result: Result<i64, _> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+                    .bind(pk)
+                    .fetch_one(db.pool())
+                    .await;
+                let count = match count_result {
+                    Ok(c) => c,
+                    Err(e) if e.to_string().contains("does not exist") => continue,
+                    Err(e) => return Err(DjangorsError::Internal(e.to_string())),
+                };
+                if count > 0 {
+                    let mut nested = Vec::new();
+                    if depth > 0 && !visited.contains(related_meta.table_name) {
+                        visited.insert(related_meta.table_name);
+                        nested = collect_related_objects_with_depth(
+                            db,
+                            related_meta,
+                            pk,
+                            depth - 1,
+                            visited,
+                        )
+                        .await?;
+                    }
+                    summaries.push(RelatedObjectSummary {
+                        app_label: related_meta.app_label,
+                        struct_name: related_meta.struct_name,
+                        field_name: relation.field_name,
+                        on_delete: relation.on_delete,
+                        count,
+                        nested,
+                    });
+                }
             }
         }
-    }
-    Ok(summaries)
+        Ok(summaries)
+    })
 }
 
 /// Returns the distinct values one drilldown level below the given
@@ -2315,6 +2662,21 @@ struct DeleteConfirmRelated {
     table_name: String,
     count: i64,
     on_delete: String,
+    nested: Vec<DeleteConfirmRelated>,
+}
+
+fn flatten_related(rel: RelatedObjectSummary) -> DeleteConfirmRelated {
+    let table_name = djangors_orm::meta::all_registered_models()
+        .find(|m| m.app_label == rel.app_label && m.struct_name == rel.struct_name)
+        .map(|m| m.table_name)
+        .unwrap_or("");
+    DeleteConfirmRelated {
+        struct_name: rel.struct_name.to_string(),
+        table_name: table_name.to_string(),
+        count: rel.count,
+        on_delete: format!("{:?}", rel.on_delete),
+        nested: rel.nested.into_iter().map(flatten_related).collect(),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -2384,16 +2746,7 @@ async fn admin_delete_get(
 
     let mut related_context = Vec::new();
     for rel in related {
-        let table_name = djangors_orm::meta::all_registered_models()
-            .find(|m| m.app_label == rel.app_label && m.struct_name == rel.struct_name)
-            .map(|m| m.table_name)
-            .unwrap_or("");
-        related_context.push(DeleteConfirmRelated {
-            struct_name: rel.struct_name.to_string(),
-            table_name: table_name.to_string(),
-            count: rel.count,
-            on_delete: format!("{:?}", rel.on_delete),
-        });
+        related_context.push(flatten_related(rel));
     }
 
     let csrf_token = req
@@ -2440,6 +2793,17 @@ async fn admin_delete_post(
 
     let user = require_perm(&req, db, admin.model_meta(), "delete").await?;
 
+    let meta = admin.model_meta();
+    let related = collect_related_objects(db, meta, pk).await?;
+    for rel in &related {
+        if rel.on_delete == djangors_orm::meta::OnDelete::Protect && rel.count > 0 {
+            return Err(DjangorsError::BadRequest(format!(
+                "Cannot delete '{}' because it is protected by related '{}'",
+                meta.struct_name, rel.struct_name
+            )));
+        }
+    }
+
     let deleted = admin.delete_by_pk(db, pk).await?;
     if deleted {
         log_action(
@@ -2455,6 +2819,199 @@ async fn admin_delete_post(
     } else {
         Err(DjangorsError::NotFound)
     }
+}
+
+#[derive(serde::Serialize)]
+struct BulkActionConfirmContext {
+    action_label: String,
+    count: usize,
+    items: Vec<String>,
+    action_name: String,
+    pks: Vec<i64>,
+    csrf_token: String,
+    site_header: String,
+    site_title: String,
+    logo_url: Option<String>,
+    accent_color: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct HistoryEntryView {
+    action_time: String,
+    action_flag: i32,
+    username: String,
+    change_message: String,
+}
+
+#[derive(serde::Serialize)]
+struct ObjectHistoryContext {
+    model_name: String,
+    pk: i64,
+    history: Vec<HistoryEntryView>,
+    site_header: String,
+    site_title: String,
+    logo_url: Option<String>,
+    accent_color: Option<String>,
+}
+
+async fn admin_history(
+    req: Request,
+    params: PathParams,
+    admins: Vec<Arc<dyn ModelAdmin>>,
+    branding: SiteBranding,
+) -> Result<Response, DjangorsError> {
+    let app = params.get("app").unwrap_or("");
+    let model = params.get("model").unwrap_or("");
+    let pk = params
+        .get_as::<i64>("pk")
+        .map_err(|_| DjangorsError::BadRequest("invalid pk".to_string()))?;
+
+    let admin = admins
+        .iter()
+        .find(|a| {
+            let meta = a.model_meta();
+            meta.app_label == app && meta.struct_name.to_lowercase() == model
+        })
+        .ok_or(DjangorsError::NotFound)?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    let meta = admin.model_meta();
+
+    let rows: Vec<(i64, String, chrono::DateTime<chrono::Utc>, i32, String)> = sqlx::query_as(
+        sqlx::AssertSqlSafe(
+            "SELECT l.user_id, COALESCE(u.username, '?'), l.action_time, l.action_flag, l.change_message \
+             FROM djangors_admin_log l \
+             LEFT JOIN auth_user u ON u.id = l.user_id \
+             WHERE l.app_label = $1 AND l.model_name = $2 AND l.object_id = $3 \
+             ORDER BY l.action_time DESC",
+        ),
+    )
+    .bind(meta.app_label)
+    .bind(meta.struct_name)
+    .bind(pk)
+    .fetch_all(db.pool())
+    .await
+    .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+
+    let history: Vec<HistoryEntryView> = rows
+        .into_iter()
+        .map(
+            |(_, username, action_time, action_flag, change_message)| HistoryEntryView {
+                action_time: action_time.format("%Y-%m-%d %H:%M:%S").to_string(),
+                action_flag,
+                username,
+                change_message,
+            },
+        )
+        .collect();
+
+    djangors_template::render(
+        &ADMIN_TEMPLATES,
+        "admin/object_history.html",
+        ObjectHistoryContext {
+            model_name: meta.struct_name.to_string(),
+            pk,
+            history,
+            site_header: branding.site_header,
+            site_title: branding.site_title,
+            logo_url: branding.logo_url,
+            accent_color: branding.accent_color,
+        },
+    )
+}
+
+async fn admin_bulk_action_post(
+    req: Request,
+    params: PathParams,
+    admins: Vec<Arc<dyn ModelAdmin>>,
+    branding: SiteBranding,
+) -> Result<Response, DjangorsError> {
+    let app = params.get("app").unwrap_or("");
+    let model = params.get("model").unwrap_or("");
+    let admin = admins
+        .iter()
+        .find(|a| {
+            let meta = a.model_meta();
+            meta.app_label == app && meta.struct_name.to_lowercase() == model
+        })
+        .ok_or(DjangorsError::NotFound)?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    let user = require_perm(&req, db, admin.model_meta(), "change").await?;
+
+    let Form(pairs) = Form::<Vec<(String, String)>>::from_request(&req).await?;
+
+    let action_name: String = pairs
+        .iter()
+        .find(|(k, _)| k == "action")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    let is_confirm = pairs.iter().any(|(k, v)| k == "confirm" && v == "1");
+    let mut pks: Vec<i64> = Vec::new();
+    for (k, v) in &pairs {
+        if k == "selected" {
+            let pk = v
+                .parse::<i64>()
+                .map_err(|_| DjangorsError::BadRequest("invalid selected pk".to_string()))?;
+            pks.push(pk);
+        }
+    }
+
+    let admin_actions = admin.actions();
+    let action = admin_actions
+        .iter()
+        .find(|a| a.name == action_name)
+        .ok_or_else(|| DjangorsError::BadRequest("unknown action".to_string()))?;
+
+    if action.requires_confirm && !is_confirm {
+        let mut items = Vec::new();
+        for &pk in &pks {
+            if let Some(row_vals) = admin.get_by_pk(db, pk).await? {
+                let display = row_vals
+                    .iter()
+                    .map(|(_, v)| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                items.push(display);
+            }
+        }
+        let count = pks.len();
+        let csrf_token = req
+            .ext::<djangors_core::middleware::CsrfToken>()
+            .map(|t| t.0.clone())
+            .unwrap_or_default();
+        return djangors_template::render(
+            &ADMIN_TEMPLATES,
+            "admin/bulk_action_confirm.html",
+            BulkActionConfirmContext {
+                action_label: action.label.to_string(),
+                count,
+                items,
+                action_name: action.name.to_string(),
+                pks: pks.clone(),
+                csrf_token,
+                site_header: branding.site_header,
+                site_title: branding.site_title,
+                logo_url: branding.logo_url,
+                accent_color: branding.accent_color,
+            },
+        );
+    }
+
+    (action.handler)(db, &pks).await?;
+
+    let meta = admin.model_meta();
+    for &pk in &pks {
+        log_action(db, user.id, meta, pk, ACTION_CHANGE, action.label).await?;
+    }
+
+    Ok(Response::redirect(&format!("/{}/{}/", app, model)))
 }
 
 async fn admin_bulk_delete_post(
@@ -2535,8 +3092,17 @@ async fn admin_bulk_delete_post(
     // Step 2: actually delete. Best-effort per pk - a pk already gone (race, or
     // simply reselected after step 1 already removed it) is not an error, same
     // "false = already gone, not a failure" reasoning admin_delete_post already
-    // uses for the single-object route.
+    // uses for the single-object route. A pk protected by a Protect on_delete
+    // relation is also silently skipped (not an error).
+    let delete_meta = admin.model_meta();
     for &pk in &pks {
+        let related = collect_related_objects(db, delete_meta, pk).await?;
+        let is_protected = related
+            .iter()
+            .any(|r| r.on_delete == djangors_orm::meta::OnDelete::Protect && r.count > 0);
+        if is_protected {
+            continue;
+        }
         if admin.delete_by_pk(db, pk).await? {
             log_action(
                 db,
@@ -2813,10 +3379,38 @@ mod tests {
         created_at: chrono::DateTime<chrono::Utc>,
     }
 
+    #[derive(MacroModel, Debug, Clone)]
+    #[djangors(app = "admin_test", table_name = "test_model_g")]
+    #[allow(dead_code)]
+    struct ModelG {
+        #[djangors(primary_key, auto)]
+        id: i64,
+        parent: djangors_orm::ForeignKey<ModelC>,
+    }
+
+    #[derive(MacroModel, Debug, Clone)]
+    #[djangors(app = "admin_test", table_name = "test_model_h")]
+    #[allow(dead_code)]
+    struct ModelH {
+        #[djangors(primary_key, auto)]
+        id: i64,
+        parent: djangors_orm::ForeignKey<ModelG>,
+    }
+
+    #[derive(MacroModel, Debug, Clone)]
+    #[djangors(app = "admin_test", table_name = "test_model_p")]
+    #[allow(dead_code)]
+    struct ModelP {
+        #[djangors(primary_key, auto)]
+        id: i64,
+        #[djangors(foreign_key(on_delete = "protect"))]
+        parent: djangors_orm::ForeignKey<ModelA>,
+    }
+
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_index_endpoints() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -2965,7 +3559,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_changelist_endpoints() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -3343,7 +3937,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_change_form_endpoints() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -3596,7 +4190,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_delete_endpoints() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -3824,7 +4418,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_list_display_and_search() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -4076,7 +4670,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_list_filter() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -4297,7 +4891,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_part6_3_bulk_delete() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -4574,7 +5168,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_part6_4_date_hierarchy() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -4820,7 +5414,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_phase5_part6_5_list_editable() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -5137,7 +5731,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn test_phase5_part6_6_csv_export() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -5368,10 +5962,454 @@ mod tests {
             .await;
     }
 
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn test_phase5_computed_columns() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE test_model_d (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_computed".to_string(),
+            email: "staff_computed@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+
+        fn format_combo(values: &[(&'static str, djangors_orm::expr::Value)]) -> String {
+            let name = values
+                .iter()
+                .find(|(n, _)| *n == "name")
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_default();
+            let content = values
+                .iter()
+                .find(|(n, _)| *n == "content")
+                .map(|(_, v)| v.to_string())
+                .unwrap_or_default();
+            format!("{} - {}", name, content)
+        }
+
+        let _pk = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Alice".to_string())),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("Hello".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let site = AdminSite::new();
+        site.register_with::<ModelD>(ModelAdminConfig {
+            list_display: Some(&["name", "combo"]),
+            computed_columns: Some(&[("combo", format_combo)]),
+            ..Default::default()
+        });
+
+        let router = Router::new().mount("/admin", site.urls());
+        let mut ext = Extensions::new();
+        ext.insert(session_staff);
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modeld/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("Alice - Hello"));
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_bulk_action_no_confirm() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE djangors_admin_log (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                action_time TIMESTAMPTZ NOT NULL,
+                app_label VARCHAR(100) NOT NULL,
+                model_name VARCHAR(100) NOT NULL,
+                object_id BIGINT NOT NULL,
+                object_repr VARCHAR(200) NOT NULL,
+                action_flag INTEGER NOT NULL,
+                change_message TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_action".to_string(),
+            email: "staff_action@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+
+        fn touch_action<'a>(
+            _db: &'a djangors_db::Database,
+            _pks: &'a [i64],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), DjangorsError>> + Send + 'a>,
+        > {
+            Box::pin(async move { Ok(()) })
+        }
+
+        let pk = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
+            &db,
+            vec![(
+                "name",
+                djangors_orm::expr::Value::Text("ActionTarget".to_string()),
+            )],
+        )
+        .await
+        .unwrap();
+
+        let site = AdminSite::new();
+        site.register_with::<ModelA>(ModelAdminConfig {
+            actions: Some(&[AdminAction {
+                name: "custom_touch",
+                label: "Touch",
+                requires_confirm: false,
+                handler: touch_action,
+            }]),
+            ..Default::default()
+        });
+
+        let router = Router::new().mount("/admin", site.urls());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+
+        let mut ext = Extensions::new();
+        ext.insert(session_staff);
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-action/"),
+            headers,
+            Bytes::from(format!("action=custom_touch&selected={}", pk)),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND);
+        assert_eq!(
+            res.headers().get("location").unwrap().to_str().unwrap(),
+            "/admin_test/modela/"
+        );
+
+        let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
+            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message FROM djangors_admin_log ORDER BY id ASC",
+        ))
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].action_flag, ACTION_CHANGE);
+        assert_eq!(logs[0].change_message, "Touch");
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_bulk_action_with_confirm() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE djangors_admin_log (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                action_time TIMESTAMPTZ NOT NULL,
+                app_label VARCHAR(100) NOT NULL,
+                model_name VARCHAR(100) NOT NULL,
+                object_id BIGINT NOT NULL,
+                object_repr VARCHAR(200) NOT NULL,
+                action_flag INTEGER NOT NULL,
+                change_message TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_confirm".to_string(),
+            email: "staff_confirm@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+
+        fn confirm_action<'a>(
+            _db: &'a djangors_db::Database,
+            _pks: &'a [i64],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), DjangorsError>> + Send + 'a>,
+        > {
+            Box::pin(async move { Ok(()) })
+        }
+
+        let pk = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
+            &db,
+            vec![(
+                "name",
+                djangors_orm::expr::Value::Text("ConfirmTarget".to_string()),
+            )],
+        )
+        .await
+        .unwrap();
+
+        let site = AdminSite::new();
+        site.register_with::<ModelA>(ModelAdminConfig {
+            actions: Some(&[AdminAction {
+                name: "needs_confirmation",
+                label: "Needs Confirm",
+                requires_confirm: true,
+                handler: confirm_action,
+            }]),
+            ..Default::default()
+        });
+
+        let router = Router::new().mount("/admin", site.urls());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+
+        // Step 1: POST without confirm=1 -> should show confirm page
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-action/"),
+            headers.clone(),
+            Bytes::from(format!("action=needs_confirmation&selected={}", pk)),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("Needs Confirm"));
+        assert!(body.contains("ConfirmTarget"));
+        assert!(body.contains("confirm"));
+
+        // Step 2: POST with confirm=1 -> should execute and redirect
+        let mut ext = Extensions::new();
+        ext.insert(session_staff);
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-action/"),
+            headers,
+            Bytes::from(format!(
+                "action=needs_confirmation&selected={}&confirm=1",
+                pk
+            )),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND);
+        assert_eq!(
+            res.headers().get("location").unwrap().to_str().unwrap(),
+            "/admin_test/modela/"
+        );
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
+            .execute(db.pool())
+            .await;
+    }
+
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_permissions_enforcement() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -5723,7 +6761,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_csrf_token_wiring() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -5940,7 +6978,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_branding_overrides() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -6039,7 +7077,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_audit_log_add_change_delete() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -6198,7 +7236,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_audit_log_bulk_delete_and_list_editable() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -6396,7 +7434,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_index_recent_actions() {
-        let _guard = DB_MUTEX.lock().unwrap();
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -6557,6 +7595,1089 @@ mod tests {
         assert!(!body2.contains("ModelA object (100)"));
         assert!(!body2.contains("ModelA object (101)"));
 
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_fieldsets() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_d (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_fieldsets".to_string(),
+            email: "staff_fieldsets@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session);
+
+        let site = AdminSite::new();
+        site.register_with::<ModelD>(ModelAdminConfig {
+            fieldsets: Some(&[("Section A", &["name"]), ("Section B", &["content"])]),
+            ..Default::default()
+        });
+        let router = Router::new().mount("/admin", site.urls());
+
+        let req_add = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modeld/add/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req_add).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+
+        assert!(body.contains("Section A"));
+        assert!(body.contains("Section B"));
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_readonly_fields() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_d (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_ro".to_string(),
+            email: "staff_ro@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session);
+
+        let site = AdminSite::new();
+        site.register_with::<ModelD>(ModelAdminConfig {
+            readonly_fields: Some(&["name"]),
+            ..Default::default()
+        });
+        let router = Router::new().mount("/admin", site.urls());
+
+        let row = ModelD {
+            id: 0,
+            name: "ro_test".to_string(),
+            content: "ro_content".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let req_change = Request::new(
+            Method::GET,
+            Uri::try_from(format!("/admin/admin_test/modeld/{}/change/", row.id)).unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req_change).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+
+        assert!(body.contains("(readonly):"));
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_raw_id_fields() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_c (
+                id BIGSERIAL PRIMARY KEY,
+                parent BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_rawid".to_string(),
+            email: "staff_rawid@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session);
+
+        let site = AdminSite::new();
+        site.register_with::<ModelC>(ModelAdminConfig {
+            raw_id_fields: Some(&["parent"]),
+            ..Default::default()
+        });
+        let router = Router::new().mount("/admin", site.urls());
+
+        let a = ModelA {
+            id: 0,
+            name: "raw_target".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+        let _c = ModelC {
+            id: 0,
+            parent: djangors_orm::ForeignKey::new(a.id),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let req_changelist = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modelc/add/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req_changelist).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+
+        assert!(body.contains("Look up"));
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_transitive_walk_delete() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_g")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_c (
+                id BIGSERIAL PRIMARY KEY,
+                parent BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_g (
+                id BIGSERIAL PRIMARY KEY,
+                parent BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_tw".to_string(),
+            email: "staff_tw@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session);
+
+        let site = AdminSite::new();
+        site.register::<ModelA>();
+        site.register::<ModelC>();
+        site.register::<ModelG>();
+        let router = Router::new().mount("/admin", site.urls());
+
+        let a = ModelA {
+            id: 0,
+            name: "transitive_target".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+        let c = ModelC {
+            id: 0,
+            parent: djangors_orm::ForeignKey::new(a.id),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+        let _g = ModelG {
+            id: 0,
+            parent: djangors_orm::ForeignKey::new(c.id),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let req_delete_get = Request::new(
+            Method::GET,
+            Uri::try_from(format!("/admin/admin_test/modela/{}/delete/", a.id)).unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req_delete_get).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+
+        assert!(body.contains("ModelC"));
+        assert!(body.contains("ModelG"));
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_g")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_protect_single_delete_400() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_p")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_p (
+                id BIGSERIAL PRIMARY KEY,
+                parent BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_prot".to_string(),
+            email: "staff_prot@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session);
+
+        let site = AdminSite::new();
+        site.register::<ModelA>();
+        site.register::<ModelP>();
+        let router = Router::new().mount("/admin", site.urls());
+
+        let a = ModelA {
+            id: 0,
+            name: "protect_target".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+        let _p = ModelP {
+            id: 0,
+            parent: djangors_orm::ForeignKey::new(a.id),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let req_delete_post = Request::new(
+            Method::POST,
+            Uri::try_from(format!("/admin/admin_test/modela/{}/delete/", a.id)).unwrap(),
+            headers,
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req_delete_post).await;
+        match res {
+            Ok(r) => assert_eq!(r.status(), StatusCode::BAD_REQUEST),
+            Err(e) => assert!(e.to_string().contains("protected")),
+        }
+
+        let still_exists: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(
+            "SELECT COUNT(*) FROM test_model_a WHERE id = $1",
+        ))
+        .bind(a.id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(still_exists, 1);
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_p")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_protect_bulk_delete_skip() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_p")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_p (
+                id BIGSERIAL PRIMARY KEY,
+                parent BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_bulkp".to_string(),
+            email: "staff_bulkp@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session);
+
+        let site = AdminSite::new();
+        site.register::<ModelA>();
+        site.register::<ModelP>();
+        let router = Router::new().mount("/admin", site.urls());
+
+        let a1 = ModelA {
+            id: 0,
+            name: "bulk_protected".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+        let a2 = ModelA {
+            id: 0,
+            name: "bulk_unprotected".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let _p = ModelP {
+            id: 0,
+            parent: djangors_orm::ForeignKey::new(a1.id),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let body = format!("confirm=1&selected={}&selected={}", a1.id, a2.id);
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let req_bulk_delete = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-delete/"),
+            headers,
+            Bytes::from(body),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req_bulk_delete).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND);
+
+        let remaining: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe("SELECT COUNT(*) FROM test_model_a"))
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(remaining, 1);
+
+        let still_alive: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(
+            "SELECT COUNT(*) FROM test_model_a WHERE name = 'bulk_protected'",
+        ))
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(still_alive, 1);
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_p")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_base_filter() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_bf".to_string(),
+            email: "staff_bf@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let _a1 = ModelA {
+            id: 0,
+            name: "apple".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+        let _a2 = ModelA {
+            id: 0,
+            name: "banana".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session);
+
+        let site = AdminSite::new();
+        site.register_with::<ModelA>(ModelAdminConfig {
+            search_fields: Some(&["name"]),
+            base_filter: Some(djangors_orm::UnresolvedExpr::And(vec![
+                djangors_orm::UnresolvedCompare {
+                    field: "name",
+                    value: djangors_orm::Value::Text("apple".to_string()),
+                },
+            ])),
+            ..Default::default()
+        });
+        let router = Router::new().mount("/admin", site.urls());
+
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modela/?q=apple"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+
+        assert!(body.contains("apple"));
+        assert!(!body.contains("banana"));
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_extra_route() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_er".to_string(),
+            email: "staff_er@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session);
+
+        let extra = Router::new().get(
+            "/my-custom/",
+            |_req: Request, _params: PathParams| async move {
+                Ok(Response::text(StatusCode::OK, "custom route works"))
+            },
+        );
+
+        let site = AdminSite::new().extra_route(extra);
+        site.register::<ModelA>();
+        let router = Router::new().mount("/admin", site.urls());
+
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/my-custom/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("custom route works"));
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_history_page() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE djangors_admin_log (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                action_time TIMESTAMPTZ NOT NULL,
+                app_label VARCHAR(100) NOT NULL,
+                model_name VARCHAR(100) NOT NULL,
+                object_id BIGINT NOT NULL,
+                object_repr VARCHAR(200) NOT NULL,
+                action_flag INTEGER NOT NULL,
+                change_message TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_hist".to_string(),
+            email: "staff_hist@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let a = ModelA {
+            id: 0,
+            name: "hist_test".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let _log = LogEntry {
+            id: 0,
+            user_id: staff.id,
+            action_time: now,
+            app_label: "admin_test".to_string(),
+            model_name: "ModelA".to_string(),
+            object_id: a.id,
+            object_repr: format!("ModelA object ({})", a.id),
+            action_flag: ACTION_ADDITION,
+            change_message: "Created.".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session);
+
+        let site = AdminSite::new();
+        site.register::<ModelA>();
+        let router = Router::new().mount("/admin", site.urls());
+
+        let req = Request::new(
+            Method::GET,
+            Uri::try_from(format!("/admin/admin_test/modela/{}/history/", a.id)).unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+
+        assert!(body.contains("History for ModelA"));
+        assert!(body.contains("staff_hist"));
+        assert!(body.contains("Created."));
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
         let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
             .execute(db.pool())
             .await;

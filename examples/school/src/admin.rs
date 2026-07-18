@@ -25,5 +25,14 @@ pub fn admin_site() -> AdminSite {
         ..Default::default()
     });
 
+    site.register::<djangors_auth::Permission>();
+    site.register_with::<djangors_auth::Group>(ModelAdminConfig {
+        search_fields: Some(&["name"]),
+        ..Default::default()
+    });
+    site.register::<djangors_auth::UserGroup>();
+    site.register::<djangors_auth::GroupPermission>();
+    site.register::<djangors_auth::UserPermission>();
+
     site
 }

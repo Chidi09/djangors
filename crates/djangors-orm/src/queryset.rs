@@ -657,7 +657,7 @@ impl<T: Model + FromRow> QuerySet<T> {
         let mut params = Vec::new();
         let mut null_kinds = Vec::new();
         for (i, (col_name, val, field_name)) in processed_values.into_iter().enumerate() {
-            cols.push(col_name);
+            cols.push(format!("\"{}\"", col_name));
             placeholders.push(format!("${}", i + 1));
             null_kinds.push(null_bind_kind_for(field_name, meta));
             params.push(val);

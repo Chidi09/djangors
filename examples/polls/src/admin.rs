@@ -10,5 +10,13 @@ pub fn admin_site() -> AdminSite {
     let site = AdminSite::new();
     site.register::<Question>();
     site.register::<Choice>();
+    site.register::<djangors_auth::Permission>();
+    site.register_with::<djangors_auth::Group>(djangors_admin::ModelAdminConfig {
+        search_fields: Some(&["name"]),
+        ..Default::default()
+    });
+    site.register::<djangors_auth::UserGroup>();
+    site.register::<djangors_auth::GroupPermission>();
+    site.register::<djangors_auth::UserPermission>();
     site
 }
