@@ -28,6 +28,10 @@ static ADMIN_TEMPLATES: std::sync::LazyLock<djangors_template::TemplateEngine> =
                 "admin/save_changelist_error.html",
                 include_str!("../templates/admin/save_changelist_error.html"),
             ),
+            (
+                "admin/render_form.html",
+                include_str!("../templates/admin/render_form.html"),
+            ),
         ])
         .expect("admin templates are compiled into the binary and must always be valid")
     });
@@ -618,14 +622,28 @@ fn parse_relation_value(
     })
 }
 
+#[derive(serde::Serialize)]
+struct FormFieldRow {
+    kind: &'static str, // "readonly" | "checkbox" | "number" | "text"
+    name: String,
+    value: String, // readonly span text, or the input's value="" attribute; unused for checkbox
+    checked: bool, // only meaningful when kind == "checkbox"
+    error: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct RenderFormContext {
+    rows: Vec<FormFieldRow>,
+}
+
 fn render_form(
     meta: &'static ModelMeta,
     field_names: &[&'static str],
     submitted_values: &std::collections::HashMap<String, String>,
     errors: &std::collections::HashMap<String, String>,
     is_add: bool,
-) -> String {
-    let mut rows_html = String::new();
+) -> Result<Response, DjangorsError> {
+    let mut rows = Vec::new();
 
     for &name in field_names {
         if let Some(field) = meta.fields.iter().find(|f| f.name == name) {
@@ -634,85 +652,55 @@ fn render_form(
                     continue;
                 } else {
                     let val = submitted_values.get(name).map(|s| s.as_str()).unwrap_or("");
-                    let escaped_val = djangors_core::html_escape(val);
-                    rows_html.push_str(&format!(
-                        "<div><label>{} (readonly):</label> <span>{}</span></div>",
-                        name, escaped_val
-                    ));
+                    rows.push(FormFieldRow {
+                        kind: "readonly",
+                        name: name.to_string(),
+                        value: val.to_string(),
+                        checked: false,
+                        error: None,
+                    });
                     continue;
                 }
             }
 
             let val = submitted_values.get(name).map(|s| s.as_str()).unwrap_or("");
-            let escaped_val = djangors_core::html_escape(val);
-            let err_html = if let Some(err) = errors.get(name) {
-                format!(
-                    "<div style=\"color: red;\">{}</div>",
-                    djangors_core::html_escape(err)
-                )
-            } else {
-                String::new()
-            };
+            let err = errors.get(name).cloned();
 
-            let input_html = match field.kind {
-                djangors_orm::meta::FieldKind::Boolean => {
-                    let checked = if val == "on" || val == "true" {
-                        " checked"
-                    } else {
-                        ""
-                    };
-                    format!(
-                        "<input type=\"checkbox\" name=\"{}\" id=\"id_{}\"{}>",
-                        name, name, checked
-                    )
-                }
+            let kind = match field.kind {
+                djangors_orm::meta::FieldKind::Boolean => "checkbox",
                 djangors_orm::meta::FieldKind::Integer
                 | djangors_orm::meta::FieldKind::BigInt
-                | djangors_orm::meta::FieldKind::Float => {
-                    format!(
-                        "<input type=\"number\" name=\"{}\" id=\"id_{}\" value=\"{}\">",
-                        name, name, escaped_val
-                    )
-                }
-                _ => {
-                    format!(
-                        "<input type=\"text\" name=\"{}\" id=\"id_{}\" value=\"{}\">",
-                        name, name, escaped_val
-                    )
-                }
+                | djangors_orm::meta::FieldKind::Float => "number",
+                _ => "text",
             };
 
-            rows_html.push_str(&format!(
-                "<div><label for=\"id_{}\">{}</label> {}{}</div>",
-                name, name, input_html, err_html
-            ));
+            let checked = kind == "checkbox" && (val == "on" || val == "true");
+
+            rows.push(FormFieldRow {
+                kind,
+                name: name.to_string(),
+                value: val.to_string(),
+                checked,
+                error: err,
+            });
         } else if let Some(_rel) = meta.relations.iter().find(|r| r.field_name == name) {
             let val = submitted_values.get(name).map(|s| s.as_str()).unwrap_or("");
-            let escaped_val = djangors_core::html_escape(val);
-            let err_html = if let Some(err) = errors.get(name) {
-                format!(
-                    "<div style=\"color: red;\">{}</div>",
-                    djangors_core::html_escape(err)
-                )
-            } else {
-                String::new()
-            };
+            let err = errors.get(name).cloned();
 
-            let input_html = format!(
-                "<input type=\"number\" name=\"{}\" id=\"id_{}\" value=\"{}\">",
-                name, name, escaped_val
-            );
-
-            rows_html.push_str(&format!(
-                "<div><label for=\"id_{}\">{}</label> {}{}</div>",
-                name, name, input_html, err_html
-            ));
+            rows.push(FormFieldRow {
+                kind: "number",
+                name: name.to_string(),
+                value: val.to_string(),
+                checked: false,
+                error: err,
+            });
         }
     }
 
-    format!(
-        "<form method=\"post\">{}<input type=\"submit\" value=\"Submit\"></form>",
-        rows_html
+    djangors_template::render(
+        &ADMIN_TEMPLATES,
+        "admin/render_form.html",
+        RenderFormContext { rows },
     )
 }
 
@@ -1665,8 +1653,7 @@ async fn admin_add_get(
     let submitted_values = std::collections::HashMap::new();
     let errors = std::collections::HashMap::new();
 
-    let html = render_form(meta, &field_names, &submitted_values, &errors, true);
-    Ok(Response::html(StatusCode::OK, html))
+    render_form(meta, &field_names, &submitted_values, &errors, true)
 }
 
 async fn admin_add_post(
@@ -1699,8 +1686,7 @@ async fn admin_add_post(
         Err(errors) => {
             let meta = admin.model_meta();
             let field_names = admin.field_names();
-            let html = render_form(meta, &field_names, &form_data, &errors, true);
-            Ok(Response::html(StatusCode::OK, html))
+            render_form(meta, &field_names, &form_data, &errors, true)
         }
     }
 }
@@ -1744,8 +1730,7 @@ async fn admin_change_get(
     let field_names = admin.field_names();
     let errors = std::collections::HashMap::new();
 
-    let html = render_form(meta, &field_names, &submitted_values, &errors, false);
-    Ok(Response::html(StatusCode::OK, html))
+    render_form(meta, &field_names, &submitted_values, &errors, false)
 }
 
 async fn admin_change_post(
@@ -1796,8 +1781,7 @@ async fn admin_change_post(
 
             let meta = admin.model_meta();
             let field_names = admin.field_names();
-            let html = render_form(meta, &field_names, &merged_form_data, &errors, false);
-            Ok(Response::html(StatusCode::OK, html))
+            render_form(meta, &field_names, &merged_form_data, &errors, false)
         }
     }
 }
