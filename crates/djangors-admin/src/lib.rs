@@ -8685,4 +8685,172 @@ mod tests {
             .execute(db.pool())
             .await;
     }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_groups_permissions_admin_ui() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let drop_tables = ["auth_user_groups", "auth_group", "auth_user"];
+        for table in drop_tables {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP TABLE IF EXISTS {}",
+                table
+            )))
+            .execute(db.pool())
+            .await;
+        }
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE auth_group (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(150) NOT NULL UNIQUE
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE auth_user_groups (
+                id BIGSERIAL PRIMARY KEY,
+                \"user\" BIGINT NOT NULL,
+                \"group\" BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_groups".to_string(),
+            email: "staff_groups@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+
+        let site = AdminSite::new();
+        site.register::<djangors_auth::Permission>();
+        site.register_with::<djangors_auth::Group>(ModelAdminConfig {
+            search_fields: Some(&["name"]),
+            ..Default::default()
+        });
+        site.register::<djangors_auth::UserGroup>();
+        site.register::<djangors_auth::GroupPermission>();
+        site.register::<djangors_auth::UserPermission>();
+        let router = Router::new().mount("/admin", site.urls());
+
+        // 1. Create a Group through the generic admin add/ page.
+        let mut ext = Extensions::new();
+        ext.insert(session.clone());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/djangors_auth/group/add/"),
+            headers,
+            Bytes::from("name=Admins"),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND);
+
+        let group = djangors_orm::queryset::QuerySet::<djangors_auth::Group>::new()
+            .filter(djangors_orm::q!(name = "Admins"))
+            .unwrap()
+            .get(&db)
+            .await
+            .unwrap();
+
+        // 2. Add a UserGroup row (group membership) through the generic admin.
+        let mut ext = Extensions::new();
+        ext.insert(session.clone());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/djangors_auth/usergroup/add/"),
+            headers,
+            Bytes::from(format!("user={}&group={}", staff.id, group.id)),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND);
+
+        let membership_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM auth_user_groups WHERE \"user\" = $1 AND \"group\" = $2",
+        )
+        .bind(staff.id)
+        .bind(group.id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(membership_count, 1);
+
+        // 3. Changelist pages for both models render through the generic admin.
+        let mut ext = Extensions::new();
+        ext.insert(session.clone());
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/djangors_auth/group/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("Admins"));
+
+        let drop_tables = ["auth_user_groups", "auth_group", "auth_user"];
+        for table in drop_tables {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP TABLE IF EXISTS {}",
+                table
+            )))
+            .execute(db.pool())
+            .await;
+        }
+    }
 }
