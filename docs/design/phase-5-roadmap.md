@@ -1,6 +1,6 @@
 # Phase 5 roadmap — status, sequencing, and the deferred-items ledger
 
-**Last updated:** 2026-07-18 (after commit 27bce9e). This is the authoritative status document
+**Last updated:** 2026-07-18 (after commit 6f49e30). This is the authoritative status document
 for Phase 5 (THE ADMIN) and the single place where every deliberately-deferred item across the
 project is tracked, so no session ever has to re-derive project state from git archaeology.
 Update this file whenever a slice lands or a new deferral is made.
@@ -25,6 +25,7 @@ Phase 5 slices landed so far:
 | 5.6.3 | `5.6.3-changelist-bulk-delete.md` | 47459ee | Bulk delete: one hardcoded action (no action-picker dropdown for a single action), same two-step confirm-then-act flow as 5.5's single-object delete on one POST-only route (`POST /{app}/{model}/bulk-delete/`, distinguished by a hidden `confirm=1` field). Reuses 5.5's `delete_by_pk` trait method in a loop — no new `QuerySet` method. Uses `Form<Vec<(String, String)>>` instead of the `Form<HashMap<String, String>>` every other admin POST handler uses, since a `HashMap` target silently drops all but the last value for repeated form keys (every checked "selected" checkbox shares that name) — flagged and designed around before it could ship as a real bug. No related-object collection on the bulk confirm page and no "select all" checkbox — both deliberate v1 cuts. |
 | 5.6.4 | `5.6.4-changelist-date-hierarchy.md` | a744250 | `date_hierarchy` v1: one configured `DateTime` field, year → month → day drilldown nav above the changelist. New generic `QuerySet::filter_datetime_range(field, gte, lt)` — `filter()`'s `__gte`/`__lt` suffix lookups can't be used here since the field name is only known at runtime, not a `&'static str` literal safe to concatenate. Drilldown link values (which years/months/days have data) come from a dedicated raw-SQL `EXTRACT(...)` query, deliberately *not* combined with the current search/`list_filter` state — a scoped-out future improvement, see ledger. Every existing changelist link site (sort headers, pager, search box, filter All/Yes/No) forwards `year`/`month`/`day` alongside the existing params — this exact class of bug (a new dimension not threaded through every link site) shipped once in 5.6.1 and once in 5.6.2 before being caught in review; this time it was called out as a required review checklist item in the design doc itself, and every site was verified by hand against the diff. Second slice this segment (after 5.5) where independent review found zero bugs. |
 | 5.6.5 | `5.6.5-changelist-list-editable.md` | 27bce9e | `list_editable` v1: text/numeric `list_display` columns (not Boolean — an unchecked checkbox and "not part of this edit" are indistinguishable without formset machinery this admin doesn't have) render as inline `<input>`s, with a "Save" button. Resolves the "two forms around one table" problem flagged when this slice was scheduled: the Save button and 5.6.3's bulk-delete button share the SAME `<form>`, routed to different URLs (`save-changelist/` vs. `bulk-delete/`) via plain HTML5 `formaction` per `<button>` — no JS, and 5.6.3's own route/handler are untouched. New `ModelAdmin::update_fields_from_form` (an `update_from_form` variant where an absent form key means "not edited," not "required-field error") + a new `save-changelist/` route parsing `edit-{pk}-{field}` keys, allowlisted against `list_editable_fields()`. No cross-row transaction — matches every other save path in this codebase; rows that validate are written even if others in the same submission fail. Third zero-bug slice this segment (after 5.5 and 5.6.4). |
+| 5.6.6 | `5.6.6-changelist-csv-export.md` | 6f49e30 | CSV export v1: a plain `GET export-csv/` link exporting every row matching the current search/`list_filter`/order/`date_hierarchy` state (not just checked rows) — revises the prior roadmap prediction that this would be a third `formaction` bulk-action button; Django has no built-in CSV export at all, so there was no real parity pull toward the selected-rows shape, and the GET-link version needs zero interaction with the shared bulk-delete/`list_editable` `<form>`. Two prerequisite pure-extraction refactors (`parse_changelist_query_state` out of `admin_changelist`; `effective_columns`/`build_filtered_queryset`/`row_values` out of `changelist()`), verified against the three pre-existing regression-sensitive tests (list_display/search, list_filter, date_hierarchy) passing unmodified. Hand-rolled RFC 4180 CSV escaping (`csv_escape_field`) rather than a new `csv` crate dependency, matching `html_escape`/`url_encode_query_value` precedent. No row cap or streaming — whole result set buffered in memory, deferred for very large tables. Fourth zero-bug slice this segment (after 5.5, 5.6.4, 5.6.5). |
 
 Working infrastructure a new session should know exists (all proven by tests):
 - `Model::field_values(&self) -> Vec<(&'static str, Value)>` and `Model::field_names()` —
@@ -77,30 +78,35 @@ Working infrastructure a new session should know exists (all proven by tests):
   `admin_changelist`, not just the new ones it adds — grep for `build_query_string(&pairs` and
   check each call site by hand, this has been the single most repeated review-catch in Phase 5.
 - `ModelAdminConfig::list_editable` + `ModelAdmin::{list_editable_fields, update_fields_from_form}`
-  (5.6.5) — text/numeric-only inline changelist editing. The changelist's single `<form>` now has
-  two submit `<button>`s (`formaction="bulk-delete/"` and `formaction="save-changelist/"`) rather
-  than one — **any future third changelist action (e.g. CSV export) should follow this same
-  formaction pattern**, not a new nested form or a query-param action dispatcher, since a
-  `<table>` can only sit inside one `<form>`. `edit-{pk}-{field}` is now an established form-key
-  convention in this file, parsed via `strip_prefix("edit-")` + `split_once('-')` (safe because
-  real field names never contain `-`).
+  (5.6.5) — text/numeric-only inline changelist editing. The changelist's single `<form>` has
+  two submit `<button>`s (`formaction="bulk-delete/"` and `formaction="save-changelist/"`) —
+  `edit-{pk}-{field}` is an established form-key convention in this file, parsed via
+  `strip_prefix("edit-")` + `split_once('-')` (safe because real field names never contain `-`).
+- `parse_changelist_query_state(req, admin) -> Result<ChangelistQueryState, DjangorsError>` +
+  `DefaultModelAdmin<M>`'s inherent (non-trait) `effective_columns()`/`build_filtered_queryset()`/
+  `row_values()` helpers (5.6.6) — the shared building blocks behind both `admin_changelist` and
+  `admin_export_csv`. **Any future changelist feature needing the current search/filter/order/
+  date_hierarchy state, or needing the same filtered `QuerySet<M>` `changelist()` builds, should
+  reuse these rather than re-deriving them** — this is exactly why they were extracted. CSV export
+  (5.6.6) turned out not to need the `formaction` pattern at all — it's a plain `GET` link, not a
+  form button, since it acts on "the current view" rather than selected/edited rows; a future
+  "export selected rows only" mode would be the one that needs a third `formaction` button.
 
 ## Recommended sequencing for the remaining Phase 5 bullets
 
-1. **5.6.6+ — remaining changelist customization**: a real bulk-actions dispatch mechanism is
-   next if/when a second bulk action is wanted — 5.6.5 already established the pattern for this
-   (a `formaction`-per-`<button>` on the shared changelist `<form>`, see the ledger entry above),
-   so CSV export (XLSX needs a new dependency, justify it then) is now a smaller lift than
-   originally scoped: add another `<button formaction="...">` and route, no rework of
-   `list_editable` or bulk-delete needed. Saved views after that. `list_display` computed-method
-   columns (closures, not just real field names) and choices-based `list_filter` (needs new
-   `FieldMeta` choices metadata that doesn't exist yet) remain deferred, belong here too whenever
-   their prerequisites exist. A future improvement to the bulk-delete confirm page
+1. **5.6.7+ — remaining changelist customization**: CSV export landed as a whole-filtered-
+   queryset `GET` link (5.6.6), not a selected-rows bulk action, so the "real bulk-actions
+   dispatch mechanism" item is still genuinely open if a *selected-rows* action is ever wanted
+   (XLSX export, bulk field updates, etc.) — 5.6.5's `formaction`-per-`<button>` pattern on the
+   shared `<form>` is what that would build on. Saved views after that. `list_display`
+   computed-method columns (closures, not just real field names) and choices-based `list_filter`
+   (needs new `FieldMeta` choices metadata that doesn't exist yet) remain deferred, belong here
+   too whenever their prerequisites exist. A future improvement to the bulk-delete confirm page
    (per-selected-object related-object warnings, deliberately cut from 5.6.3), combining
    `date_hierarchy`'s drilldown counts with the active search/`list_filter` state (deliberately
-   cut from 5.6.4), and cross-row transactional atomicity for `list_editable` saves (deliberately
-   cut from 5.6.5, matches every other save path's existing non-atomicity) are all optional, not
-   blocking.
+   cut from 5.6.4), cross-row transactional atomicity for `list_editable` saves (deliberately cut
+   from 5.6.5), a "selected rows only" CSV export mode, and true CSV streaming for very large
+   tables (both deliberately cut from 5.6.6) are all optional, not blocking.
 2. **5.7 — Permissions**: requires groups/model-level permissions, which were *deferred out of
    Phase 4* — that work (auth tables, permission checks) has to land before "permission
    enforcement everywhere" is possible. Design it as its own auth-side doc first.
