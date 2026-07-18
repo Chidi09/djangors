@@ -260,7 +260,7 @@ async fn test_polls_voting_integration() {
         password: hash_password("staff_password").unwrap(),
         is_active: true,
         is_staff: true,
-        is_superuser: false,
+        is_superuser: true,
         date_joined: now,
         last_login: Some(now),
     };

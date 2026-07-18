@@ -991,8 +991,6 @@ async fn admin_export_csv(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
-
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
     let admin = admins
@@ -1006,6 +1004,8 @@ async fn admin_export_csv(
     let db = req
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    require_perm(&req, db, admin.model_meta(), "view").await?;
 
     let state = parse_changelist_query_state(&req, admin.as_ref())?;
     let (columns, rows) = admin
@@ -1031,14 +1031,46 @@ async fn admin_export_csv(
     ))
 }
 
-async fn require_staff(req: &Request) -> Result<(), DjangorsError> {
+async fn require_staff(req: &Request) -> Result<User, DjangorsError> {
     let auth = Auth::<User>::from_request(req).await?;
     if !auth.0.is_staff {
         return Err(DjangorsError::Forbidden(
             "staff status required".to_string(),
         ));
     }
-    Ok(())
+    Ok(auth.0)
+}
+
+fn action_codename(meta: &'static ModelMeta, action: &str) -> String {
+    format!(
+        "{}.{}_{}",
+        meta.app_label,
+        action,
+        meta.struct_name.to_lowercase()
+    )
+}
+
+async fn require_perm(
+    req: &Request,
+    db: &djangors_db::Database,
+    meta: &'static ModelMeta,
+    action: &str,
+) -> Result<User, DjangorsError> {
+    let user = require_staff(req).await?;
+    if user.is_superuser {
+        return Ok(user);
+    }
+    let codename = action_codename(meta, action);
+    let allowed = djangors_auth::has_perm(db, user.id, &codename)
+        .await
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+    if !allowed {
+        return Err(DjangorsError::Forbidden(format!(
+            "permission '{}' required",
+            codename
+        )));
+    }
+    Ok(user)
 }
 
 async fn admin_index(
@@ -1046,10 +1078,23 @@ async fn admin_index(
     _params: PathParams,
     registry: Vec<&'static ModelMeta>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
+    let user = require_staff(&req).await?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
 
     let mut body = String::new();
     for meta in &registry {
+        if !user.is_superuser {
+            let codename = action_codename(meta, "view");
+            let allowed = djangors_auth::has_perm(db, user.id, &codename)
+                .await
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            if !allowed {
+                continue;
+            }
+        }
         body.push_str(&format!(
             "<li><a href=\"{}/{}/\">{}.{}</a></li>",
             meta.app_label,
@@ -1203,8 +1248,6 @@ async fn admin_changelist(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
-
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
 
@@ -1219,6 +1262,8 @@ async fn admin_changelist(
     let db = req
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    require_perm(&req, db, admin.model_meta(), "view").await?;
 
     let state = parse_changelist_query_state(&req, admin.as_ref())?;
     let o = state.order;
@@ -1550,8 +1595,6 @@ async fn admin_add_get(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
-
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
 
@@ -1562,6 +1605,12 @@ async fn admin_add_get(
             meta.app_label == app && meta.struct_name.to_lowercase() == model
         })
         .ok_or(DjangorsError::NotFound)?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    require_perm(&req, db, admin.model_meta(), "add").await?;
 
     let meta = admin.model_meta();
     let field_names = admin.field_names();
@@ -1577,8 +1626,6 @@ async fn admin_add_post(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
-
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
 
@@ -1593,6 +1640,8 @@ async fn admin_add_post(
     let db = req
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    require_perm(&req, db, admin.model_meta(), "add").await?;
 
     let Form(form_data) =
         Form::<std::collections::HashMap<String, String>>::from_request(&req).await?;
@@ -1613,8 +1662,6 @@ async fn admin_change_get(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
-
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
     let pk = params
@@ -1632,6 +1679,8 @@ async fn admin_change_get(
     let db = req
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    require_perm(&req, db, admin.model_meta(), "change").await?;
 
     let row_vals = admin
         .get_by_pk(db, pk)
@@ -1656,8 +1705,6 @@ async fn admin_change_post(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
-
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
     let pk = params
@@ -1675,6 +1722,8 @@ async fn admin_change_post(
     let db = req
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    require_perm(&req, db, admin.model_meta(), "change").await?;
 
     let Form(form_data) =
         Form::<std::collections::HashMap<String, String>>::from_request(&req).await?;
@@ -1805,8 +1854,6 @@ async fn admin_delete_get(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
-
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
     let pk = params
@@ -1824,6 +1871,8 @@ async fn admin_delete_get(
     let db = req
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    require_perm(&req, db, admin.model_meta(), "delete").await?;
 
     let row_vals = admin
         .get_by_pk(db, pk)
@@ -1873,8 +1922,6 @@ async fn admin_delete_post(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
-
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
     let pk = params
@@ -1893,6 +1940,8 @@ async fn admin_delete_post(
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
 
+    require_perm(&req, db, admin.model_meta(), "delete").await?;
+
     let deleted = admin.delete_by_pk(db, pk).await?;
     if deleted {
         Ok(Response::redirect(&format!("/{}/{}/", app, model)))
@@ -1906,8 +1955,6 @@ async fn admin_bulk_delete_post(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
-
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
     let admin = admins
@@ -1921,6 +1968,8 @@ async fn admin_bulk_delete_post(
     let db = req
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    require_perm(&req, db, admin.model_meta(), "delete").await?;
 
     let Form(pairs) = Form::<Vec<(String, String)>>::from_request(&req).await?;
     let is_confirm = pairs.iter().any(|(k, v)| k == "confirm" && v == "1");
@@ -1987,8 +2036,6 @@ async fn admin_save_changelist_post(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
 ) -> Result<Response, DjangorsError> {
-    require_staff(&req).await?;
-
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
     let admin = admins
@@ -2002,6 +2049,8 @@ async fn admin_save_changelist_post(
     let db = req
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    require_perm(&req, db, admin.model_meta(), "change").await?;
 
     let editable_fields = admin.list_editable_fields();
     let Form(pairs) = Form::<Vec<(String, String)>>::from_request(&req).await?;
@@ -2197,7 +2246,7 @@ mod tests {
             password: "hash".to_string(),
             is_active: true,
             is_staff: true,
-            is_superuser: false,
+            is_superuser: true,
             date_joined: now,
             last_login: Some(now),
         }
@@ -2367,7 +2416,7 @@ mod tests {
             password: "hash".to_string(),
             is_active: true,
             is_staff: true,
-            is_superuser: false,
+            is_superuser: true,
             date_joined: now,
             last_login: Some(now),
         }
@@ -2712,7 +2761,7 @@ mod tests {
             password: "hash".to_string(),
             is_active: true,
             is_staff: true,
-            is_superuser: false,
+            is_superuser: true,
             date_joined: now,
             last_login: Some(now),
         }
@@ -2975,7 +3024,7 @@ mod tests {
             password: "hash".to_string(),
             is_active: true,
             is_staff: true,
-            is_superuser: false,
+            is_superuser: true,
             date_joined: now,
             last_login: Some(now),
         }
@@ -3189,7 +3238,7 @@ mod tests {
             password: "hash".to_string(),
             is_active: true,
             is_staff: true,
-            is_superuser: false,
+            is_superuser: true,
             date_joined: now,
             last_login: Some(now),
         }
@@ -3442,7 +3491,7 @@ mod tests {
             password: "hash".to_string(),
             is_active: true,
             is_staff: true,
-            is_superuser: false,
+            is_superuser: true,
             date_joined: now,
             last_login: Some(now),
         }
@@ -3661,7 +3710,7 @@ mod tests {
             password: "hash".to_string(),
             is_active: true,
             is_staff: true,
-            is_superuser: false,
+            is_superuser: true,
             date_joined: now,
             last_login: Some(now),
         }
@@ -3941,7 +3990,7 @@ mod tests {
             password: "hash".to_string(),
             is_active: true,
             is_staff: true,
-            is_superuser: false,
+            is_superuser: true,
             date_joined: now,
             last_login: Some(now),
         }
@@ -4200,7 +4249,7 @@ mod tests {
             password: "hash".to_string(),
             is_active: true,
             is_staff: true,
-            is_superuser: false,
+            is_superuser: true,
             date_joined: now,
             last_login: Some(now),
         }
@@ -4503,7 +4552,7 @@ mod tests {
             password: "hash".to_string(),
             is_active: true,
             is_staff: true,
-            is_superuser: false,
+            is_superuser: true,
             date_joined: now,
             last_login: Some(now),
         }
@@ -4684,5 +4733,357 @@ mod tests {
         let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
             .execute(db.pool())
             .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_admin_permissions_enforcement() {
+        let _guard = DB_MUTEX.lock().unwrap();
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        // Drop tables
+        let drop_tables = [
+            "auth_user_permissions",
+            "auth_group_permissions",
+            "auth_user_groups",
+            "auth_group",
+            "auth_permission",
+            "auth_user",
+            "test_model_a",
+            "test_model_b",
+        ];
+        for table in drop_tables {
+            let _ = sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
+                "DROP TABLE IF EXISTS {}",
+                table
+            )))
+            .execute(db.pool())
+            .await;
+        }
+
+        // Create auth_user
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL UNIQUE,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Create auth_permission
+        sqlx::query(
+            "CREATE TABLE auth_permission (
+                id BIGSERIAL PRIMARY KEY,
+                codename VARCHAR(255) NOT NULL UNIQUE,
+                name VARCHAR(255) NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Create auth_group
+        sqlx::query(
+            "CREATE TABLE auth_group (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(150) NOT NULL UNIQUE
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Create auth_user_groups
+        sqlx::query(
+            "CREATE TABLE auth_user_groups (
+                id BIGSERIAL PRIMARY KEY,
+                \"user\" BIGINT NOT NULL,
+                \"group\" BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Create auth_group_permissions
+        sqlx::query(
+            "CREATE TABLE auth_group_permissions (
+                id BIGSERIAL PRIMARY KEY,
+                \"group\" BIGINT NOT NULL,
+                permission BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Create auth_user_permissions
+        sqlx::query(
+            "CREATE TABLE auth_user_permissions (
+                id BIGSERIAL PRIMARY KEY,
+                \"user\" BIGINT NOT NULL,
+                permission BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Create test_model_a and test_model_b
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_b (
+                id BIGSERIAL PRIMARY KEY,
+                title TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+
+        // Create staff, non-superuser user
+        let staff_user = User {
+            id: 0,
+            username: "staff_user".to_string(),
+            email: "staff_user@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        // Setup AdminSite
+        let site = AdminSite::new();
+        site.register::<ModelA>();
+        site.register::<ModelB>();
+        let router = Router::new().mount("/admin", site.urls());
+
+        // Create session
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff_user.id);
+        let mut ext = Extensions::new();
+        ext.insert(session.clone());
+
+        // Test 1: A staff, non-superuser user with no permissions at all -> GET changelist for ModelA -> 403 Forbidden
+        let req1 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modela/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext.clone())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res1 = router.handle(req1).await;
+        assert!(res1.is_err());
+        assert_eq!(res1.unwrap_err().status_code(), StatusCode::FORBIDDEN);
+
+        // Test 2: The same user, after being granted the `view` permission for that specific model -> GET changelist -> 200
+        let codename_view_a = "admin_test.view_modela";
+        let perm_id: i64 = sqlx::query_scalar(
+            "INSERT INTO auth_permission (codename, name) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(codename_view_a)
+        .bind("Can view modela")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+
+        // Link user to permission
+        sqlx::query("INSERT INTO auth_user_permissions (\"user\", permission) VALUES ($1, $2)")
+            .bind(staff_user.id)
+            .bind(perm_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let req2 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modela/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext.clone())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res2 = router.handle(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+
+        // Test 3: The same permissioned-for-view-only user -> POST to that model's add/ route -> 403
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let req3 = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/add/"),
+            headers,
+            Bytes::from("name=TestingAdd"),
+        )
+        .with_extensions(ext.clone())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res3 = router.handle(req3).await;
+        assert!(res3.is_err());
+        assert_eq!(res3.unwrap_err().status_code(), StatusCode::FORBIDDEN);
+
+        // Clean up direct permission for next tests
+        sqlx::query("DELETE FROM auth_user_permissions")
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        // Test 4: A staff, non-superuser user granted view via group membership -> GET changelist -> 200
+        let group_id: i64 =
+            sqlx::query_scalar("INSERT INTO auth_group (name) VALUES ($1) RETURNING id")
+                .bind("Editors")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+
+        // Link group to permission
+        sqlx::query("INSERT INTO auth_group_permissions (\"group\", permission) VALUES ($1, $2)")
+            .bind(group_id)
+            .bind(perm_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        // Link user to group
+        sqlx::query("INSERT INTO auth_user_groups (\"user\", \"group\") VALUES ($1, $2)")
+            .bind(staff_user.id)
+            .bind(group_id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let req4 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modela/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext.clone())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let req_res4 = router.handle(req4).await.unwrap();
+        assert_eq!(req_res4.status(), StatusCode::OK);
+
+        // Test 5: admin_index with a non-superuser staff user who has view permission for exactly one of two registered test models -> body contains link for ModelA but not ModelB
+        let req5 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext.clone())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res5 = router.handle(req5).await.unwrap();
+        assert_eq!(res5.status(), StatusCode::OK);
+        let body5 = String::from_utf8(res5.body().to_vec()).unwrap();
+        assert!(body5.contains("admin_test/modela/"));
+        assert!(!body5.contains("admin_test/modelb/"));
+
+        // Clean up group membership/permissions to show that superuser succeeds without any records
+        sqlx::query("DELETE FROM auth_user_groups")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM auth_group_permissions")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM auth_group")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM auth_permission")
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        // Test 6: A superuser -> every action succeeds without needing any auth_permission/auth_user_permissions rows at all
+        let superuser = User {
+            id: 0,
+            username: "superuser".to_string(),
+            email: "superuser@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let super_session = djangors_sessions::Session::new_empty();
+        super_session.set(SESSION_USER_ID_KEY, superuser.id);
+        let mut super_ext = Extensions::new();
+        super_ext.insert(super_session);
+
+        // GET changelist succeeds
+        let req6_get = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modela/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(super_ext.clone())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res6_get = router.handle(req6_get).await.unwrap();
+        assert_eq!(res6_get.status(), StatusCode::OK);
+
+        // POST add succeeds
+        let mut super_headers = HeaderMap::new();
+        super_headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let req6_post = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/add/"),
+            super_headers,
+            Bytes::from("name=SuperuserAdd"),
+        )
+        .with_extensions(super_ext.clone())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res6_post = router.handle(req6_post).await.unwrap();
+        assert_eq!(res6_post.status(), StatusCode::FOUND);
+
+        // Clean up
+        for table in drop_tables {
+            let _ = sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
+                "DROP TABLE IF EXISTS {}",
+                table
+            )))
+            .execute(db.pool())
+            .await;
+        }
     }
 }
