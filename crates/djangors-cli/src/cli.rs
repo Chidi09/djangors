@@ -58,6 +58,9 @@ pub enum Commands {
         #[arg(long, default_value = "")]
         email: String,
     },
+    /// Create/update the standard view/add/change/delete permissions for every registered model.
+    #[command(name = "createpermissions")]
+    Createpermissions,
     /// Open a REPL.
     #[command(name = "shell")]
     Shell,

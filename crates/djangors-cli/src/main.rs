@@ -27,6 +27,9 @@ async fn main() {
         Commands::Createsuperuser { username, email } => {
             commands::createsuperuser(username, email).await;
         }
+        Commands::Createpermissions => {
+            commands::createpermissions().await;
+        }
         Commands::Shell => {
             commands::shell();
         }

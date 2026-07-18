@@ -48,6 +48,10 @@ impl AuthUser for TestUser {
         self.is_active
     }
 
+    fn is_superuser(&self) -> bool {
+        self.is_superuser
+    }
+
     async fn update_user(&self, db: &djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
         self.update(db).await
     }
@@ -949,4 +953,243 @@ async fn test_db_password_reset_flow() {
     let final_user = &final_users[0];
     assert!(verify_password("new_shiny_password", final_user.password_hash()).unwrap());
     assert!(!verify_password("another_password", final_user.password_hash()).unwrap());
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn test_permissions_and_groups() {
+    let _guard = DB_MUTEX.lock().unwrap();
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_orm::djangors_db::Database::connect(&config)
+        .await
+        .unwrap();
+
+    // Drop tables if they exist (in reverse dependency order)
+    let drop_tables = [
+        "auth_user_permissions",
+        "auth_group_permissions",
+        "auth_user_groups",
+        "auth_group",
+        "auth_permission",
+        "auth_user",
+    ];
+    for table in drop_tables {
+        djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
+            "DROP TABLE IF EXISTS {}",
+            table
+        )))
+        .execute(db.pool())
+        .await
+        .unwrap();
+    }
+
+    // Create tables
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_user (
+            id BIGSERIAL PRIMARY KEY,
+            username VARCHAR(150) NOT NULL UNIQUE,
+            email VARCHAR(254) NOT NULL,
+            password TEXT NOT NULL,
+            is_active BOOLEAN NOT NULL,
+            is_staff BOOLEAN NOT NULL,
+            is_superuser BOOLEAN NOT NULL,
+            date_joined TIMESTAMPTZ NOT NULL,
+            last_login TIMESTAMPTZ
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_permission (
+            id BIGSERIAL PRIMARY KEY,
+            codename VARCHAR(255) NOT NULL UNIQUE,
+            name VARCHAR(255) NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_group (
+            id BIGSERIAL PRIMARY KEY,
+            name VARCHAR(150) NOT NULL UNIQUE
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_user_groups (
+            id BIGSERIAL PRIMARY KEY,
+            \"user\" BIGINT NOT NULL,
+            \"group\" BIGINT NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_group_permissions (
+            id BIGSERIAL PRIMARY KEY,
+            \"group\" BIGINT NOT NULL,
+            permission BIGINT NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_user_permissions (
+            id BIGSERIAL PRIMARY KEY,
+            \"user\" BIGINT NOT NULL,
+            permission BIGINT NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // 1. Call sync_permissions → expect exactly 4 permissions per registered model
+    let models: Vec<_> = djangors_orm::meta::all_registered_models().collect();
+    let expected_count = models.len() * 4;
+    let synced = sync_permissions(&db).await.unwrap();
+    assert_eq!(synced, expected_count);
+
+    let count_db: i64 = djangors_orm::sqlx::query_scalar("SELECT COUNT(*) FROM auth_permission")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(count_db, expected_count as i64);
+
+    // Verify codenames conform to the convention
+    let sample_codename = format!(
+        "{}.view_{}",
+        models[0].app_label,
+        models[0].struct_name.to_lowercase()
+    );
+    let codename_exists: bool = djangors_orm::sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM auth_permission WHERE codename = $1)",
+    )
+    .bind(&sample_codename)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(
+        codename_exists,
+        "Expected codename {} to exist",
+        sample_codename
+    );
+
+    // 2. Call sync_permissions twice → idempotent, no error, same count
+    let synced_again = sync_permissions(&db).await.unwrap();
+    assert_eq!(synced_again, expected_count);
+
+    let count_db_again: i64 =
+        djangors_orm::sqlx::query_scalar("SELECT COUNT(*) FROM auth_permission")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(count_db_again, expected_count as i64);
+
+    // Create a test user in auth_user
+    let now = chrono::Utc::now();
+    let user_id: i64 = djangors_orm::sqlx::query_scalar(
+        "INSERT INTO auth_user (username, email, password, is_active, is_staff, is_superuser, date_joined) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id"
+    )
+    .bind("testpermuser")
+    .bind("test@example.com")
+    .bind("password_hash")
+    .bind(true)
+    .bind(false)
+    .bind(false)
+    .bind(now)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+
+    let check_codename = "djangors_auth.add_user";
+
+    // Get the permission id for check_codename
+    let perm_id: i64 =
+        djangors_orm::sqlx::query_scalar("SELECT id FROM auth_permission WHERE codename = $1")
+            .bind(check_codename)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+
+    // 3. has_perm false with no grants
+    let has = has_perm(&db, user_id, check_codename).await.unwrap();
+    assert!(!has);
+
+    // 4. has_perm true via direct UserPermission
+    djangors_orm::sqlx::query(
+        "INSERT INTO auth_user_permissions (\"user\", permission) VALUES ($1, $2)",
+    )
+    .bind(user_id)
+    .bind(perm_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let has = has_perm(&db, user_id, check_codename).await.unwrap();
+    assert!(has);
+
+    // Clean up direct UserPermission for next tests
+    djangors_orm::sqlx::query("DELETE FROM auth_user_permissions WHERE \"user\" = $1")
+        .bind(user_id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let has = has_perm(&db, user_id, check_codename).await.unwrap();
+    assert!(!has);
+
+    // 5. has_perm true via group membership (this exercises join chain and quotes)
+    let group_id: i64 =
+        djangors_orm::sqlx::query_scalar("INSERT INTO auth_group (name) VALUES ($1) RETURNING id")
+            .bind("testgroup")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+
+    djangors_orm::sqlx::query("INSERT INTO auth_user_groups (\"user\", \"group\") VALUES ($1, $2)")
+        .bind(user_id)
+        .bind(group_id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    djangors_orm::sqlx::query(
+        "INSERT INTO auth_group_permissions (\"group\", permission) VALUES ($1, $2)",
+    )
+    .bind(group_id)
+    .bind(perm_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let has = has_perm(&db, user_id, check_codename).await.unwrap();
+    assert!(has);
+
+    // 6. has_perm false when checking a different non-matching permission
+    let non_matching_codename = "djangors_auth.delete_user";
+    let has_non_matching = has_perm(&db, user_id, non_matching_codename).await.unwrap();
+    assert!(!has_non_matching);
+
+    // Clean up all tables
+    for table in drop_tables {
+        djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
+            "DROP TABLE IF EXISTS {}",
+            table
+        )))
+        .execute(db.pool())
+        .await
+        .unwrap();
+    }
 }

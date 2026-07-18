@@ -155,6 +155,31 @@ pub async fn createsuperuser(username: String, email: String) {
     }
 }
 
+pub async fn createpermissions() {
+    let db_url = match std::env::var("DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            eprintln!("[dj createpermissions] DATABASE_URL environment variable is not set");
+            std::process::exit(1);
+        }
+    };
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = match djangors_db::Database::connect(&config).await {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("[dj createpermissions] failed to connect to database: {e}");
+            std::process::exit(1);
+        }
+    };
+    match djangors_auth::sync_permissions(&db).await {
+        Ok(count) => println!("[dj createpermissions] synced {} permission(s)", count),
+        Err(e) => {
+            eprintln!("[dj createpermissions] failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Open a REPL.
 pub fn shell() {
     println!("[dj shell] would open a REPL (not yet implemented)");

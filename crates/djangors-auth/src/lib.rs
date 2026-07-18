@@ -8,6 +8,7 @@ use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use base64::Engine as _;
 use djangors_core::signals::Signal;
 use djangors_macros::Model;
+use djangors_orm::ForeignKey;
 use djangors_orm::Model as _;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -264,6 +265,7 @@ pub trait AuthUser: djangors_orm::Model + djangors_orm::FromRow + Send + Sync + 
     fn password_hash(&self) -> &str;
     fn set_password_hash(&mut self, hash: String);
     fn is_active(&self) -> bool;
+    fn is_superuser(&self) -> bool;
     async fn update_user(&self, db: &djangors_db::Database) -> Result<(), djangors_orm::OrmError>;
 }
 
@@ -314,9 +316,141 @@ impl AuthUser for User {
         self.is_active
     }
 
+    fn is_superuser(&self) -> bool {
+        self.is_superuser
+    }
+
     async fn update_user(&self, db: &djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
         self.update(db).await
     }
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "djangors_auth", table_name = "auth_permission")]
+pub struct Permission {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    /// "{app_label}.{action}_{model_name_lowercase}", e.g. "polls.add_question".
+    #[djangors(max_length = 255, unique)]
+    pub codename: String,
+    /// Human-readable label, e.g. "Can add question".
+    #[djangors(max_length = 255)]
+    pub name: String,
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "djangors_auth", table_name = "auth_group")]
+pub struct Group {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    #[djangors(max_length = 150, unique)]
+    pub name: String,
+}
+
+/// Join table: which groups a user belongs to.
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "djangors_auth", table_name = "auth_user_groups")]
+pub struct UserGroup {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub user: ForeignKey<User>,
+    pub group: ForeignKey<Group>,
+}
+
+/// Join table: which permissions a group grants.
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "djangors_auth", table_name = "auth_group_permissions")]
+pub struct GroupPermission {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub group: ForeignKey<Group>,
+    pub permission: ForeignKey<Permission>,
+}
+
+/// Join table: permissions granted directly to a user (bypassing any group).
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "djangors_auth", table_name = "auth_user_permissions")]
+pub struct UserPermission {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub user: ForeignKey<User>,
+    pub permission: ForeignKey<Permission>,
+}
+
+/// Checks whether `user_id` has been granted `codename`, either directly
+/// (`UserPermission`) or via any group they belong to (`UserGroup` ->
+/// `GroupPermission`). Does NOT special-case superusers - callers that want
+/// "superusers can do anything" should check `user.is_superuser()` first and
+/// skip calling this entirely, avoiding a DB round-trip for the common case.
+pub async fn has_perm(
+    db: &djangors_db::Database,
+    user_id: i64,
+    codename: &str,
+) -> Result<bool, AuthError> {
+    let direct: i64 = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
+        "SELECT COUNT(*) FROM auth_user_permissions up \
+         JOIN auth_permission p ON p.id = up.permission \
+         WHERE up.\"user\" = $1 AND p.codename = $2"
+            .to_string(),
+    ))
+    .bind(user_id)
+    .bind(codename)
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+    if direct > 0 {
+        return Ok(true);
+    }
+
+    let via_group: i64 = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
+        "SELECT COUNT(*) FROM auth_user_groups ug \
+         JOIN auth_group_permissions gp ON gp.\"group\" = ug.\"group\" \
+         JOIN auth_permission p ON p.id = gp.permission \
+         WHERE ug.\"user\" = $1 AND p.codename = $2"
+            .to_string(),
+    ))
+    .bind(user_id)
+    .bind(codename)
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+    Ok(via_group > 0)
+}
+
+/// Ensures the 4 standard permissions (view/add/change/delete) exist for
+/// every model currently registered via `djangors_orm::meta::all_registered_models()`.
+/// This covers every `#[derive(Model)]` struct in the binary, using the same pre-existing
+/// global registry that 5.5's `collect_related_objects` already established as
+/// the source of truth for "every model in the project." Idempotent: safe
+/// to call on every app startup or as a repeatable CLI step. Returns the
+/// number of (model, action) pairs considered (not the number newly
+/// inserted - `ON CONFLICT DO NOTHING` makes re-runs cheap no-ops without
+/// needing to track that distinction).
+pub async fn sync_permissions(db: &djangors_db::Database) -> Result<usize, AuthError> {
+    let mut count = 0;
+    for meta in djangors_orm::meta::all_registered_models() {
+        for action in ["view", "add", "change", "delete"] {
+            let codename = format!(
+                "{}.{}_{}",
+                meta.app_label,
+                action,
+                meta.struct_name.to_lowercase()
+            );
+            let name = format!("Can {} {}", action, meta.struct_name.to_lowercase());
+            djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(
+                "INSERT INTO auth_permission (codename, name) VALUES ($1, $2) \
+                 ON CONFLICT (codename) DO NOTHING"
+                    .to_string(),
+            ))
+            .bind(&codename)
+            .bind(&name)
+            .execute(db.pool())
+            .await
+            .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+            count += 1;
+        }
+    }
+    Ok(count)
 }
 
 /// Hash a plaintext password using Argon2id and generate a random salt.
