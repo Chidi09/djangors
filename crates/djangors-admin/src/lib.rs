@@ -639,9 +639,26 @@ struct FormFieldRow {
     error: Option<String>,
 }
 
+#[derive(Clone)]
+pub struct SiteBranding {
+    pub site_header: String,
+    pub site_title: String,
+}
+
+impl Default for SiteBranding {
+    fn default() -> Self {
+        Self {
+            site_header: "Djangors Administration".to_string(),
+            site_title: "Djangors site admin".to_string(),
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 struct RenderFormContext {
     rows: Vec<FormFieldRow>,
+    site_header: String,
+    site_title: String,
 }
 
 fn render_form(
@@ -650,6 +667,7 @@ fn render_form(
     submitted_values: &std::collections::HashMap<String, String>,
     errors: &std::collections::HashMap<String, String>,
     is_add: bool,
+    branding: &SiteBranding,
 ) -> Result<Response, DjangorsError> {
     let mut rows = Vec::new();
 
@@ -708,12 +726,17 @@ fn render_form(
     djangors_template::render(
         &ADMIN_TEMPLATES,
         "admin/render_form.html",
-        RenderFormContext { rows },
+        RenderFormContext {
+            rows,
+            site_header: branding.site_header.clone(),
+            site_title: branding.site_title.clone(),
+        },
     )
 }
 
 pub struct AdminSite {
     registry: Mutex<Vec<Arc<dyn ModelAdmin>>>,
+    branding: SiteBranding,
 }
 
 impl Default for AdminSite {
@@ -726,7 +749,18 @@ impl AdminSite {
     pub fn new() -> Self {
         Self {
             registry: Mutex::new(Vec::new()),
+            branding: SiteBranding::default(),
         }
+    }
+
+    pub fn with_site_header(mut self, header: impl Into<String>) -> Self {
+        self.branding.site_header = header.into();
+        self
+    }
+
+    pub fn with_site_title(mut self, title: impl Into<String>) -> Self {
+        self.branding.site_title = title.into();
+        self
     }
 
     /// Register a model with the default (no customization) ModelAdmin.
@@ -895,6 +929,7 @@ impl AdminSite {
         let admins: Vec<Arc<dyn ModelAdmin>> = reg.iter().cloned().collect();
         let snapshot: Vec<&'static ModelMeta> =
             admins.iter().map(|item| item.model_meta()).collect();
+        let branding = self.branding.clone();
 
         let index_admins = snapshot.clone();
         let changelist_admins = admins.clone();
@@ -908,14 +943,29 @@ impl AdminSite {
         let save_changelist_admins = admins.clone();
         let export_csv_admins = admins.clone();
 
+        let index_branding = branding.clone();
+        let changelist_branding = branding.clone();
+        let add_get_branding = branding.clone();
+        let add_post_branding = branding.clone();
+        let change_get_branding = branding.clone();
+        let change_post_branding = branding.clone();
+        let delete_get_branding = branding.clone();
+        let bulk_delete_branding = branding.clone();
+        let save_changelist_branding = branding.clone();
+
         Router::new()
             .get("/", move |req: Request, params: PathParams| {
-                admin_index(req, params, index_admins.clone())
+                admin_index(req, params, index_admins.clone(), index_branding.clone())
             })
             .get(
                 "/{app:slug}/{model:slug}/",
                 move |req: Request, params: PathParams| {
-                    admin_changelist(req, params, changelist_admins.clone())
+                    admin_changelist(
+                        req,
+                        params,
+                        changelist_admins.clone(),
+                        changelist_branding.clone(),
+                    )
                 },
             )
             .get(
@@ -927,31 +977,56 @@ impl AdminSite {
             .get(
                 "/{app:slug}/{model:slug}/add/",
                 move |req: Request, params: PathParams| {
-                    admin_add_get(req, params, add_get_admins.clone())
+                    admin_add_get(
+                        req,
+                        params,
+                        add_get_admins.clone(),
+                        add_get_branding.clone(),
+                    )
                 },
             )
             .post(
                 "/{app:slug}/{model:slug}/add/",
                 move |req: Request, params: PathParams| {
-                    admin_add_post(req, params, add_post_admins.clone())
+                    admin_add_post(
+                        req,
+                        params,
+                        add_post_admins.clone(),
+                        add_post_branding.clone(),
+                    )
                 },
             )
             .get(
                 "/{app:slug}/{model:slug}/{pk:i64}/change/",
                 move |req: Request, params: PathParams| {
-                    admin_change_get(req, params, change_get_admins.clone())
+                    admin_change_get(
+                        req,
+                        params,
+                        change_get_admins.clone(),
+                        change_get_branding.clone(),
+                    )
                 },
             )
             .post(
                 "/{app:slug}/{model:slug}/{pk:i64}/change/",
                 move |req: Request, params: PathParams| {
-                    admin_change_post(req, params, change_post_admins.clone())
+                    admin_change_post(
+                        req,
+                        params,
+                        change_post_admins.clone(),
+                        change_post_branding.clone(),
+                    )
                 },
             )
             .get(
                 "/{app:slug}/{model:slug}/{pk:i64}/delete/",
                 move |req: Request, params: PathParams| {
-                    admin_delete_get(req, params, delete_get_admins.clone())
+                    admin_delete_get(
+                        req,
+                        params,
+                        delete_get_admins.clone(),
+                        delete_get_branding.clone(),
+                    )
                 },
             )
             .post(
@@ -963,13 +1038,23 @@ impl AdminSite {
             .post(
                 "/{app:slug}/{model:slug}/bulk-delete/",
                 move |req: Request, params: PathParams| {
-                    admin_bulk_delete_post(req, params, bulk_delete_admins.clone())
+                    admin_bulk_delete_post(
+                        req,
+                        params,
+                        bulk_delete_admins.clone(),
+                        bulk_delete_branding.clone(),
+                    )
                 },
             )
             .post(
                 "/{app:slug}/{model:slug}/save-changelist/",
                 move |req: Request, params: PathParams| {
-                    admin_save_changelist_post(req, params, save_changelist_admins.clone())
+                    admin_save_changelist_post(
+                        req,
+                        params,
+                        save_changelist_admins.clone(),
+                        save_changelist_branding.clone(),
+                    )
                 },
             )
     }
@@ -1107,12 +1192,15 @@ struct IndexModelLink {
 #[derive(serde::Serialize)]
 struct IndexContext {
     models: Vec<IndexModelLink>,
+    site_header: String,
+    site_title: String,
 }
 
 async fn admin_index(
     req: Request,
     _params: PathParams,
     registry: Vec<&'static ModelMeta>,
+    branding: SiteBranding,
 ) -> Result<Response, DjangorsError> {
     let user = require_staff(&req).await?;
 
@@ -1147,7 +1235,11 @@ async fn admin_index(
     djangors_template::render(
         &ADMIN_TEMPLATES,
         "admin/index.html",
-        IndexContext { models },
+        IndexContext {
+            models,
+            site_header: branding.site_header,
+            site_title: branding.site_title,
+        },
     )
 }
 
@@ -1364,12 +1456,15 @@ struct ChangelistTemplateContext {
     show_save_button: bool,
     pager: PagerData,
     export_query: String,
+    site_header: String,
+    site_title: String,
 }
 
 async fn admin_changelist(
     req: Request,
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
+    branding: SiteBranding,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -1736,6 +1831,8 @@ async fn admin_changelist(
             show_save_button,
             pager,
             export_query,
+            site_header: branding.site_header,
+            site_title: branding.site_title,
         },
     )
 }
@@ -1744,6 +1841,7 @@ async fn admin_add_get(
     req: Request,
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
+    branding: SiteBranding,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -1767,13 +1865,21 @@ async fn admin_add_get(
     let submitted_values = std::collections::HashMap::new();
     let errors = std::collections::HashMap::new();
 
-    render_form(meta, &field_names, &submitted_values, &errors, true)
+    render_form(
+        meta,
+        &field_names,
+        &submitted_values,
+        &errors,
+        true,
+        &branding,
+    )
 }
 
 async fn admin_add_post(
     req: Request,
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
+    branding: SiteBranding,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -1800,7 +1906,7 @@ async fn admin_add_post(
         Err(errors) => {
             let meta = admin.model_meta();
             let field_names = admin.field_names();
-            render_form(meta, &field_names, &form_data, &errors, true)
+            render_form(meta, &field_names, &form_data, &errors, true, &branding)
         }
     }
 }
@@ -1809,6 +1915,7 @@ async fn admin_change_get(
     req: Request,
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
+    branding: SiteBranding,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -1844,13 +1951,21 @@ async fn admin_change_get(
     let field_names = admin.field_names();
     let errors = std::collections::HashMap::new();
 
-    render_form(meta, &field_names, &submitted_values, &errors, false)
+    render_form(
+        meta,
+        &field_names,
+        &submitted_values,
+        &errors,
+        false,
+        &branding,
+    )
 }
 
 async fn admin_change_post(
     req: Request,
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
+    branding: SiteBranding,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -1895,7 +2010,14 @@ async fn admin_change_post(
 
             let meta = admin.model_meta();
             let field_names = admin.field_names();
-            render_form(meta, &field_names, &merged_form_data, &errors, false)
+            render_form(
+                meta,
+                &field_names,
+                &merged_form_data,
+                &errors,
+                false,
+                &branding,
+            )
         }
     }
 }
@@ -2013,6 +2135,8 @@ struct DeleteConfirmRelated {
 struct DeleteConfirmContext {
     fields: Vec<DeleteConfirmField>,
     related: Vec<DeleteConfirmRelated>,
+    site_header: String,
+    site_title: String,
 }
 
 #[derive(serde::Serialize)]
@@ -2020,12 +2144,15 @@ struct BulkDeleteConfirmContext {
     count: usize,
     items: Vec<String>,
     pks: Vec<i64>,
+    site_header: String,
+    site_title: String,
 }
 
 async fn admin_delete_get(
     req: Request,
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
+    branding: SiteBranding,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -2083,6 +2210,8 @@ async fn admin_delete_get(
         DeleteConfirmContext {
             fields,
             related: related_context,
+            site_header: branding.site_header,
+            site_title: branding.site_title,
         },
     )
 }
@@ -2124,6 +2253,7 @@ async fn admin_bulk_delete_post(
     req: Request,
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
+    branding: SiteBranding,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -2181,6 +2311,8 @@ async fn admin_bulk_delete_post(
                 count,
                 items,
                 pks: pks.clone(),
+                site_header: branding.site_header,
+                site_title: branding.site_title,
             },
         );
     }
@@ -2207,12 +2339,15 @@ struct SaveChangelistErrorContext {
     errors: Vec<SaveChangelistErrorRow>,
     app: String,
     model: String,
+    site_header: String,
+    site_title: String,
 }
 
 async fn admin_save_changelist_post(
     req: Request,
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
+    branding: SiteBranding,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -2289,6 +2424,8 @@ async fn admin_save_changelist_post(
             errors,
             app: app.to_string(),
             model: model.to_string(),
+            site_header: branding.site_header,
+            site_title: branding.site_title,
         },
     )
 }
