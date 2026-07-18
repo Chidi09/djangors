@@ -685,6 +685,7 @@ impl AdminSite {
         let change_post_admins = admins.clone();
         let delete_get_admins = admins.clone();
         let delete_post_admins = admins.clone();
+        let bulk_delete_admins = admins.clone();
 
         Router::new()
             .get("/", move |req: Request, params: PathParams| {
@@ -730,6 +731,12 @@ impl AdminSite {
                 "/{app:slug}/{model:slug}/{pk:i64}/delete/",
                 move |req: Request, params: PathParams| {
                     admin_delete_post(req, params, delete_post_admins.clone())
+                },
+            )
+            .post(
+                "/{app:slug}/{model:slug}/bulk-delete/",
+                move |req: Request, params: PathParams| {
+                    admin_bulk_delete_post(req, params, bulk_delete_admins.clone())
                 },
             )
     }
@@ -820,6 +827,7 @@ async fn admin_changelist(
         .await?;
 
     let mut header_html = String::new();
+    header_html.push_str("<th></th>");
     for col in &page_data.columns {
         let new_o = if o == Some(*col) {
             format!("-{}", col)
@@ -838,6 +846,10 @@ async fn admin_changelist(
     for (row_index, row) in page_data.rows.into_iter().enumerate() {
         body_html.push_str("<tr>");
         let pk_val = page_data.pks.get(row_index).cloned().unwrap_or_default();
+        body_html.push_str(&format!(
+            "<td><input type=\"checkbox\" name=\"selected\" value=\"{}\"></td>",
+            pk_val
+        ));
         for (i, cell) in row.into_iter().enumerate() {
             let escaped = djangors_core::html_escape(&cell);
             if i == 0 {
@@ -940,7 +952,7 @@ async fn admin_changelist(
     }
 
     let html = format!(
-        "{}{}<table><thead><tr>{}</tr></thead><tbody>{}</tbody></table><div>{}</div>",
+        "{}{}<form method=\"post\" action=\"bulk-delete/\"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table><input type=\"submit\" value=\"Delete selected\"><div>{}</div></form>",
         search_html, filter_html, header_html, body_html, pager_html
     );
 
@@ -1248,6 +1260,87 @@ async fn admin_delete_post(
     } else {
         Err(DjangorsError::NotFound)
     }
+}
+
+async fn admin_bulk_delete_post(
+    req: Request,
+    params: PathParams,
+    admins: Vec<Arc<dyn ModelAdmin>>,
+) -> Result<Response, DjangorsError> {
+    require_staff(&req).await?;
+
+    let app = params.get("app").unwrap_or("");
+    let model = params.get("model").unwrap_or("");
+    let admin = admins
+        .iter()
+        .find(|a| {
+            let meta = a.model_meta();
+            meta.app_label == app && meta.struct_name.to_lowercase() == model
+        })
+        .ok_or(DjangorsError::NotFound)?;
+
+    let db = req
+        .state::<djangors_db::Database>()
+        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+
+    let Form(pairs) = Form::<Vec<(String, String)>>::from_request(&req).await?;
+    let is_confirm = pairs.iter().any(|(k, v)| k == "confirm" && v == "1");
+    let mut pks: Vec<i64> = Vec::new();
+    for (k, v) in &pairs {
+        if k == "selected" {
+            let pk = v
+                .parse::<i64>()
+                .map_err(|_| DjangorsError::BadRequest("invalid selected pk".to_string()))?;
+            pks.push(pk);
+        }
+    }
+
+    if pks.is_empty() {
+        // Nothing selected - go back to the changelist, nothing to confirm or do.
+        return Ok(Response::redirect(&format!("/{}/{}/", app, model)));
+    }
+
+    if !is_confirm {
+        // Step 1: render the confirm page, listing each selected object.
+        let mut items_html = String::new();
+        for &pk in &pks {
+            if let Some(row_vals) = admin.get_by_pk(db, pk).await? {
+                let display = row_vals
+                    .iter()
+                    .map(|(_, v)| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                items_html.push_str(&format!(
+                    "<li>{}</li>",
+                    djangors_core::html_escape(&display)
+                ));
+            }
+            // A pk that no longer exists (already deleted concurrently) is just
+            // skipped from the listing - it'll be a no-op in step 2 as well.
+        }
+        let hidden_inputs: String = pks
+            .iter()
+            .map(|pk| format!("<input type=\"hidden\" name=\"selected\" value=\"{}\">", pk))
+            .collect();
+        let html = format!(
+            "<p>Delete {} selected object(s)?</p><ul>{}</ul>\
+             <form method=\"post\">{}<input type=\"hidden\" name=\"confirm\" value=\"1\">\
+             <input type=\"submit\" value=\"Confirm Delete\"></form>",
+            pks.len(),
+            items_html,
+            hidden_inputs
+        );
+        return Ok(Response::html(StatusCode::OK, html));
+    }
+
+    // Step 2: actually delete. Best-effort per pk - a pk already gone (race, or
+    // simply reselected after step 1 already removed it) is not an error, same
+    // "false = already gone, not a failure" reasoning admin_delete_post already
+    // uses for the single-object route.
+    for &pk in &pks {
+        admin.delete_by_pk(db, pk).await?;
+    }
+    Ok(Response::redirect(&format!("/{}/{}/", app, model)))
 }
 
 #[cfg(test)]
@@ -2782,6 +2875,283 @@ mod tests {
 
         // Clean up
         let _ = sqlx::query("DROP TABLE IF EXISTS test_model_e")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_part6_3_bulk_delete() {
+        let _guard = DB_MUTEX.lock().unwrap();
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        // Drop/create tables
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff".to_string(),
+            email: "staff@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let non_staff = User {
+            id: 0,
+            username: "non_staff".to_string(),
+            email: "non_staff@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: false,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+
+        let session_non_staff = djangors_sessions::Session::new_empty();
+        session_non_staff.set(SESSION_USER_ID_KEY, non_staff.id);
+
+        let site = AdminSite::new();
+        site.register::<ModelA>();
+        let router = Router::new().mount("/admin", site.urls());
+
+        // Insert 3 rows
+        let pk1 = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
+            &db,
+            vec![("name", djangors_orm::expr::Value::Text("First".to_string()))],
+        )
+        .await
+        .unwrap();
+
+        let pk2 = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
+            &db,
+            vec![(
+                "name",
+                djangors_orm::expr::Value::Text("Second".to_string()),
+            )],
+        )
+        .await
+        .unwrap();
+
+        let pk3 = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
+            &db,
+            vec![("name", djangors_orm::expr::Value::Text("Third".to_string()))],
+        )
+        .await
+        .unwrap();
+
+        // 1. Insert 3 rows. POST to bulk-delete/ with selected=<pk1>&selected=<pk2> (no confirm) ->
+        //    200, response body lists both selected objects' display values, does NOT mention the third
+        //    (unselected) row, and both rows still exist in the DB afterward.
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-delete/"),
+            headers.clone(),
+            Bytes::from(format!("selected={}&selected={}", pk1, pk2)),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("First"));
+        assert!(body.contains("Second"));
+        assert!(!body.contains("Third"));
+
+        // verify rows still exist
+        let check1 = djangors_orm::queryset::QuerySet::<ModelA>::new()
+            .filter(djangors_orm::q!(id = pk1))
+            .unwrap()
+            .get(&db)
+            .await;
+        let check2 = djangors_orm::queryset::QuerySet::<ModelA>::new()
+            .filter(djangors_orm::q!(id = pk2))
+            .unwrap()
+            .get(&db)
+            .await;
+        let check3 = djangors_orm::queryset::QuerySet::<ModelA>::new()
+            .filter(djangors_orm::q!(id = pk3))
+            .unwrap()
+            .get(&db)
+            .await;
+        assert!(check1.is_ok());
+        assert!(check2.is_ok());
+        assert!(check3.is_ok());
+
+        // 2. POST the same selected=<pk1>&selected=<pk2> again, this time WITH confirm=1 ->
+        //    302 redirect to the changelist, both rows actually gone from the DB, the third (unselected) row still present.
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-delete/"),
+            headers.clone(),
+            Bytes::from(format!("selected={}&selected={}&confirm=1", pk1, pk2)),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND);
+        assert_eq!(
+            res.headers().get("location").unwrap().to_str().unwrap(),
+            "/admin_test/modela/"
+        );
+
+        let check1 = djangors_orm::queryset::QuerySet::<ModelA>::new()
+            .filter(djangors_orm::q!(id = pk1))
+            .unwrap()
+            .get(&db)
+            .await;
+        let check2 = djangors_orm::queryset::QuerySet::<ModelA>::new()
+            .filter(djangors_orm::q!(id = pk2))
+            .unwrap()
+            .get(&db)
+            .await;
+        let check3 = djangors_orm::queryset::QuerySet::<ModelA>::new()
+            .filter(djangors_orm::q!(id = pk3))
+            .unwrap()
+            .get(&db)
+            .await;
+        assert!(check1.is_err());
+        assert!(check2.is_err());
+        assert!(check3.is_ok());
+
+        // 3. POST with no selected values at all (empty selection) -> redirects without error, nothing deleted.
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-delete/"),
+            headers.clone(),
+            Bytes::from(""),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND);
+        assert_eq!(
+            res.headers().get("location").unwrap().to_str().unwrap(),
+            "/admin_test/modela/"
+        );
+
+        let check3 = djangors_orm::queryset::QuerySet::<ModelA>::new()
+            .filter(djangors_orm::q!(id = pk3))
+            .unwrap()
+            .get(&db)
+            .await;
+        assert!(check3.is_ok());
+
+        // 4. POST with a selected value that isn't a valid integer -> 400 Bad Request.
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-delete/"),
+            headers.clone(),
+            Bytes::from("selected=abc"),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+
+        let res = router.handle(req).await;
+        assert!(res.is_err());
+        assert_eq!(res.unwrap_err().status_code(), StatusCode::BAD_REQUEST);
+
+        // 5. Unauthenticated / non-staff POST -> 401 / 403.
+        // Unauthenticated:
+        let req_unauth = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-delete/"),
+            headers.clone(),
+            Bytes::from("selected=1"),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res_unauth = router.handle(req_unauth).await;
+        assert!(res_unauth.is_err());
+        assert_eq!(
+            res_unauth.unwrap_err().status_code(),
+            StatusCode::UNAUTHORIZED
+        );
+
+        // Non-staff:
+        let mut ext = Extensions::new();
+        ext.insert(session_non_staff.clone());
+        let req_nonstaff = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-delete/"),
+            headers,
+            Bytes::from("selected=1"),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res_nonstaff = router.handle(req_nonstaff).await;
+        assert!(res_nonstaff.is_err());
+        assert_eq!(
+            res_nonstaff.unwrap_err().status_code(),
+            StatusCode::FORBIDDEN
+        );
+
+        // Clean up
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
             .execute(db.pool())
             .await;
         let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
