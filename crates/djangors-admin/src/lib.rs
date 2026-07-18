@@ -9,6 +9,15 @@ use std::sync::{Arc, Mutex};
 
 pub(crate) const CHANGELIST_PER_PAGE: i64 = 100;
 
+static ADMIN_TEMPLATES: std::sync::LazyLock<djangors_template::TemplateEngine> =
+    std::sync::LazyLock::new(|| {
+        djangors_template::TemplateEngine::from_embedded(&[(
+            "admin/index.html",
+            include_str!("../templates/admin/index.html"),
+        )])
+        .expect("admin templates are compiled into the binary and must always be valid")
+    });
+
 /// Percent-encodes a value for embedding in a `href="?...&key=<value>"` query
 /// string. HTML-escaping alone is not enough here: `&` in a raw search term
 /// would be rendered as `&amp;`, which a browser decodes right back to a
@@ -1073,6 +1082,23 @@ async fn require_perm(
     Ok(user)
 }
 
+#[derive(serde::Serialize)]
+struct IndexModelLink {
+    // `from_safe_string` bypasses the template's HTML autoescaping (which
+    // escapes `/` as `&#x2f;`, unlike a plain `String` field). Safe here
+    // specifically because both values are built purely from `ModelMeta`'s
+    // `app_label`/`struct_name` - compile-time `&'static str`s from
+    // `#[derive(Model)]`, never user input. Do not reuse this pattern for a
+    // field that could ever carry request-derived or database-stored data.
+    href: minijinja::value::Value,
+    label: minijinja::value::Value,
+}
+
+#[derive(serde::Serialize)]
+struct IndexContext {
+    models: Vec<IndexModelLink>,
+}
+
 async fn admin_index(
     req: Request,
     _params: PathParams,
@@ -1084,7 +1110,7 @@ async fn admin_index(
         .state::<djangors_db::Database>()
         .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
 
-    let mut body = String::new();
+    let mut models = Vec::new();
     for meta in &registry {
         if !user.is_superuser {
             let codename = action_codename(meta, "view");
@@ -1095,16 +1121,24 @@ async fn admin_index(
                 continue;
             }
         }
-        body.push_str(&format!(
-            "<li><a href=\"{}/{}/\">{}.{}</a></li>",
-            meta.app_label,
-            meta.struct_name.to_lowercase(),
-            meta.app_label,
-            meta.struct_name
-        ));
+        models.push(IndexModelLink {
+            href: minijinja::value::Value::from_safe_string(format!(
+                "{}/{}/",
+                meta.app_label,
+                meta.struct_name.to_lowercase()
+            )),
+            label: minijinja::value::Value::from_safe_string(format!(
+                "{}.{}",
+                meta.app_label, meta.struct_name
+            )),
+        });
     }
 
-    Ok(Response::html(StatusCode::OK, format!("<ul>{}</ul>", body)))
+    djangors_template::render(
+        &ADMIN_TEMPLATES,
+        "admin/index.html",
+        IndexContext { models },
+    )
 }
 
 fn get_month_name(m: u32) -> &'static str {

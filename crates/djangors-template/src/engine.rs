@@ -65,6 +65,36 @@ impl TemplateEngine {
         Ok(TemplateEngine { env })
     }
 
+    /// Create a new `TemplateEngine` from templates embedded at compile time
+    /// (e.g. via `include_str!`), rather than loaded from the filesystem at
+    /// runtime. This is what library crates that ship their own templates
+    /// (like `djangors-admin`) should use.
+    pub fn from_embedded(
+        templates: &[(&'static str, &'static str)],
+    ) -> Result<Self, TemplateError> {
+        let mut env = Environment::new();
+
+        env.set_auto_escape_callback(|name| {
+            if name.ends_with(".html") || name.ends_with(".htm") {
+                AutoEscape::Html
+            } else {
+                AutoEscape::None
+            }
+        });
+
+        for (name, source) in templates {
+            env.add_template(name, source)
+                .map_err(TemplateError::MiniJinja)?;
+        }
+
+        env.add_filter("date", filters::date);
+        env.add_filter("floatformat", filters::floatformat);
+        env.add_filter("pluralize", filters::pluralize);
+        env.add_filter("truncatewords", filters::truncatewords);
+
+        Ok(TemplateEngine { env })
+    }
+
     /// Render a template by name with a serializable context.
     pub fn render(&self, name: &str, ctx: impl Serialize) -> Result<String, TemplateError> {
         let template = self.env.get_template(name).map_err(|e| {
@@ -386,6 +416,33 @@ mod tests {
             String::from_utf8(resp.body().to_vec()).unwrap(),
             "Hello Alice"
         );
+    }
+
+    #[test]
+    fn test_from_embedded_auto_escaping() {
+        let engine = TemplateEngine::from_embedded(&[
+            ("hello.html", "Hello {{ name }}!"),
+            ("hello.txt", "Hello {{ name }}!"),
+        ])
+        .unwrap();
+
+        #[derive(Serialize)]
+        struct Context {
+            name: &'static str,
+        }
+
+        let ctx = Context {
+            name: "<script>alert(1)</script>",
+        };
+
+        let rendered_html = engine.render("hello.html", &ctx).unwrap();
+        assert_eq!(
+            rendered_html,
+            "Hello &lt;script&gt;alert(1)&lt;&#x2f;script&gt;!"
+        );
+
+        let rendered_txt = engine.render("hello.txt", &ctx).unwrap();
+        assert_eq!(rendered_txt, "Hello <script>alert(1)</script>!");
     }
 
     #[test]

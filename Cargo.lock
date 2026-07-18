@@ -582,8 +582,11 @@ dependencies = [
  "djangors-macros",
  "djangors-orm",
  "djangors-sessions",
+ "djangors-template",
  "hyper",
+ "minijinja",
  "percent-encoding",
+ "serde",
  "sqlx",
  "tokio",
 ]
