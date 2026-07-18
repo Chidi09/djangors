@@ -24,6 +24,10 @@ static ADMIN_TEMPLATES: std::sync::LazyLock<djangors_template::TemplateEngine> =
                 "admin/bulk_delete_confirm.html",
                 include_str!("../templates/admin/bulk_delete_confirm.html"),
             ),
+            (
+                "admin/save_changelist_error.html",
+                include_str!("../templates/admin/save_changelist_error.html"),
+            ),
         ])
         .expect("admin templates are compiled into the binary and must always be valid")
     });
@@ -2093,6 +2097,20 @@ async fn admin_bulk_delete_post(
     Ok(Response::redirect(&format!("/{}/{}/", app, model)))
 }
 
+#[derive(serde::Serialize)]
+struct SaveChangelistErrorRow {
+    pk: i64,
+    field: String,
+    message: String,
+}
+
+#[derive(serde::Serialize)]
+struct SaveChangelistErrorContext {
+    errors: Vec<SaveChangelistErrorRow>,
+    app: String,
+    model: String,
+}
+
 async fn admin_save_changelist_post(
     req: Request,
     params: PathParams,
@@ -2155,23 +2173,26 @@ async fn admin_save_changelist_post(
         return Ok(Response::redirect(&format!("/{}/{}/", app, model)));
     }
 
-    let mut items_html = String::new();
-    for (pk, errors) in &row_errors {
-        for (field, msg) in errors {
-            items_html.push_str(&format!(
-                "<li>Row {}: {}: {}</li>",
-                pk,
-                djangors_core::html_escape(field),
-                djangors_core::html_escape(msg)
-            ));
+    let mut errors = Vec::new();
+    for (pk, error_map) in &row_errors {
+        for (field, msg) in error_map {
+            errors.push(SaveChangelistErrorRow {
+                pk: *pk,
+                field: field.clone(),
+                message: msg.clone(),
+            });
         }
     }
-    let html = format!(
-        "<p>Some rows could not be saved (rows without errors were saved):</p><ul>{}</ul>\
-         <a href=\"/{}/{}/\">Back to changelist</a>",
-        items_html, app, model
-    );
-    Ok(Response::html(StatusCode::OK, html))
+
+    djangors_template::render(
+        &ADMIN_TEMPLATES,
+        "admin/save_changelist_error.html",
+        SaveChangelistErrorContext {
+            errors,
+            app: app.to_string(),
+            model: model.to_string(),
+        },
+    )
 }
 
 #[cfg(test)]
