@@ -52,12 +52,14 @@ pub struct ModelAdminConfig {
     pub search_fields: Option<&'static [&'static str]>,
     /// Boolean field names only.
     pub list_filter: Option<&'static [&'static str]>,
+    pub date_hierarchy: Option<&'static str>,
 }
 
 #[async_trait]
 pub trait ModelAdmin: Send + Sync {
     fn model_meta(&self) -> &'static ModelMeta;
     fn field_names(&self) -> Vec<&'static str>;
+    #[allow(clippy::too_many_arguments)]
     async fn changelist(
         &self,
         db: &djangors_db::Database,
@@ -66,10 +68,12 @@ pub trait ModelAdmin: Send + Sync {
         per_page: i64,
         search: Option<&str>,
         filters: &[(&'static str, bool)],
+        date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
     ) -> Result<ChangelistPage, DjangorsError>;
 
     fn search_fields(&self) -> &[&'static str];
     fn list_filter_fields(&self) -> &[&'static str];
+    fn date_hierarchy_field(&self) -> Option<&'static str>;
 
     async fn get_by_pk(
         &self,
@@ -123,6 +127,11 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         self.config.list_filter.unwrap_or(&[])
     }
 
+    fn date_hierarchy_field(&self) -> Option<&'static str> {
+        self.config.date_hierarchy
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn changelist(
         &self,
         db: &djangors_db::Database,
@@ -131,6 +140,7 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         per_page: i64,
         search: Option<&str>,
         filters: &[(&'static str, bool)],
+        date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
     ) -> Result<ChangelistPage, DjangorsError> {
         let mut qs = M::objects();
         if let Some(o) = order {
@@ -158,6 +168,11 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
                 .collect();
             qs = qs
                 .filter(djangors_orm::expr::UnresolvedExpr::And(compares))
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        }
+        if let (Some(field), Some((gte, lt))) = (self.config.date_hierarchy, date_range) {
+            qs = qs
+                .filter_datetime_range(field, gte, lt)
                 .map_err(|e| DjangorsError::Internal(e.to_string()))?;
         }
 
@@ -647,6 +662,24 @@ impl AdminSite {
                 );
             }
         }
+        if let Some(field_name) = config.date_hierarchy {
+            let field = meta
+                .fields
+                .iter()
+                .find(|f| f.name == field_name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "date_hierarchy field '{}' does not exist on model '{}'",
+                        field_name, meta.struct_name
+                    )
+                });
+            assert!(
+                field.kind == djangors_orm::meta::FieldKind::DateTime,
+                "date_hierarchy field '{}' on model '{}' is not a DateTime field",
+                field_name,
+                meta.struct_name
+            );
+        }
 
         let mut reg = self.registry.lock().unwrap();
         reg.push(Arc::new(DefaultModelAdmin::<M> {
@@ -773,6 +806,24 @@ async fn admin_index(
     Ok(Response::html(StatusCode::OK, format!("<ul>{}</ul>", body)))
 }
 
+fn get_month_name(m: u32) -> &'static str {
+    match m {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => "Unknown",
+    }
+}
+
 async fn admin_changelist(
     req: Request,
     params: PathParams,
@@ -810,6 +861,88 @@ async fn admin_changelist(
         None => 1,
     };
 
+    let year: Option<i32> = match req.query("year") {
+        Some(s) => Some(
+            s.parse()
+                .map_err(|_| DjangorsError::BadRequest("invalid year".into()))?,
+        ),
+        None => None,
+    };
+    let month: Option<u32> = match req.query("month") {
+        Some(s) => Some(
+            s.parse()
+                .map_err(|_| DjangorsError::BadRequest("invalid month".into()))?,
+        ),
+        None => None,
+    };
+    let day: Option<u32> = match req.query("day") {
+        Some(s) => Some(
+            s.parse()
+                .map_err(|_| DjangorsError::BadRequest("invalid day".into()))?,
+        ),
+        None => None,
+    };
+
+    let year_str = year.map(|y| y.to_string());
+    let month_str = month.map(|m| m.to_string());
+    let day_str = day.map(|d| d.to_string());
+
+    use chrono::{Duration, TimeZone, Utc};
+
+    let date_range: Option<(chrono::DateTime<Utc>, chrono::DateTime<Utc>)> =
+        match (admin.date_hierarchy_field(), year) {
+            (Some(_), Some(y)) => {
+                let (gte, lt) = match month {
+                    Some(m) => {
+                        let start =
+                            Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0)
+                                .single()
+                                .ok_or_else(|| {
+                                    DjangorsError::BadRequest("invalid year/month".into())
+                                })?;
+                        let end = match day {
+                            Some(d) => {
+                                let s =
+                                    Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).single().ok_or_else(
+                                        || DjangorsError::BadRequest("invalid day".into()),
+                                    )?;
+                                s + Duration::days(1)
+                            }
+                            None => if m == 12 {
+                                Utc.with_ymd_and_hms(y + 1, 1, 1, 0, 0, 0).single()
+                            } else {
+                                Utc.with_ymd_and_hms(y, m + 1, 1, 0, 0, 0).single()
+                            }
+                            .ok_or_else(|| {
+                                DjangorsError::BadRequest("invalid year/month".into())
+                            })?,
+                        };
+                        let start = match day {
+                            Some(d) => Utc
+                                .with_ymd_and_hms(y, m, d, 0, 0, 0)
+                                .single()
+                                .ok_or_else(|| DjangorsError::BadRequest("invalid day".into()))?,
+                            None => start,
+                        };
+                        (start, end)
+                    }
+                    None => {
+                        let start = Utc
+                            .with_ymd_and_hms(y, 1, 1, 0, 0, 0)
+                            .single()
+                            .ok_or_else(|| DjangorsError::BadRequest("invalid year".into()))?;
+                        let end = Utc
+                            .with_ymd_and_hms(y + 1, 1, 1, 0, 0, 0)
+                            .single()
+                            .ok_or_else(|| DjangorsError::BadRequest("invalid year".into()))?;
+                        (start, end)
+                    }
+                };
+                Some((gte, lt))
+            }
+            _ => None,
+        };
+
     let list_filter_fields = admin.list_filter_fields();
     let mut active_filters: Vec<(&'static str, bool)> = Vec::new();
     for &field_name in list_filter_fields {
@@ -823,7 +956,15 @@ async fn admin_changelist(
     }
 
     let page_data = admin
-        .changelist(db, o, page, CHANGELIST_PER_PAGE, q, &active_filters)
+        .changelist(
+            db,
+            o,
+            page,
+            CHANGELIST_PER_PAGE,
+            q,
+            &active_filters,
+            date_range,
+        )
         .await?;
 
     let mut header_html = String::new();
@@ -838,6 +979,10 @@ async fn admin_changelist(
         for &(f, val) in &active_filters {
             pairs.push((f, Some(if val { "true" } else { "false" })));
         }
+        pairs.push(("year", year_str.as_deref()));
+        pairs.push(("month", month_str.as_deref()));
+        pairs.push(("day", day_str.as_deref()));
+
         let link = build_query_string(&pairs);
         header_html.push_str(&format!("<th><a href=\"{}\">{}</a></th>", link, col));
     }
@@ -876,6 +1021,10 @@ async fn admin_changelist(
         for &(f, val) in &active_filters {
             pairs.push((f, Some(if val { "true" } else { "false" })));
         }
+        pairs.push(("year", year_str.as_deref()));
+        pairs.push(("month", month_str.as_deref()));
+        pairs.push(("day", day_str.as_deref()));
+
         let prev_link = build_query_string(&pairs);
         pager_html.push_str(&format!("<a href=\"{}\">Previous</a> ", prev_link));
     }
@@ -889,6 +1038,10 @@ async fn admin_changelist(
         for &(f, val) in &active_filters {
             pairs.push((f, Some(if val { "true" } else { "false" })));
         }
+        pairs.push(("year", year_str.as_deref()));
+        pairs.push(("month", month_str.as_deref()));
+        pairs.push(("day", day_str.as_deref()));
+
         let next_link = build_query_string(&pairs);
         pager_html.push_str(&format!("<a href=\"{}\">Next</a>", next_link));
     }
@@ -911,6 +1064,25 @@ async fn admin_changelist(
                 if val { "true" } else { "false" }
             ));
         }
+        if let Some(ref y) = year_str {
+            search_html.push_str(&format!(
+                "<input type=\"hidden\" name=\"year\" value=\"{}\">",
+                djangors_core::html_escape(y)
+            ));
+        }
+        if let Some(ref m) = month_str {
+            search_html.push_str(&format!(
+                "<input type=\"hidden\" name=\"month\" value=\"{}\">",
+                djangors_core::html_escape(m)
+            ));
+        }
+        if let Some(ref d) = day_str {
+            search_html.push_str(&format!(
+                "<input type=\"hidden\" name=\"day\" value=\"{}\">",
+                djangors_core::html_escape(d)
+            ));
+        }
+
         search_html.push_str(&format!(
             "<input type=\"text\" name=\"q\" value=\"{}\"> <input type=\"submit\" value=\"Search\"></form>",
             q_val_escaped
@@ -926,6 +1098,9 @@ async fn admin_changelist(
                     pairs_all.push((f, Some(if val { "true" } else { "false" })));
                 }
             }
+            pairs_all.push(("year", year_str.as_deref()));
+            pairs_all.push(("month", month_str.as_deref()));
+            pairs_all.push(("day", day_str.as_deref()));
             let all_link = build_query_string(&pairs_all);
 
             let mut pairs_yes = vec![("o", o), ("q", q), (filter_field, Some("true"))];
@@ -934,6 +1109,9 @@ async fn admin_changelist(
                     pairs_yes.push((f, Some(if val { "true" } else { "false" })));
                 }
             }
+            pairs_yes.push(("year", year_str.as_deref()));
+            pairs_yes.push(("month", month_str.as_deref()));
+            pairs_yes.push(("day", day_str.as_deref()));
             let yes_link = build_query_string(&pairs_yes);
 
             let mut pairs_no = vec![("o", o), ("q", q), (filter_field, Some("false"))];
@@ -942,6 +1120,9 @@ async fn admin_changelist(
                     pairs_no.push((f, Some(if val { "true" } else { "false" })));
                 }
             }
+            pairs_no.push(("year", year_str.as_deref()));
+            pairs_no.push(("month", month_str.as_deref()));
+            pairs_no.push(("day", day_str.as_deref()));
             let no_link = build_query_string(&pairs_no);
 
             filter_html.push_str(&format!(
@@ -951,9 +1132,96 @@ async fn admin_changelist(
         }
     }
 
+    let mut date_hierarchy_html = String::new();
+    if let Some(field) = admin.date_hierarchy_field() {
+        let values =
+            date_hierarchy_drilldown_values(db, admin.model_meta().table_name, field, year, month)
+                .await?;
+
+        let mut pairs_all = vec![("o", o), ("q", q)];
+        for &(f, val) in &active_filters {
+            pairs_all.push((f, Some(if val { "true" } else { "false" })));
+        }
+        let all_link = build_query_string(&pairs_all);
+
+        let mut pairs_y = vec![("o", o), ("q", q), ("year", year_str.as_deref())];
+        for &(f, val) in &active_filters {
+            pairs_y.push((f, Some(if val { "true" } else { "false" })));
+        }
+        let year_link = build_query_string(&pairs_y);
+
+        let mut pairs_m = vec![
+            ("o", o),
+            ("q", q),
+            ("year", year_str.as_deref()),
+            ("month", month_str.as_deref()),
+        ];
+        for &(f, val) in &active_filters {
+            pairs_m.push((f, Some(if val { "true" } else { "false" })));
+        }
+        let month_link = build_query_string(&pairs_m);
+
+        let mut breadcrumbs = Vec::new();
+        if let Some(y) = year {
+            if let Some(m) = month {
+                let m_name = get_month_name(m);
+                if let Some(d) = day {
+                    breadcrumbs.push(format!("<a href=\"{}\">{}</a>", all_link, y));
+                    breadcrumbs.push(format!("<a href=\"{}\">{}</a>", year_link, m_name));
+                    breadcrumbs.push(format!("<a href=\"{}\">{}</a>", month_link, d));
+                } else {
+                    breadcrumbs.push(format!("<a href=\"{}\">{}</a>", all_link, y));
+                    breadcrumbs.push(format!("<a href=\"{}\">{}</a>", year_link, m_name));
+                }
+            } else {
+                breadcrumbs.push(format!("<a href=\"{}\">{}</a>", all_link, y));
+            }
+        }
+
+        let mut links_html = Vec::new();
+        if day.is_none() {
+            for val in values {
+                let val_str = val.to_string();
+                let mut pairs_val = vec![("o", o), ("q", q)];
+                for &(f, val) in &active_filters {
+                    pairs_val.push((f, Some(if val { "true" } else { "false" })));
+                }
+
+                let link_text = if year.is_none() {
+                    pairs_val.push(("year", Some(val_str.as_str())));
+                    val_str.clone()
+                } else if month.is_none() {
+                    pairs_val.push(("year", year_str.as_deref()));
+                    pairs_val.push(("month", Some(val_str.as_str())));
+                    get_month_name(val as u32).to_string()
+                } else {
+                    pairs_val.push(("year", year_str.as_deref()));
+                    pairs_val.push(("month", month_str.as_deref()));
+                    pairs_val.push(("day", Some(val_str.as_str())));
+                    val_str.clone()
+                };
+
+                let val_link = build_query_string(&pairs_val);
+                links_html.push(format!("<a href=\"{}\">{}</a>", val_link, link_text));
+            }
+        }
+
+        date_hierarchy_html.push_str("<div class=\"date-hierarchy\">");
+        if !breadcrumbs.is_empty() {
+            date_hierarchy_html.push_str(&breadcrumbs.join(" &rsaquo; "));
+            if !links_html.is_empty() {
+                date_hierarchy_html.push_str(" &rsaquo; ");
+            }
+        }
+        if !links_html.is_empty() {
+            date_hierarchy_html.push_str(&links_html.join(" | "));
+        }
+        date_hierarchy_html.push_str("</div>");
+    }
+
     let html = format!(
-        "{}{}<form method=\"post\" action=\"bulk-delete/\"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table><input type=\"submit\" value=\"Delete selected\"><div>{}</div></form>",
-        search_html, filter_html, header_html, body_html, pager_html
+        "{}{}{}<form method=\"post\" action=\"bulk-delete/\"><table><thead><tr>{}</tr></thead><tbody>{}</tbody></table><input type=\"submit\" value=\"Delete selected\"><div>{}</div></form>",
+        date_hierarchy_html, search_html, filter_html, header_html, body_html, pager_html
     );
 
     Ok(Response::html(StatusCode::OK, html))
@@ -1159,6 +1427,59 @@ async fn collect_related_objects(
         }
     }
     Ok(summaries)
+}
+
+/// Returns the distinct values one drilldown level below the given
+/// `(year, month)` state, in ascending order: years if `year` is `None`,
+/// months within that year if `month` is `None`, else days within that
+/// year+month. Computed from the whole table on `col` alone — see the design
+/// doc's scope note on why this isn't combined with the current
+/// search/list_filter state.
+async fn date_hierarchy_drilldown_values(
+    db: &djangors_db::Database,
+    table_name: &'static str,
+    col: &'static str,
+    year: Option<i32>,
+    month: Option<u32>,
+) -> Result<Vec<i32>, DjangorsError> {
+    let (sql, bind_year, bind_month): (String, Option<i32>, Option<i32>) = match (year, month) {
+        (None, _) => (
+            format!(
+                "SELECT DISTINCT EXTRACT(YEAR FROM {col})::int AS v FROM {table_name} \
+                 WHERE {col} IS NOT NULL ORDER BY 1"
+            ),
+            None,
+            None,
+        ),
+        (Some(y), None) => (
+            format!(
+                "SELECT DISTINCT EXTRACT(MONTH FROM {col})::int AS v FROM {table_name} \
+                 WHERE {col} IS NOT NULL AND EXTRACT(YEAR FROM {col})::int = $1 ORDER BY 1"
+            ),
+            Some(y),
+            None,
+        ),
+        (Some(y), Some(m)) => (
+            format!(
+                "SELECT DISTINCT EXTRACT(DAY FROM {col})::int AS v FROM {table_name} \
+                 WHERE {col} IS NOT NULL AND EXTRACT(YEAR FROM {col})::int = $1 \
+                 AND EXTRACT(MONTH FROM {col})::int = $2 ORDER BY 1"
+            ),
+            Some(y),
+            Some(m as i32),
+        ),
+    };
+    let mut query = sqlx::query_scalar(sqlx::AssertSqlSafe(sql));
+    if let Some(y) = bind_year {
+        query = query.bind(y);
+    }
+    if let Some(m) = bind_month {
+        query = query.bind(m);
+    }
+    query
+        .fetch_all(db.pool())
+        .await
+        .map_err(|e| DjangorsError::Internal(e.to_string()))
 }
 
 async fn admin_delete_get(
@@ -1399,6 +1720,16 @@ mod tests {
         name: String,
         is_active: bool,
         is_staff: bool,
+    }
+
+    #[derive(MacroModel, Debug, Clone)]
+    #[djangors(app = "admin_test", table_name = "test_model_f")]
+    #[allow(dead_code)]
+    struct ModelF {
+        #[djangors(primary_key, auto)]
+        id: i64,
+        name: String,
+        created_at: chrono::DateTime<chrono::Utc>,
     }
 
     #[tokio::test]
@@ -1801,7 +2132,7 @@ mod tests {
             _marker: PhantomData,
         };
         let page_data = admin_a
-            .changelist(&db, None, 2, 2, None, &[])
+            .changelist(&db, None, 2, 2, None, &[], None)
             .await
             .unwrap();
         assert_eq!(page_data.total, 5);
@@ -3152,6 +3483,252 @@ mod tests {
 
         // Clean up
         let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_phase5_part6_4_date_hierarchy() {
+        let _guard = DB_MUTEX.lock().unwrap();
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        // Drop/create tables
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_f")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE test_model_f (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        let _ = sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username TEXT NOT NULL UNIQUE,
+                email TEXT NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await;
+
+        use chrono::{TimeZone, Utc};
+
+        let now = Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff".to_string(),
+            email: "staff@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+
+        let dt1 = Utc.with_ymd_and_hms(2026, 1, 15, 0, 0, 0).single().unwrap();
+        let dt2 = Utc.with_ymd_and_hms(2026, 3, 10, 0, 0, 0).single().unwrap();
+        let dt3 = Utc.with_ymd_and_hms(2026, 3, 20, 0, 0, 0).single().unwrap();
+        let dt4 = Utc.with_ymd_and_hms(2025, 11, 5, 0, 0, 0).single().unwrap();
+
+        let _ = djangors_orm::queryset::QuerySet::<ModelF>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Row1".to_string())),
+                ("created_at", djangors_orm::expr::Value::DateTime(dt1)),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let _ = djangors_orm::queryset::QuerySet::<ModelF>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Row2".to_string())),
+                ("created_at", djangors_orm::expr::Value::DateTime(dt2)),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let _ = djangors_orm::queryset::QuerySet::<ModelF>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Row3".to_string())),
+                ("created_at", djangors_orm::expr::Value::DateTime(dt3)),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let _ = djangors_orm::queryset::QuerySet::<ModelF>::insert_raw(
+            &db,
+            vec![
+                ("name", djangors_orm::expr::Value::Text("Row4".to_string())),
+                ("created_at", djangors_orm::expr::Value::DateTime(dt4)),
+            ],
+        )
+        .await
+        .unwrap();
+
+        // Register site
+        let site = AdminSite::new();
+        site.register_with::<ModelF>(ModelAdminConfig {
+            date_hierarchy: Some("created_at"),
+            ..Default::default()
+        });
+
+        let router = Router::new().mount("/admin", site.urls());
+
+        // Test 1: GET the changelist with no year/month/day -> 200
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req1 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modelf/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res1 = router.handle(req1).await.unwrap();
+        assert_eq!(res1.status(), StatusCode::OK);
+        let body1 = String::from_utf8(res1.body().to_vec()).unwrap();
+        assert!(body1.contains("2025"));
+        assert!(body1.contains("2026"));
+        assert!(!body1.contains("January"));
+        assert!(!body1.contains("March"));
+
+        // Test 2: GET with ?year=2026 -> 200, only contains Row1, Row2, Row3
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req2 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modelf/?year=2026"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res2 = router.handle(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+        let body2 = String::from_utf8(res2.body().to_vec()).unwrap();
+        assert!(body2.contains("Row1"));
+        assert!(body2.contains("Row2"));
+        assert!(body2.contains("Row3"));
+        assert!(!body2.contains("Row4"));
+        assert!(body2.contains("January"));
+        assert!(body2.contains("March"));
+        assert!(!body2.contains("February"));
+
+        // Test 3: GET with ?year=2026&month=3 -> 200, contains Row2 and Row3
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req3 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modelf/?year=2026&month=3"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res3 = router.handle(req3).await.unwrap();
+        assert_eq!(res3.status(), StatusCode::OK);
+        let body3 = String::from_utf8(res3.body().to_vec()).unwrap();
+        assert!(!body3.contains("Row1"));
+        assert!(body3.contains("Row2"));
+        assert!(body3.contains("Row3"));
+        assert!(body3.contains(">10<"));
+        assert!(body3.contains(">20<"));
+
+        // Test 4: GET with ?year=2026&month=3&day=10 -> 200, contains only Row2
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req4 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modelf/?year=2026&month=3&day=10"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res4 = router.handle(req4).await.unwrap();
+        assert_eq!(res4.status(), StatusCode::OK);
+        let body4 = String::from_utf8(res4.body().to_vec()).unwrap();
+        assert!(!body4.contains("Row1"));
+        assert!(body4.contains("Row2"));
+        assert!(!body4.contains("Row3"));
+
+        // Test 5: GET with ?year=2026&o=name -> 200, sort header contains year=2026
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req5 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modelf/?year=2026&o=name"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res5 = router.handle(req5).await.unwrap();
+        assert_eq!(res5.status(), StatusCode::OK);
+        let body5 = String::from_utf8(res5.body().to_vec()).unwrap();
+        assert!(body5.contains("year=2026"));
+
+        // Test 6: GET with invalid ?month=13 -> 400 Bad Request
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+        let req6 = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modelf/?year=2026&month=13"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res6 = router.handle(req6).await;
+        assert!(res6.is_err());
+        assert_eq!(res6.unwrap_err().status_code(), StatusCode::BAD_REQUEST);
+
+        // Test 7: Registering a model with date_hierarchy: Some("name") (non-DateTime) -> panics
+        let site_panic = AdminSite::new();
+        let res7 = std::panic::catch_unwind(|| {
+            site_panic.register_with::<ModelD>(ModelAdminConfig {
+                date_hierarchy: Some("name"),
+                ..Default::default()
+            });
+        });
+        assert!(res7.is_err());
+
+        // Clean up
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_f")
             .execute(db.pool())
             .await;
         let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")

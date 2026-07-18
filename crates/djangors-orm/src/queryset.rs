@@ -134,6 +134,38 @@ impl<T: Model + FromRow> QuerySet<T> {
         Ok(self)
     }
 
+    /// Restricts to rows where `field` (a real DateTime field on `T`) is in
+    /// `[gte, lt)`. Half-open on purpose: `lt` is the exclusive upper bound, so
+    /// callers pass "start of next unit" rather than doing inclusive-end math
+    /// against a field that also carries a time-of-day component.
+    pub fn filter_datetime_range(
+        mut self,
+        field: &'static str,
+        gte: chrono::DateTime<chrono::Utc>,
+        lt: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Self, OrmError> {
+        let meta = T::meta();
+        if !meta.fields.iter().any(|f| f.name == field) {
+            return Err(OrmError::FieldNotFound {
+                field: field.to_string(),
+                model: meta.struct_name,
+            });
+        }
+        self.filters.push(Expr::And(vec![
+            Expr::Compare {
+                field,
+                op: CompareOp::Gte,
+                value: Value::DateTime(gte),
+            },
+            Expr::Compare {
+                field,
+                op: CompareOp::Lt,
+                value: Value::DateTime(lt),
+            },
+        ]));
+        Ok(self)
+    }
+
     /// Order results by the given field. A leading `-` means descending.
     ///
     /// # Errors
