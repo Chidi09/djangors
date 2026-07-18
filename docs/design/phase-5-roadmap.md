@@ -1,6 +1,6 @@
 # Phase 5 roadmap — status, sequencing, and the deferred-items ledger
 
-**Last updated:** 2026-07-18 (after commit ab1363e). This is the authoritative status document
+**Last updated:** 2026-07-18 (after commit cdd64bf). This is the authoritative status document
 for Phase 5 (THE ADMIN) and the single place where every deliberately-deferred item across the
 project is tracked, so no session ever has to re-derive project state from git archaeology.
 Update this file whenever a slice lands or a new deferral is made.
@@ -14,11 +14,11 @@ password-reset works via console mail backend, OWASP self-assessment written —
 **Phase 5's own DoD is now met as of 5.9** (`examples/school` — real CRUD through the admin
 alone, zero custom views, verified end-to-end). Theming/history/extension points (5.8) is the
 one remaining top-level Phase 5 bullet — **every admin page is now rendered through a real
-template** (5.8.1 `admin_index`, 5.8.2 delete confirm, 5.8.3 bulk-delete confirm, 5.8.4
-list_editable save-error page, 5.8.5 add/change form, 5.8.6 changelist — the last and biggest
-page). The template-conversion mechanism is fully proven; what's left in 5.8 is the actual visual
-theming (CSS/dark mode/branding) plus the CSRF header-only revisit — see the sequencing section
-below.
+template AND wrapped in a real HTML5 page shell with CSS custom properties and automatic dark
+mode** (5.8.1 through 5.8.6: the template-conversion mechanism; 5.8.7: `admin/base.html`, the
+first slice that changed the admin's actual visual output). What's left in 5.8 is per-site
+branding (deliberately deferred out of 5.8.7) plus the CSRF header-only revisit — see the
+sequencing section below.
 
 Phase 5 slices landed so far:
 
@@ -43,6 +43,7 @@ Phase 5 slices landed so far:
 | 5.8.4 | `5.8.4-admin-template-save-changelist-error.md` | 8b7dce5 | Fourth page converted — `admin_save_changelist_post`'s validation-error branch only (its success path is a bare redirect, nothing to template). Flattens the nested per-pk/per-field error loop into `Vec<SaveChangelistErrorRow>`. Established a cleaner URL-building pattern going forward: substitute `app`/`model` path *segments* individually into literal template markup that already contains the `/` separators as static text, rather than pre-assembling the whole URL string in Rust — avoids 5.8.1's `Safe`-wrapping problem entirely, so no `from_safe_string` needed here despite the page building a URL. `test_phase5_part6_5_list_editable` passes with zero assertion changes. `ADMIN_TEMPLATES` now registers four templates on the one shared engine. Eleventh zero-bug slice this segment. |
 | 5.8.5 | `5.8.5-admin-template-render-form.md` | 55e54b5 | Fifth page converted — `render_form`, shared by all four add/change GET/POST handlers. First 5.8.x page with genuine per-field-kind branching (readonly/checkbox/number/text rows) rather than a uniform row list. Flattened to `Vec<FormFieldRow>` tagged by a `kind: &'static str` field; template switches on the tag with `{% if %}`/`{% elif %}`. No `Safe`-wrapping needed (no URL-building on this page at all). `test_admin_change_form_endpoints` passes with zero assertion changes. `ADMIN_TEMPLATES` now registers five templates on the one shared engine — every admin page except the changelist itself is now template-based. Twelfth zero-bug slice this segment. |
 | 5.8.6 | `5.8.6-admin-template-changelist.md` | ab1363e | Sixth and last page converted — `admin_changelist`, the biggest/most complex page in the arc (sort headers, three cell kinds per row, pager, search box, `list_filter` blocks, date-hierarchy breadcrumbs/drilldown, action buttons, CSV export link). **Deliberately does not `Safe`-wrap any href** (unlike 5.8.1) — `build_query_string()` joins params with a raw `&`, autoescape now entity-encodes it to `&amp;`, verified against every existing test assertion in the file that none depend on the raw form, and this is the HTML-spec-correct rendering anyway; documented as the key judgment call in the design doc. **One real gap the design doc missed, caught by the dispatch via a failing test**: cell display values and the search box's echoed term must stay escaped via `djangors_core::html_escape()` in Rust (marked `\|safe` in the template to avoid double-escaping) rather than left to ordinary autoescape, because `test_admin_changelist_endpoints` asserts the uppercase-hex `&#x2F;` `html_escape` produces for an XSS-test value containing `</script>` — minijinja's own autoescape produces lowercase `&#x2f;`, which would have failed that exact assertion. All six required tests (`test_admin_changelist_endpoints`, `test_phase5_list_display_and_search`, `test_phase5_list_filter`, `test_phase5_part6_4_date_hierarchy`, `test_phase5_part6_5_list_editable`, `test_phase5_part6_3_bulk_delete`) pass unmodified. `ADMIN_TEMPLATES` now registers six templates — **every admin page is template-based**; the 5.8.x conversion mechanism is complete. |
+| 5.8.7 | `5.8.7-admin-theming-base-layout.md` | cdd64bf | **First slice that actually changes the admin's visual output** — every prior 5.8.x slice kept output byte-identical. Confirmed by reading `Response::html()` directly that there was previously no page shell at all (no doctype/head, every page a bare fragment). Adds `admin/base.html`: a real HTML5 document with an embedded `<style>` block, CSS custom properties for colors, `@media (prefers-color-scheme: dark)` for automatic dark mode (no JS toggle in v1). Every existing page now `{% extends "admin/base.html" %}{% block content %}...{% endblock %}` with its existing content completely unchanged inside the block — verified byte-for-byte via diff on all 6 files. Per-site branding (custom title/logo/colors) deliberately deferred, not built here. All 11 existing `djangors-admin` tests pass unmodified (expected — confirmed via grep that no test does an exact-body comparison, only substring checks, so wrapping content in a layout cannot break any assertion). |
 | 5.9 | `5.9-school-example-dod.md` | 259c448 | **Phase 5's own DoD acceptance test.** New `examples/school` crate (`Student`/`Course`/`Enrollment`), registered with real `ModelAdminConfig` customization rather than bare registration, zero custom CRUD views (only `login`/`logout` plus the mounted admin — every Student/Course/Enrollment operation goes through the generic admin). One real socket-level integration test (mirroring `polls/tests/voting.rs`'s style — actual TCP listener, raw HTTP through the full `tower` stack including CSRF, not the in-process `router.handle()` shortcut) proves add/changelist/`list_editable` grade edit/delete end-to-end, verified against real DB state at each step, not just HTTP status codes. Found and worked around a real gap along the way: `register_with`'s `list_display` validation only checks `meta.fields`, not `meta.relations`, so naming a relation field there panics even though it renders fine at runtime — logged in the ledger next to the pre-existing FK-display item, not fixed in this slice (out of scope for an example app). Seventh zero-bug slice this segment. |
 
 Working infrastructure a new session should know exists (all proven by tests):
@@ -148,14 +149,14 @@ Working infrastructure a new session should know exists (all proven by tests):
    check, and `AuthUser`-generic (not hardcoded to `djangors_auth::User`) permission support,
    the same standing limitation as the 5.1 staff gate.
 3. **5.8 — History/audit, theming, extension points**: **5.8.1 through 5.8.6 (the full template
-   engine conversion — `admin_index`, delete confirm, bulk-delete confirm, the `list_editable`
-   save-error page, the add/change form, and finally the changelist itself) are done** (commits
-   `eb1a916`, `dfe6ec0`, `965fb24`, `8b7dce5`, `55e54b5`, `ab1363e`). **Every admin page is now
-   template-based — the conversion mechanism is complete.** **Next: real visual theming** (CSS
-   custom properties, dark mode, per-site branding) now that every page renders through a template
-   rather than `format!()`. This is also the natural point to revisit the CSRF header-only
-   limitation (5.4's ledger entry) since server-rendered forms become the primary POST surface once
-   theming replaces the plain HTML — and the point to add history/audit log entries.
+   engine conversion) and 5.8.7 (real HTML5 page shell, CSS custom properties, automatic dark mode
+   via `prefers-color-scheme`) are done** (commits `eb1a916`, `dfe6ec0`, `965fb24`, `8b7dce5`,
+   `55e54b5`, `ab1363e`, `cdd64bf`). Every admin page is template-based and rendered through a real
+   layout with a clean default theme. **Next: per-site branding** (custom title/logo/colors via
+   settings — deliberately deferred out of 5.8.7 to keep that slice scoped to a clean
+   non-configurable default first). This is also the natural point to revisit the CSRF header-only
+   limitation (5.4's ledger entry) since server-rendered forms are now the primary POST surface —
+   and the point to add history/audit log entries.
 4. **School example + DoD: done.** `examples/school` (`Student`/`Course`/`Enrollment`,
    real `ModelAdminConfig` customization, zero custom CRUD views) with a real socket-level
    end-to-end integration test proving add/changelist/`list_editable`/delete all work through the
