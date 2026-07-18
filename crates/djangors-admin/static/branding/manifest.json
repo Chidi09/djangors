@@ -1,6 +1,6 @@
 {
-  "name": "Your App Name",
-  "short_name": "Your App",
+  "name": "Djangors",
+  "short_name": "Djangors",
   "icons": [
     {
       "src": "/android-chrome-192x192.png",

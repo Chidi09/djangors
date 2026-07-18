@@ -643,6 +643,8 @@ struct FormFieldRow {
 pub struct SiteBranding {
     pub site_header: String,
     pub site_title: String,
+    pub logo_url: Option<String>,
+    pub accent_color: Option<String>,
 }
 
 impl Default for SiteBranding {
@@ -650,6 +652,8 @@ impl Default for SiteBranding {
         Self {
             site_header: "Djangors Administration".to_string(),
             site_title: "Djangors site admin".to_string(),
+            logo_url: None,
+            accent_color: None,
         }
     }
 }
@@ -659,6 +663,9 @@ struct RenderFormContext {
     rows: Vec<FormFieldRow>,
     site_header: String,
     site_title: String,
+    csrf_token: String,
+    logo_url: Option<String>,
+    accent_color: Option<String>,
 }
 
 fn render_form(
@@ -668,6 +675,7 @@ fn render_form(
     errors: &std::collections::HashMap<String, String>,
     is_add: bool,
     branding: &SiteBranding,
+    csrf_token: String,
 ) -> Result<Response, DjangorsError> {
     let mut rows = Vec::new();
 
@@ -730,6 +738,9 @@ fn render_form(
             rows,
             site_header: branding.site_header.clone(),
             site_title: branding.site_title.clone(),
+            csrf_token,
+            logo_url: branding.logo_url.clone(),
+            accent_color: branding.accent_color.clone(),
         },
     )
 }
@@ -760,6 +771,16 @@ impl AdminSite {
 
     pub fn with_site_title(mut self, title: impl Into<String>) -> Self {
         self.branding.site_title = title.into();
+        self
+    }
+
+    pub fn with_logo_url(mut self, url: impl Into<String>) -> Self {
+        self.branding.logo_url = Some(url.into());
+        self
+    }
+
+    pub fn with_accent_color(mut self, color: impl Into<String>) -> Self {
+        self.branding.accent_color = Some(color.into());
         self
     }
 
@@ -1194,6 +1215,8 @@ struct IndexContext {
     models: Vec<IndexModelLink>,
     site_header: String,
     site_title: String,
+    logo_url: Option<String>,
+    accent_color: Option<String>,
 }
 
 async fn admin_index(
@@ -1239,6 +1262,8 @@ async fn admin_index(
             models,
             site_header: branding.site_header,
             site_title: branding.site_title,
+            logo_url: branding.logo_url,
+            accent_color: branding.accent_color,
         },
     )
 }
@@ -1458,6 +1483,9 @@ struct ChangelistTemplateContext {
     export_query: String,
     site_header: String,
     site_title: String,
+    csrf_token: String,
+    logo_url: Option<String>,
+    accent_color: Option<String>,
 }
 
 async fn admin_changelist(
@@ -1819,6 +1847,10 @@ async fn admin_changelist(
     export_pairs.push(("day", day_str.as_deref()));
     let export_query = build_query_string(&export_pairs);
 
+    let csrf_token = req
+        .ext::<djangors_core::middleware::CsrfToken>()
+        .map(|t| t.0.clone())
+        .unwrap_or_default();
     djangors_template::render(
         &ADMIN_TEMPLATES,
         "admin/changelist.html",
@@ -1833,6 +1865,9 @@ async fn admin_changelist(
             export_query,
             site_header: branding.site_header,
             site_title: branding.site_title,
+            csrf_token,
+            logo_url: branding.logo_url,
+            accent_color: branding.accent_color,
         },
     )
 }
@@ -1865,6 +1900,10 @@ async fn admin_add_get(
     let submitted_values = std::collections::HashMap::new();
     let errors = std::collections::HashMap::new();
 
+    let csrf_token = req
+        .ext::<djangors_core::middleware::CsrfToken>()
+        .map(|t| t.0.clone())
+        .unwrap_or_default();
     render_form(
         meta,
         &field_names,
@@ -1872,6 +1911,7 @@ async fn admin_add_get(
         &errors,
         true,
         &branding,
+        csrf_token,
     )
 }
 
@@ -1906,7 +1946,19 @@ async fn admin_add_post(
         Err(errors) => {
             let meta = admin.model_meta();
             let field_names = admin.field_names();
-            render_form(meta, &field_names, &form_data, &errors, true, &branding)
+            let csrf_token = req
+                .ext::<djangors_core::middleware::CsrfToken>()
+                .map(|t| t.0.clone())
+                .unwrap_or_default();
+            render_form(
+                meta,
+                &field_names,
+                &form_data,
+                &errors,
+                true,
+                &branding,
+                csrf_token,
+            )
         }
     }
 }
@@ -1951,6 +2003,10 @@ async fn admin_change_get(
     let field_names = admin.field_names();
     let errors = std::collections::HashMap::new();
 
+    let csrf_token = req
+        .ext::<djangors_core::middleware::CsrfToken>()
+        .map(|t| t.0.clone())
+        .unwrap_or_default();
     render_form(
         meta,
         &field_names,
@@ -1958,6 +2014,7 @@ async fn admin_change_get(
         &errors,
         false,
         &branding,
+        csrf_token,
     )
 }
 
@@ -2010,6 +2067,10 @@ async fn admin_change_post(
 
             let meta = admin.model_meta();
             let field_names = admin.field_names();
+            let csrf_token = req
+                .ext::<djangors_core::middleware::CsrfToken>()
+                .map(|t| t.0.clone())
+                .unwrap_or_default();
             render_form(
                 meta,
                 &field_names,
@@ -2017,6 +2078,7 @@ async fn admin_change_post(
                 &errors,
                 false,
                 &branding,
+                csrf_token,
             )
         }
     }
@@ -2137,6 +2199,9 @@ struct DeleteConfirmContext {
     related: Vec<DeleteConfirmRelated>,
     site_header: String,
     site_title: String,
+    csrf_token: String,
+    logo_url: Option<String>,
+    accent_color: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -2146,6 +2211,9 @@ struct BulkDeleteConfirmContext {
     pks: Vec<i64>,
     site_header: String,
     site_title: String,
+    csrf_token: String,
+    logo_url: Option<String>,
+    accent_color: Option<String>,
 }
 
 async fn admin_delete_get(
@@ -2204,6 +2272,10 @@ async fn admin_delete_get(
         });
     }
 
+    let csrf_token = req
+        .ext::<djangors_core::middleware::CsrfToken>()
+        .map(|t| t.0.clone())
+        .unwrap_or_default();
     djangors_template::render(
         &ADMIN_TEMPLATES,
         "admin/delete_confirm.html",
@@ -2212,6 +2284,9 @@ async fn admin_delete_get(
             related: related_context,
             site_header: branding.site_header,
             site_title: branding.site_title,
+            csrf_token,
+            logo_url: branding.logo_url,
+            accent_color: branding.accent_color,
         },
     )
 }
@@ -2304,6 +2379,10 @@ async fn admin_bulk_delete_post(
             // skipped from the listing - it'll be a no-op in step 2 as well.
         }
         let count = pks.len();
+        let csrf_token = req
+            .ext::<djangors_core::middleware::CsrfToken>()
+            .map(|t| t.0.clone())
+            .unwrap_or_default();
         return djangors_template::render(
             &ADMIN_TEMPLATES,
             "admin/bulk_delete_confirm.html",
@@ -2313,6 +2392,9 @@ async fn admin_bulk_delete_post(
                 pks: pks.clone(),
                 site_header: branding.site_header,
                 site_title: branding.site_title,
+                csrf_token,
+                logo_url: branding.logo_url,
+                accent_color: branding.accent_color,
             },
         );
     }
@@ -2341,6 +2423,8 @@ struct SaveChangelistErrorContext {
     model: String,
     site_header: String,
     site_title: String,
+    logo_url: Option<String>,
+    accent_color: Option<String>,
 }
 
 async fn admin_save_changelist_post(
@@ -2426,8 +2510,86 @@ async fn admin_save_changelist_post(
             model: model.to_string(),
             site_header: branding.site_header,
             site_title: branding.site_title,
+            logo_url: branding.logo_url,
+            accent_color: branding.accent_color,
         },
     )
+}
+
+pub fn favicon_routes(router: Router) -> Router {
+    router
+        .get("/favicon.ico", favicon_ico)
+        .get("/favicon-16x16.png", favicon_16)
+        .get("/favicon-32x32.png", favicon_32)
+        .get("/apple-touch-icon.png", favicon_apple_touch)
+        .get("/android-chrome-192x192.png", favicon_android_192)
+        .get("/android-chrome-512x512.png", favicon_android_512)
+        .get("/manifest.json", favicon_manifest)
+}
+
+async fn favicon_ico(_req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
+    Ok(Response::bytes(
+        StatusCode::OK,
+        "image/x-icon",
+        include_bytes!("../static/branding/favicon.ico").to_vec(),
+    ))
+}
+
+async fn favicon_16(_req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
+    Ok(Response::bytes(
+        StatusCode::OK,
+        "image/png",
+        include_bytes!("../static/branding/favicon-16x16.png").to_vec(),
+    ))
+}
+
+async fn favicon_32(_req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
+    Ok(Response::bytes(
+        StatusCode::OK,
+        "image/png",
+        include_bytes!("../static/branding/favicon-32x32.png").to_vec(),
+    ))
+}
+
+async fn favicon_apple_touch(
+    _req: Request,
+    _params: PathParams,
+) -> Result<Response, DjangorsError> {
+    Ok(Response::bytes(
+        StatusCode::OK,
+        "image/png",
+        include_bytes!("../static/branding/apple-touch-icon.png").to_vec(),
+    ))
+}
+
+async fn favicon_android_192(
+    _req: Request,
+    _params: PathParams,
+) -> Result<Response, DjangorsError> {
+    Ok(Response::bytes(
+        StatusCode::OK,
+        "image/png",
+        include_bytes!("../static/branding/android-chrome-192x192.png").to_vec(),
+    ))
+}
+
+async fn favicon_android_512(
+    _req: Request,
+    _params: PathParams,
+) -> Result<Response, DjangorsError> {
+    Ok(Response::bytes(
+        StatusCode::OK,
+        "image/png",
+        include_bytes!("../static/branding/android-chrome-512x512.png").to_vec(),
+    ))
+}
+
+async fn favicon_manifest(_req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
+    Ok(Response::bytes(
+        StatusCode::OK,
+        "application/json; charset=utf-8",
+        include_bytes!("../static/branding/manifest.json").to_vec(),
+    ))
 }
 
 #[cfg(test)]
@@ -5403,5 +5565,321 @@ mod tests {
             .execute(db.pool())
             .await;
         }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_csrf_token_wiring() {
+        let _guard = DB_MUTEX.lock().unwrap();
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        // Create auth_user and test tables if they don't exist
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_a (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(255) NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_c (
+                id BIGSERIAL PRIMARY KEY,
+                parent BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_csrf".to_string(),
+            email: "staff_csrf@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        // Save a test row
+        sqlx::query("INSERT INTO test_model_a (id, name) VALUES (123, 'test_row')")
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let site = AdminSite::new();
+        site.register::<ModelA>();
+
+        let router = Router::new().mount("/admin", site.urls());
+
+        let test_token = "my-awesome-test-csrf-token-12345";
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+
+        let make_ext = || {
+            let mut ext = Extensions::new();
+            ext.insert(session.clone());
+            ext.insert(djangors_core::middleware::CsrfToken(test_token.to_string()));
+            ext
+        };
+
+        // 1. Changelist
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modela/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(make_ext())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("name=\"csrfmiddlewaretoken\""));
+        assert!(body.contains(&format!("value=\"{}\"", test_token)));
+
+        // 2. Add
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modela/add/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(make_ext())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("name=\"csrfmiddlewaretoken\""));
+        assert!(body.contains(&format!("value=\"{}\"", test_token)));
+
+        // 3. Change
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modela/123/change/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(make_ext())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("name=\"csrfmiddlewaretoken\""));
+        assert!(body.contains(&format!("value=\"{}\"", test_token)));
+
+        // 4. Delete Confirm
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/admin/admin_test/modela/123/delete/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(make_ext())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("name=\"csrfmiddlewaretoken\""));
+        assert!(body.contains(&format!("value=\"{}\"", test_token)));
+
+        // 5. Bulk Delete Confirm (POST to bulk-delete/ with selected pk)
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+        let req = Request::new(
+            Method::POST,
+            Uri::from_static("/admin/admin_test/modela/bulk-delete/"),
+            headers,
+            Bytes::from("selected=123"),
+        )
+        .with_extensions(make_ext())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res = router.handle(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = String::from_utf8(res.body().to_vec()).unwrap();
+        assert!(body.contains("name=\"csrfmiddlewaretoken\""));
+        assert!(body.contains(&format!("value=\"{}\"", test_token)));
+
+        // Cleanup
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+    }
+
+    #[tokio::test]
+    async fn test_favicon_serving() {
+        let router = favicon_routes(Router::new());
+
+        let test_cases = vec![
+            ("/favicon.ico", "image/x-icon"),
+            ("/favicon-16x16.png", "image/png"),
+            ("/favicon-32x32.png", "image/png"),
+            ("/apple-touch-icon.png", "image/png"),
+            ("/android-chrome-192x192.png", "image/png"),
+            ("/android-chrome-512x512.png", "image/png"),
+            ("/manifest.json", "application/json; charset=utf-8"),
+        ];
+
+        for (path, expected_ct) in test_cases {
+            let req = Request::new(
+                Method::GET,
+                Uri::try_from(path).unwrap(),
+                HeaderMap::new(),
+                Bytes::new(),
+            );
+            let res = router.handle(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "Failed for path: {}", path);
+            assert_eq!(
+                res.headers().get("content-type").unwrap().to_str().unwrap(),
+                expected_ct
+            );
+            assert!(!res.body().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_branding_overrides() {
+        let _guard = DB_MUTEX.lock().unwrap();
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        // AdminSite with logo and accent color set
+        let site = AdminSite::new()
+            .with_logo_url("/static/my-logo.png")
+            .with_accent_color("#ff0000");
+
+        // AdminSite with defaults (no builders)
+        let default_site = AdminSite::new();
+
+        let router = Router::new()
+            .mount("/admin-brand", site.urls())
+            .mount("/admin-default", default_site.urls());
+
+        // Create a staff user for authenticating
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_brand".to_string(),
+            email: "staff_brand@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session = djangors_sessions::Session::new_empty();
+        session.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session);
+
+        // Assert branding is rendered for the customized site
+        let req_brand = Request::new(
+            Method::GET,
+            Uri::from_static("/admin-brand/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext.clone())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res_brand = router.handle(req_brand).await.unwrap();
+        assert_eq!(res_brand.status(), StatusCode::OK);
+        let body_brand = String::from_utf8(res_brand.body().to_vec()).unwrap();
+        assert!(body_brand.contains("class=\"site-logo\""));
+        assert!(body_brand.contains("src=\"/static/my-logo.png\""));
+        assert!(body_brand.contains("<style>:root { --accent: #ff0000; }</style>"));
+
+        // Assert branding is NOT rendered for the default site
+        let req_default = Request::new(
+            Method::GET,
+            Uri::from_static("/admin-default/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext.clone())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res_default = router.handle(req_default).await.unwrap();
+        assert_eq!(res_default.status(), StatusCode::OK);
+        let body_default = String::from_utf8(res_default.body().to_vec()).unwrap();
+        assert!(!body_default.contains("class=\"site-logo\""));
+        assert!(!body_default.contains("src=\"/static/my-logo.png\""));
+        assert!(!body_default.contains("<style>:root { --accent:"));
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
     }
 }

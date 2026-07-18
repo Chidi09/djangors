@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}{{ site_title }}{% endblock %}</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.json">
 <style>
 :root {
   --bg: #ffffff;
@@ -59,11 +64,14 @@ button, input[type="submit"] {
 button:hover, input[type="submit"]:hover { opacity: 0.9; }
 .date-hierarchy { margin: 0.5rem 0; color: var(--muted); }
 h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+.site-logo { height: 1.5em; vertical-align: middle; margin-right: 0.5rem; }
 </style>
+{% if accent_color %}<style>:root { --accent: {{ accent_color }}; }</style>{% endif %}
 </head>
 <body>
-<h1>{{ site_header }}</h1>
+<h1>{% if logo_url %}<img src="{{ logo_url|safe }}" alt="" class="site-logo">{% endif %}{{ site_header }}</h1>
 {% block content %}{% endblock %}
 </body>
 </html>
+
 
