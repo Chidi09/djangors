@@ -1,6 +1,6 @@
 # Phase 5 roadmap — status, sequencing, and the deferred-items ledger
 
-**Last updated:** 2026-07-18 (after commit 01cd081). This is the authoritative status document
+**Last updated:** 2026-07-18 (after commit 1305195). This is the authoritative status document
 for Phase 5 (THE ADMIN) and the single place where every deliberately-deferred item across the
 project is tracked, so no session ever has to re-derive project state from git archaeology.
 Update this file whenever a slice lands or a new deferral is made.
@@ -12,16 +12,19 @@ password-reset works via console mail backend, OWASP self-assessment written —
 `security-checklist.md` / `threat-model.md` in this directory are the living security docs).
 
 **Phase 5's own DoD is now met as of 5.9** (`examples/school` — real CRUD through the admin
-alone, zero custom views, verified end-to-end). Theming/history/extension points (5.8) is the
-one remaining top-level Phase 5 bullet — **every admin page is now rendered through a real
-template, wrapped in a real HTML5 page shell with CSS custom properties and automatic dark mode,
-AND supports per-site branding** (5.8.1 through 5.8.6: the template-conversion mechanism; 5.8.7:
-`admin/base.html`; 5.8.8: `site_header`/`site_title`). **The CSRF header-only limitation is now
-fixed at the core-middleware level (5.8.9)** — a real, unmodified HTML `<form>` submission (no JS
-setting a custom header) can now pass CSRF protection via a `csrfmiddlewaretoken` body field
-fallback. What's left in 5.8 is logo/per-site-color support (a separate, larger piece) plus
-wiring the hidden `csrfmiddlewaretoken` input into the admin's own `<form>` elements (5.8.10) —
-see the sequencing section below.
+alone, zero custom views, verified end-to-end), **and the entire 5.8 arc is now done as of
+5.8.12** — every admin page is rendered through a real template, wrapped in a real HTML5 page
+shell with CSS custom properties and automatic dark mode, supports per-site branding (title,
+heading, logo, accent color), a real unmodified HTML `<form>` submission can pass CSRF protection
+end-to-end, every successful mutating admin action is audit-logged with both a per-user "Recent
+actions" panel and a per-object History page, and every item from the original 5.8.12 scoping
+doc has landed: computed `list_display` columns, a real selected-rows bulk-actions dispatch
+mechanism, fieldsets/readonly_fields/raw_id_fields on the change form, a transitive related-object
+delete walk with real `Protect` enforcement, an admin UI for groups/permissions (just ordinary
+model registration, no new mechanism needed), UI-level hiding of unauthorized action buttons, and
+two extension points (`AdminSite::extra_route()`, `ModelAdminConfig.base_filter`). What remains
+across all of Phase 5 is optional, non-blocking follow-up work — see the sequencing section below
+and the deferred-items ledger.
 
 Phase 5 slices landed so far:
 
@@ -52,6 +55,7 @@ Phase 5 slices landed so far:
 | 5.8.10 | `5.8.10-csrf-form-wiring-and-branding.md` | b2c5d16 | Combined three related, low-risk pieces into one dispatch per the explicit pacing instruction to move faster through the remainder of Phase 5. **Part A** — wires the `csrfmiddlewaretoken` hidden field 5.8.9 made possible into the admin's own rendered `<form>`s: the four templates that actually POST (`render_form.html`, `delete_confirm.html`, `bulk_delete_confirm.html`, `changelist.html`) each gained `<input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">` immediately inside their `<form>` tag; `render_form()` and every handler that renders one of these four templates now extracts the token via `req.ext::<djangors_core::middleware::CsrfToken>().map(|t| t.0.clone()).unwrap_or_default()` — `unwrap_or_default()` is deliberate, since `djangors-admin`'s own test suite bypasses `CsrfLayer` entirely via the in-process `router.handle()` shortcut, so the extension is always absent there. New `test_csrf_token_wiring` proves the token round-trips into all 5 form-bearing pages (changelist, add, change, delete confirm, bulk-delete confirm) using a fixed token value. **Part B** — new `pub fn favicon_routes(router: Router) -> Router` in `djangors-admin`, mounting `/favicon.ico`, `/favicon-{16x16,32x32}.png`, `/apple-touch-icon.png`, `/android-chrome-{192x192,512x512}.png`, and `/manifest.json`, each served via `Response::bytes()` over `include_bytes!(...).to_vec()` against the assets staged under `crates/djangors-admin/static/branding/` (from the user-supplied favicon zip). Deliberately **not** routed through `AdminSite::urls()` (which has no way to know what prefix it's mounted at) nor inlined as a `data:` URI (the 512px PNG alone is ~87KB, too heavy to repeat on every page with zero HTTP-cache benefit) — instead both example apps' `urls.rs` now wrap their existing `Router::new()...` composition with `favicon_routes(...)` so the routes land at the true app root, matching where browsers actually request them regardless of current page depth. `base.html` gained the corresponding `<link rel="icon">`/`<link rel="manifest">` tags. New `test_favicon_serving` asserts all 7 routes return `200` with the correct content-type and non-empty body. **Part C** — `SiteBranding` gained `logo_url: Option<String>` / `accent_color: Option<String>` alongside 5.8.8's `site_header`/`site_title`, with `with_logo_url`/`with_accent_color` builders mirroring the existing pattern exactly; threaded through all 6 admin context structs (`IndexContext`, `ChangelistTemplateContext`, `RenderFormContext`, `DeleteConfirmContext`, `BulkDeleteConfirmContext`, `SaveChangelistErrorContext`) via the same per-closure-clone mechanism `AdminSite::urls()` already uses for `site_header`/`site_title`. `base.html` renders an optional `<img class="site-logo">` beside the `<h1>` (using `|safe` so the URL's slashes aren't HTML-entity-escaped) and an optional `<style>:root{--accent:...}</style>` override, both gated on `{% if %}` so the default (no branding set) output is unchanged. New `test_branding_overrides` proves both the positive case (logo/accent present when set) and the negative case (absent by default) on two independently-constructed `AdminSite`s sharing the one process-wide template engine. All 11 pre-existing `djangors-admin` tests plus both example apps' full-stack integration tests (`examples/polls/tests/voting.rs`, `examples/school/tests/admin_crud.rs`) pass with zero modification. `cargo fmt --check`, a forced rebuild, and `cargo clippy --workspace --all-targets -D warnings` all clean. Required two redispatch attempts after the first two died mid-task to `agy`'s default 5-minute `--print-timeout` (misdiagnosed the first time as a transient API flake) — resumed via `agy --continue --print-timeout 45m` with a short scoped continuation prompt rather than a full cold restart, preserving all correctly-landed partial progress from the failed attempt. |
 | 5.8.11 | `5.8.11-admin-audit-log.md` | 01cd081 | Admin audit log — a lightweight `LogEntry` model (`#[derive(Model)]`, table `djangors_admin_log`, app label `admin`) recording `ADDITION`/`CHANGE`/`DELETION` for every successful mutating admin action, wired into all 5 mutating handlers (`admin_add_post`, `admin_change_post`, `admin_delete_post`, `admin_bulk_delete_post` — one entry per deleted pk, not one combined entry, matching Django's own per-object granularity — and `admin_save_changelist_post` — one entry per pk that actually saved, not per pk merely attempted). No bespoke migration needed: `LogEntry` is picked up automatically by `djangors_migrations::plan::build_create_all_plan()`'s existing `inventory`-based global registry scan, the same mechanism 5.5's `collect_related_objects` and 5.7.1's `sync_permissions` already rely on. `object_repr` uses Django's own generic `"<Model> object (<pk>)"` fallback (this codebase has no per-model `Display`/`__str__` equivalent, a pre-existing ledgered gap) — deliberately chosen because it needs no extra query, which matters specifically for `admin_delete_post`/`admin_bulk_delete_post`, neither of which re-fetches a row's field values before deleting it. `admin_index` gained a per-user "Recent actions" panel (last 10 entries, newest first, `{% if recent_actions %}`-gated so a user with none sees no change to the page) — Django's own admin index panel is per-user-scoped exactly the same way. **One real, deliberate deviation from the design doc, judged correct on review**: `log_action()` and the recent-actions query narrowly catch a `relation "djangors_admin_log" does not exist` error and treat it as a no-op/empty-result rather than the design doc's stated "let every logging failure become a real 500" default — necessary because this crate's tests create tables per-test rather than via a shared migration step, and several pre-existing tests (e.g. `test_admin_change_form_endpoints`) exercise the mutating handlers without ever creating `djangors_admin_log`; without the narrow catch, 5.8.11 would have broken pre-existing tests it was required not to touch. The dispatch also correctly caught a real gap in the design doc itself: `#[derive(Model)]` generates a `djangors_orm::FromRow` impl, not `sqlx::FromRow` — the latter is what `sqlx::query_as` (used for the raw `djangors_admin_log` SELECT) actually needs, so `LogEntry` also derives `sqlx::FromRow` directly, a detail the design doc's own investigation missed. All 14 pre-existing `djangors-admin` tests (11 original + 3 from 5.8.10) plus 3 new tests (`test_audit_log_add_change_delete`, `test_audit_log_bulk_delete_and_list_editable` — including the required negative case proving only the pk with *no* validation error gets a `CHANGE` entry, `test_admin_index_recent_actions` — including the required negative case proving a second user with zero actions of their own sees no panel at all) pass; both example apps' full-stack tests pass unmodified. `cargo fmt --check`, a forced rebuild, and `cargo clippy --workspace --all-targets -D warnings` all clean. Process note: the dispatch process died (again hitting `agy`'s non-interactive `--print-timeout`, despite the explicit `45m` value passed this time — its own log showed only idle "waiting for task completion" polling text right before death) but had, in fact, already landed complete, correct, fully-tested work before dying with no `DONE_MARKER` ever printed — independent review (the standing "never trust self-reports" rule, extended here to "never assume a silent/died process produced nothing," per the same 5.8.1 precedent of finishing verification myself after a stall) confirmed via a full independent fmt/build/clippy/test pass that nothing further needed fixing or redispatching. **Explicitly out of scope, ledgered for later**: a per-object History page, real field-level diffing/`change_message` beyond fixed action strings, IP/request-id capture, `djangors-contrib-audit` (a separate, much larger future crate), and a global/site-wide (not per-user) log viewer. |
 | 5.9 | `5.9-school-example-dod.md` | 259c448 | **Phase 5's own DoD acceptance test.** New `examples/school` crate (`Student`/`Course`/`Enrollment`), registered with real `ModelAdminConfig` customization rather than bare registration, zero custom CRUD views (only `login`/`logout` plus the mounted admin — every Student/Course/Enrollment operation goes through the generic admin). One real socket-level integration test (mirroring `polls/tests/voting.rs`'s style — actual TCP listener, raw HTTP through the full `tower` stack including CSRF, not the in-process `router.handle()` shortcut) proves add/changelist/`list_editable` grade edit/delete end-to-end, verified against real DB state at each step, not just HTTP status codes. Found and worked around a real gap along the way: `register_with`'s `list_display` validation only checks `meta.fields`, not `meta.relations`, so naming a relation field there panics even though it renders fine at runtime — logged in the ledger next to the pre-existing FK-display item, not fixed in this slice (out of scope for an example app). Seventh zero-bug slice this segment. |
+| 5.8.12 | `5.8.12-phase5-remaining-items.md` / `5.8.12b-retry-lib-rs-only.md` | 8d0c683, 1305195 | **Closes out every remaining item in the 5.8 arc**, bundled into one dispatch per the explicit pacing instruction to move fast through the rest of Phase 5: §1 `computed_columns` on `ModelAdminConfig` (a `list_display` column backed by a function of the row's field values, checked before falling back to a real field, validated against either `meta.fields`/`meta.relations`/`computed_columns` at `register_with` time); §2 a real bulk-actions dispatch mechanism (`AdminAction { name, label, requires_confirm, handler }` + `POST {app}/{model}/bulk-action/`, a two-step confirm page (`bulk_action_confirm.html`) before invoking the handler and audit-logging each affected pk, sharing the changelist's existing `<form>` via `formaction` exactly like 5.6.5's Save/bulk-delete buttons); §3/§4 fieldsets (form rows grouped under `<fieldset><legend>` in registration order, unlisted fields appended after) and `readonly_fields` (rendered as inert text, never a submittable input); §5 `raw_id_fields` (a plain lookup link to the related model's changelist instead of a full `<select>` — deliberately not a live-search widget, that's a separate future autocomplete slice); §6 a transitive (depth-bounded, cycle-safe) related-object walk on the delete-confirmation page plus real `on_delete: Protect` enforcement — single-object delete now 400s and bulk delete silently skips protected pks rather than either 500ing the batch or actually deleting a protected row (still an admin-layer pre-check, not a DB-level constraint — every other `on_delete` variant remains metadata-only, ledgered below); §7 an admin UI for groups/permissions — `Permission`/`Group`/`UserGroup`/`GroupPermission`/`UserPermission` registered with both example apps' `AdminSite`s exactly like any other model, needing zero new admin-crate mechanism, plus a dedicated end-to-end test (`test_phase5_groups_permissions_admin_ui`) proving a `Group` can be created and a `UserGroup` membership row added through the generic admin; §8 UI-level hiding of unauthorized action buttons (`has_add_permission`/`has_change_permission`/`has_delete_permission`/`has_view_permission` booleans threaded into every template context — enforcement was already real and server-side since 5.7.2, this only hides the now-dead links/buttons the UI used to still render); §9 a per-object History page (`GET {app}/{model}/{pk}/history/`, querying `djangors_admin_log` newest-first with a `LEFT JOIN auth_user` for the acting username); §10 two extension points, `AdminSite::extra_route()` (mount an arbitrary extra `Router` under the admin site) and `ModelAdminConfig.base_filter` (a fixed `UnresolvedExpr` ANDed into every changelist/queryset for a model — a scoped `get_queryset` override, not a full closure-based one). **Process note, the most involved dispatch chain this segment:** the first attempt (via `agy`/Gemini) correctly implemented all of §1–§10 over ~90 minutes, but near the very end one `replace_file_content` call matched the wrong lines in `lib.rs`, and the dispatch tried to discard *just that bad edit* with `git checkout crates/djangors-admin/src/lib.rs` — which reverts the **entire file** to the last commit, not the last edit, silently destroying every §1–§10 change in one shot (confirmed by directly parsing the dispatch's own tool-call transcript JSON). Recovered via a scoped retry doc (`5.8.12b-retry-lib-rs-only.md`) targeting only `lib.rs` (the six templates, `queryset.rs`'s `insert_raw` reserved-word quoting fix, and both example apps' `admin.rs` §7 registrations had survived the bad checkout untouched). The retry itself required two more model substitutions mid-flight on explicit user instruction (Gemini rate-limited → `agy --model "GPT-OSS 120B (Medium)"`, judged genuinely underperforming — a hallucinated no-op "fix" diff, unrelated scope-creep, silent death with no tests or `DONE_MARKER` → `opencode run -m opencode/deepseek-v4-flash-free`, which produced substantial real, compiling, tested progress, stalled once mid-task asking "Continue?", and was resumed via `opencode run --continue` with a scoped continuation prompt rather than restarted, since its prior work was independently verified good). **Independent review caught two real gaps the dispatch's own "clean clippy" self-report missed** (fixed directly as small mechanical edits, not redispatched): `cargo clippy --workspace --all-targets -D warnings` actually failed on the two new `type_complexity`-triggering fields (`computed_columns`, `AdminAction.handler`) and the new 12-argument `render_form()`, none of which carried the `#[allow(...)]` attributes this file's existing convention requires; and §7's required end-to-end test was simply missing even though its registration code had landed. All 30 `djangors-admin` tests (29 carried/new from the retry dispatch plus the one added in review) plus every pre-existing test workspace-wide pass; `cargo fmt --all`, a forced full rebuild, and `cargo clippy --workspace --all-targets -D warnings` all clean, independently re-run after the fixes, not merely trusted from the dispatch's own report. |
 
 Working infrastructure a new session should know exists (all proven by tests):
 - `Model::field_values(&self) -> Vec<(&'static str, Value)>` and `Model::field_names()` —
@@ -131,48 +135,48 @@ Working infrastructure a new session should know exists (all proven by tests):
 
 ## Recommended sequencing for the remaining Phase 5 bullets
 
-1. **5.6.7+ — remaining changelist customization**: CSV export landed as a whole-filtered-
-   queryset `GET` link (5.6.6), not a selected-rows bulk action, so the "real bulk-actions
-   dispatch mechanism" item is still genuinely open if a *selected-rows* action is ever wanted
-   (XLSX export, bulk field updates, etc.) — 5.6.5's `formaction`-per-`<button>` pattern on the
-   shared `<form>` is what that would build on. Saved views after that. `list_display`
-   computed-method columns (closures, not just real field names) and choices-based `list_filter`
-   (needs new `FieldMeta` choices metadata that doesn't exist yet) remain deferred, belong here
-   too whenever their prerequisites exist. A future improvement to the bulk-delete confirm page
-   (per-selected-object related-object warnings, deliberately cut from 5.6.3), combining
-   `date_hierarchy`'s drilldown counts with the active search/`list_filter` state (deliberately
-   cut from 5.6.4), cross-row transactional atomicity for `list_editable` saves (deliberately cut
-   from 5.6.5), a "selected rows only" CSV export mode, and true CSV streaming for very large
-   tables (both deliberately cut from 5.6.6) are all optional, not blocking.
-2. **5.7 — Permissions**: **both 5.7.1 (data model) and 5.7.2 (admin enforcement) are done.**
-   `Permission`/`Group`/`UserGroup`/`GroupPermission`/`UserPermission`, `has_perm`,
+1. **5.6.7+ — remaining changelist customization (optional, not blocking).** CSV export landed as
+   a whole-filtered-queryset `GET` link (5.6.6), not a selected-rows bulk action; the *general*
+   selected-rows bulk-actions dispatch mechanism itself landed in 5.8.12 (`AdminAction` + `POST
+   bulk-action/`), and `list_display` computed-method columns also landed in 5.8.12
+   (`ModelAdminConfig.computed_columns`) — both no longer open items. Still open: choices-based
+   `list_filter` (needs new `FieldMeta` choices metadata that doesn't exist yet), saved views, a
+   "selected rows only" CSV export mode, true CSV streaming for very large tables (deliberately
+   cut from 5.6.6), per-selected-object related-object warnings on the bulk-delete confirm page
+   (deliberately cut from 5.6.3), combining `date_hierarchy`'s drilldown counts with the active
+   search/`list_filter` state (deliberately cut from 5.6.4), and cross-row transactional atomicity
+   for `list_editable` saves (deliberately cut from 5.6.5).
+2. **5.7 — Permissions: fully done, including the admin UI.** Data model + `has_perm` +
    `sync_permissions()`/`dj createpermissions` (5.7.1, commit `bb284a4`); every `djangors-admin`
-   view now checks `has_perm` per-action (`view`/`add`/`change`/`delete`) via `require_perm`,
-   superusers bypassing entirely, `admin_index` filtered to only-visible models (5.7.2, commit
-   `b9aed08`). **Next: 5.7.3+ (optional, not blocking)** — an admin UI for managing
-   `Group`/`Permission`/user assignments (still raw SQL only today), UI-level hiding of
-   action buttons a user lacks permission for (currently server-side-only enforcement — correct,
-   just not hidden in the UI), batching `admin_index`'s current N-query-per-model permission
-   check, and `AuthUser`-generic (not hardcoded to `djangors_auth::User`) permission support,
-   the same standing limitation as the 5.1 staff gate.
-3. **5.8 — History/audit, theming, extension points: fully done, 5.8.1 through 5.8.11** (commits
+   view checks `has_perm` per-action via `require_perm`, superusers bypass, `admin_index` filtered
+   to only-visible models (5.7.2, commit `b9aed08`); an admin UI for managing
+   `Group`/`Permission`/`UserGroup`/`GroupPermission`/`UserPermission` (ordinary model
+   registration, no new mechanism needed) and UI-level hiding of action buttons a user lacks
+   permission for (5.8.12, commits `8d0c683`/`1305195`). **Remaining, optional:** batching
+   `admin_index`'s current N-query-per-model permission check, and `AuthUser`-generic (not
+   hardcoded to `djangors_auth::User`) permission support, the same standing limitation as the 5.1
+   staff gate.
+3. **5.8 — History/audit, theming, extension points: fully done, 5.8.1 through 5.8.12** (commits
    `eb1a916`, `dfe6ec0`, `965fb24`, `8b7dce5`, `55e54b5`, `ab1363e`, `cdd64bf`, `ad23e39`,
-   `8a448db`, `b2c5d16`, `01cd081`). Every admin page is template-based, themed, and brandable by
-   title, heading, logo, and accent color; a real unmodified HTML `<form>` submission can pass
-   CSRF protection end-to-end; default favicons and a manifest are served at every app's root
-   regardless of admin mount prefix; and every successful mutating admin action is recorded in a
-   `LogEntry` audit table, surfaced as a per-user "Recent actions" panel on `admin_index.html`
-   (5.8.11). **This closes out every item in the 5.8 arc listed in `PLAN.md`.** Remaining Phase 5
-   items are all optional/non-blocking follow-ups (below) — Phase 5's own DoD was already met by
-   5.9.
+   `8a448db`, `b2c5d16`, `01cd081`, `8d0c683`, `1305195`). Every admin page is template-based,
+   themed, and brandable by title, heading, logo, and accent color; a real unmodified HTML
+   `<form>` submission can pass CSRF protection end-to-end; default favicons and a manifest are
+   served at every app's root regardless of admin mount prefix; every successful mutating admin
+   action is recorded in a `LogEntry` audit table, surfaced both as a per-user "Recent actions"
+   panel on `admin_index.html` (5.8.11) and a per-object History page (5.8.12); the change form
+   supports fieldsets/readonly_fields/raw_id_fields; the changelist supports computed columns and
+   a real selected-rows bulk-actions dispatch; deletes walk related objects transitively and
+   enforce `Protect`; and the admin site has two extension points (`extra_route()`,
+   `base_filter`). **This closes out every item in the 5.8 arc listed in `PLAN.md`, and every
+   remaining Phase 5 top-level bullet now has at least a "done (v1)" pass.** What's left anywhere
+   in Phase 5 is optional/non-blocking follow-up work (this section, and the ledger below) —
+   Phase 5's own DoD was already met by 5.9.
 4. **School example + DoD: done.** `examples/school` (`Student`/`Course`/`Enrollment`,
    real `ModelAdminConfig` customization, zero custom CRUD views) with a real socket-level
    end-to-end integration test proving add/changelist/`list_editable`/delete all work through the
    generic admin alone (5.9, commit `259c448`). **This is the literal Phase 5 DoD text being
    met** — CRUD through the admin with zero custom views, verified against real DB state, not
-   just asserted. What's left in Phase 5 after this is 5.8 (theming/history/extension points,
-   still not started) and the optional 5.6.7+/5.7.3+ items above — none of them block calling
-   Phase 5's core CRUD/permissions story done.
+   just asserted.
 
 ## Deferred-items ledger (project-wide)
 
@@ -184,6 +188,19 @@ forgotten-by-accident; do not silently re-defer past the milestone listed.
   model (5.7.1) and admin enforcement (5.7.2) are done. Every admin view checks `has_perm` per
   action; superusers bypass. Remaining follow-ups are non-blocking, listed in the sequencing
   section above.
+- **No admin UI for managing groups/permissions** (5.7.1 scope decision): landed in 5.8.12 —
+  `Group`/`Permission`/`UserGroup`/`GroupPermission`/`UserPermission` registered with the generic
+  admin like any other model, real add/change/delete/changelist CRUD, proven end-to-end by
+  `test_phase5_groups_permissions_admin_ui`.
+- **UI-level hiding of unauthorized action buttons** (5.7.2 scope decision — enforcement was
+  already real and server-side, just not hidden in the UI): landed in 5.8.12 —
+  `has_add/change/delete/view_permission` booleans threaded into every template context.
+- **`list_display` computed-method columns** (5.6.x-era deferral) and **a real selected-rows
+  bulk-actions dispatch mechanism** (the "XLSX export, bulk field updates, etc." item flagged
+  since 5.6.6): both landed in 5.8.12 (`ModelAdminConfig.computed_columns`, `AdminAction` + `POST
+  bulk-action/`).
+- **Per-object History page** (flagged as out of scope when 5.8.11 shipped the per-user "Recent
+  actions" panel): landed in 5.8.12 (`GET {app}/{model}/{pk}/history/`).
 
 **Blocking parts of Phase 5:**
 - **No real many-to-many query support in the ORM** (`RelationKind::ManyToMany` is a pure
@@ -192,10 +209,6 @@ forgotten-by-accident; do not silently re-defer past the milestone listed.
   of waiting for real M2M support, which works fine for this specific case but means a *general*
   M2M field (the kind a user's own app models might want) still doesn't exist. Its own project
   when someone needs it for a non-auth model.
-- **No admin UI for managing groups/permissions** (5.7.1 scope decision, still true after 5.7.2):
-  `Group`/`Permission` rows can only be created via raw SQL or `dj createpermissions`'s standard
-  set today — Django's own admin ships built-in pages for this. Now unblocked (5.7.2 gives it a
-  real permission check to protect those pages with) — a reasonable 5.7.3 candidate.
 - **Generic `AuthUser` support in the admin** (5.1 scope decision): the staff gate is hardcoded
   to concrete `djangors_auth::User`; extending `AuthUser` with `is_staff()` is the documented
   path when a real custom-user use case appears.
@@ -216,15 +229,19 @@ forgotten-by-accident; do not silently re-defer past the milestone listed.
   (label instead of raw stored value) if added. Needs its own design: macro attribute parsing,
   `FieldMeta` shape change, validation on save. Not scheduled to a specific Phase 5 sub-slice
   yet — whoever picks it up should design it once, not per-feature.
-- **`on_delete` not enforced anywhere in the ORM** (pre-existing gap, made visible by 5.5):
-  `RelationMeta.on_delete` (Cascade/Protect/SetNull/Restrict/DoNothing) is metadata only. 5.5's
-  delete confirmation page *displays* the declared value next to each related-object count as
-  information for the staff user, but a POST delete never checks it — what actually happens on
-  a delete with dependents is whatever the real Postgres schema's FK constraint does, and since
-  there's no real migration system yet (see below), that constraint may not even match the
-  declared `on_delete` value. Real enforcement needs either DB-level FK constraints generated
-  from `on_delete` (owed to the migrations work) or an ORM-level pre-delete check — don't build
-  either without picking one deliberately; a half-enforced version is worse than none.
+- **`on_delete` only partially enforced, and only in the admin, not the ORM** (pre-existing gap,
+  made visible by 5.5; `Protect` closed by 5.8.12). `RelationMeta.on_delete`
+  (Cascade/Protect/SetNull/Restrict/DoNothing) is still pure metadata at the ORM level — a
+  `QuerySet::delete_by_pk()` call outside the admin (or the real Postgres schema's own FK
+  constraint, since there's no real migration system yet, see below) is unaffected by it. 5.8.12
+  added an **admin-layer pre-check for `Protect` only**: `admin_delete_post`/
+  `admin_bulk_delete_post` now look up whether any `Protect` relation has `count > 0` before
+  calling `delete_by_pk`, 400ing the single-object route or silently skipping that pk in a bulk
+  batch. Cascade/SetNull/Restrict/DoNothing remain completely unenforced anywhere. Real,
+  general enforcement still needs either DB-level FK constraints generated from `on_delete`
+  (owed to the migrations work) or a full ORM-level pre-delete check covering every variant —
+  don't build either without picking one deliberately; a half-enforced version is worse than
+  none.
 
 **Admin-adjacent, non-blocking:**
 - **Interactive `createsuperuser` prompting** (5.3): needs a hidden-input dep (e.g. rpassword);
