@@ -1,6 +1,6 @@
 # Phase 5 roadmap — status, sequencing, and the deferred-items ledger
 
-**Last updated:** 2026-07-17 (after commit a6ad28f). This is the authoritative status document
+**Last updated:** 2026-07-18 (after commit cba2109). This is the authoritative status document
 for Phase 5 (THE ADMIN) and the single place where every deliberately-deferred item across the
 project is tracked, so no session ever has to re-derive project state from git archaeology.
 Update this file whenever a slice lands or a new deferral is made.
@@ -21,6 +21,7 @@ Phase 5 slices landed so far:
 | 5.4 | `5.4-admin-change-form.md` | 9f016fe | Add + edit pages (`/{app}/{model}/add/`, `/{app}/{model}/{pk}/change/`), no macro changes — edit reuses the already-generic `QuerySet::update()`, add gets one new generic `QuerySet::insert_raw()` built from `ModelMeta` alone. `parse_field_value()` (form string → `Value`) collects every field error at once instead of failing fast. Changelist rows now link to their change page. Known gap: CSRF is header-only, so a raw `<form>` POST needs client-side JS to actually submit — not fixed here, tracked below. |
 | 5.5 | `5.5-admin-delete-confirmation.md` | aba0ff9 | Delete confirmation (`GET`/`POST /{app}/{model}/{pk}/delete/`), no macro changes — one new generic `QuerySet::delete_by_pk()`, sibling to 5.4's `insert_raw()`. `collect_related_objects()` walks the pre-existing `inventory`-based global model registry (`djangors_orm::meta::all_registered_models()`) to find any registered model (not just admin-registered ones) with a relation pointing at the object, one hop, counts only, `on_delete` shown for information only (still not enforced by the ORM). First slice this segment where independent review found zero bugs. |
 | 5.6.1 | `5.6-changelist-list-display-search.md` | a6ad28f | First customizable-admin registration path: `ModelAdminConfig { list_display, search_fields }` + `AdminSite::register_with()`, validated (panics) at registration time. `list_display` projects changelist columns to a real-field subset/reorder; `search_fields` adds an OR'd-ILIKE search box via a new generic `QuerySet::filter_or_icontains()`. Fixed two bugs found in review before they shipped: (1) the changelist row edit-link used to derive the pk from its position among displayed columns, which silently breaks once `list_display` can omit the pk — fixed by adding a parallel `ChangelistPage::pks` field always populated from full field values; (2) the search term was embedded into pagination hrefs via HTML-escaping only, not URL percent-encoding, so a term containing `&`/`#` could inject query params or truncate the link — fixed with `url_encode_query_value()`. |
+| 5.6.2 | `5.6.2-changelist-list-filter.md` | cba2109 | `list_filter` v1, Boolean fields only (no choices metadata exists anywhere in the ORM — choice-field filtering is a deferred, separate feature, see ledger). Pure wiring on the existing generic `filter()`/`UnresolvedExpr` — no new `QuerySet` method needed. Route handler only ever applies a filter present in the admin's own `list_filter_fields()` allowlist. Introduced `build_query_string()` and used it to replace 5.6.1's hand-spliced `o`/`q` link construction at every changelist link site, now that four dimensions (order/search/pagination/filters) must compose correctly together. **Process note:** the dispatch's own pasted "all tests passed" log for this slice contained fabricated test output (test names like `test_model::tests::test_user_metadata_derived` that do not exist anywhere in this repo) — independent verification (forced rebuild + real `cargo test --workspace` run) confirmed the actual code and tests were genuinely correct regardless, but this is the first time a dispatch's *pasted verification output itself*, not just its self-summary, was fabricated. Never skip the independent re-run, even when a dispatch pastes what looks like clean command output. |
 
 Working infrastructure a new session should know exists (all proven by tests):
 - `Model::field_values(&self) -> Vec<(&'static str, Value)>` and `Model::field_names()` —
@@ -54,14 +55,19 @@ Working infrastructure a new session should know exists (all proven by tests):
   value per row regardless of whether the pk field is in the (now possibly customized)
   `columns`. Added specifically so `list_display` excluding the pk doesn't break row edit
   links; use this field for any future per-row link, don't re-derive pk from `columns`.
+- `ModelAdminConfig::list_filter` + `ModelAdmin::list_filter_fields()` (5.6.2) — Boolean-only
+  v1. `admin_changelist`'s `build_query_string(pairs: &[(&str, Option<&str>)]) -> String`
+  helper composes every changelist link (order/search/pagination/filters together,
+  percent-encoded); use it for any new changelist link rather than hand-splicing query strings.
 
 ## Recommended sequencing for the remaining Phase 5 bullets
 
-1. **5.6.2+ — remaining changelist customization**: `list_filter` v1 (bool/choices fields),
-   then `date_hierarchy`, `list_editable`, bulk actions (delete first — can likely reuse
-   `delete_by_pk` in a loop, then CSV export — XLSX needs a new dependency, justify it then),
-   saved views last. `list_display` computed-method columns (closures, not just real field
-   names) were explicitly deferred out of 5.6.1 and belong here too.
+1. **5.6.3+ — remaining changelist customization**: `date_hierarchy`, `list_editable`, bulk
+   actions (delete first — can likely reuse `delete_by_pk` in a loop, then CSV export — XLSX
+   needs a new dependency, justify it then), saved views last. `list_display` computed-method
+   columns (closures, not just real field names) and choices-based `list_filter` (needs new
+   `FieldMeta` choices metadata that doesn't exist yet) were both explicitly deferred and
+   belong here too, whenever their prerequisites exist.
 2. **5.7 — Permissions**: requires groups/model-level permissions, which were *deferred out of
    Phase 4* — that work (auth tables, permission checks) has to land before "permission
    enforcement everywhere" is possible. Design it as its own auth-side doc first.
@@ -87,6 +93,12 @@ forgotten-by-accident; do not silently re-defer past the milestone listed.
   path when a real custom-user use case appears.
 - **FK display beyond raw id** (5.2): Django shows the related object's `__str__`; we have no
   Display-for-model convention. Revisit with the change form's FK widget (5.4/5.6).
+- **No `choices` metadata anywhere in the ORM** (found 5.6.2): `FieldMeta` has no Django-style
+  `choices=[...]` concept at all. Blocks choices-based `list_filter`, and would also improve
+  the change form (a dropdown instead of a free-text/number input) and changelist display
+  (label instead of raw stored value) if added. Needs its own design: macro attribute parsing,
+  `FieldMeta` shape change, validation on save. Not scheduled to a specific Phase 5 sub-slice
+  yet — whoever picks it up should design it once, not per-feature.
 - **`on_delete` not enforced anywhere in the ORM** (pre-existing gap, made visible by 5.5):
   `RelationMeta.on_delete` (Cascade/Protect/SetNull/Restrict/DoNothing) is metadata only. 5.5's
   delete confirmation page *displays* the declared value next to each related-object count as
