@@ -1,0 +1,33 @@
+[package]
+name = "school"
+description = "School app for Djangors"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+name = "school"
+path = "src/lib.rs"
+
+[[bin]]
+name = "school"
+path = "src/main.rs"
+
+[dependencies]
+djangors-core = { path = "../../crates/djangors-core" }
+djangors-orm = { path = "../../crates/djangors-orm" }
+djangors-macros = { path = "../../crates/djangors-macros" }
+djangors-db = { path = "../../crates/djangors-db" }
+djangors-auth = { path = "../../crates/djangors-auth" }
+djangors-admin = { path = "../../crates/djangors-admin" }
+djangors-sessions = { path = "../../crates/djangors-sessions" }
+tokio = { version = "1.53.0", features = ["full"] }
+tower = { version = "0.5.3", features = ["util"] }
+hyper = { version = "1.10.1", features = ["full"] }
+chrono = { version = "0.4.45", features = ["std", "serde"] }
+serde = { version = "1.0.228", features = ["derive"] }
+async-trait = "0.1.86"
+
+[dev-dependencies]
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }
+bytes = "1.12.1"

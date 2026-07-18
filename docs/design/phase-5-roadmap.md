@@ -156,6 +156,15 @@ forgotten-by-accident; do not silently re-defer past the milestone listed.
   path when a real custom-user use case appears.
 - **FK display beyond raw id** (5.2): Django shows the related object's `__str__`; we have no
   Display-for-model convention. Revisit with the change form's FK widget (5.4/5.6).
+  **Found while building the school example (5.9):** naming a relation field (e.g. `"student"`,
+  `"course"`) in `list_display` panics at registration time (`"list_display field '{name}' does
+  not exist on model '{Model}'"`) — `register_with`'s `list_display` validation only checks
+  `meta.fields`, which doesn't include relation fields (those live in the separate
+  `meta.relations`), even though `Model::field_values()`/`field_names()` *do* include them at
+  render time. `examples/school/src/admin.rs`'s `Enrollment` registration works around this by
+  leaving `student`/`course` out of `list_display` entirely. Fixing this for real is naturally
+  the same piece of work as this ledger item's own FK-display goal — once relation fields render
+  as something better than a raw id, `register_with` should also accept them in `list_display`.
 - **No `choices` metadata anywhere in the ORM** (found 5.6.2): `FieldMeta` has no Django-style
   `choices=[...]` concept at all. Blocks choices-based `list_filter`, and would also improve
   the change form (a dropdown instead of a free-text/number input) and changelist display
