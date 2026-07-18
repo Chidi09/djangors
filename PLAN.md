@@ -329,8 +329,10 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 
 ### Phase 5 — THE ADMIN (~3–4 months, worth every week)
 
-> **Status (2026-07-17):** in progress — see `docs/design/phase-5-roadmap.md` for the
-> authoritative slice-by-slice status, commit references, and the full deferred-items ledger.
+> **Status (2026-07-18):** DoD met — CRUD, changelist customization, and permissions are all
+> done; theming/history/extension points (last unchecked bullet below) is the one remaining
+> unstarted item. See `docs/design/phase-5-roadmap.md` for the authoritative slice-by-slice
+> status, commit references, and the full deferred-items ledger.
 
 - [x] AdminSite + registry; auto-URLs; login gated by `is_staff`. *(5.1, commit 9edf249 — v1 constraint: gate hardcoded to the built-in `User`, not generic `AuthUser`)*
 - [ ] Changelist: **done:** all-fields columns, sorting, pagination *(5.2, commit ac647f9)*; `list_display` (real-field subset/reorder) + `search_fields` (ILIKE search box) via new `AdminSite::register_with()` customization API *(5.6.1, commit a6ad28f)*; `list_filter` v1, Boolean fields only *(5.6.2, commit cba2109 — choices-based filtering blocked on `FieldMeta` gaining choices metadata, which doesn't exist yet)*; bulk delete, single hardcoded action with two-step confirm *(5.6.3, commit 47459ee)*; `date_hierarchy` v1, one `DateTime` field, year/month/day drilldown, drilldown counts not combined with search/`list_filter` state *(5.6.4, commit a744250)*; `list_editable` v1, text/numeric fields only, shares the bulk-delete `<form>` via per-button `formaction` (no JS, no nested forms) *(5.6.5, commit 27bce9e)*; CSV export v1, plain `GET` link exporting the current filtered/searched/ordered queryset (not a selected-rows action), hand-rolled RFC 4180 escaping, no new dependency *(5.6.6, commit 6f49e30)*. **remaining:** `list_display` computed-method columns, `list_filter` for choice fields (blocked as above), a real bulk-actions dispatch mechanism for any future *selected-rows* action (XLSX export, bulk field updates) — 5.6.5 established the `formaction`-per-button pattern this would build on, saved views.
@@ -342,7 +344,7 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 - [ ] Extension points: custom admin views, `get_queryset` override, custom actions with intermediate pages, ModelAdmin as a trait with default methods so everything is overridable. *(ModelAdmin is already a trait with `DefaultModelAdmin`; overridable defaults not yet designed)*
 - [x] `createsuperuser` command. *(5.3, commit 9b2fd47 — non-interactive only: `--username`/`--email` + `DJANGORS_SUPERUSER_PASSWORD` env; interactive prompting deferred)*
 
-**DoD:** the school example runs its entire back-office (students, enrollment, grades) through the admin with zero custom views; a non-programmer can CRUD comfortably. *(school example does not exist yet — polls is the only example app so far and now serves a real `/admin/`)*
+**DoD: met.** `examples/school` (`Student`/`Course`/`Enrollment`) runs its entire back-office through the admin with zero custom CRUD views — only `login`/`logout` plus the mounted `AdminSite`, registered with real `list_display`/`search_fields`/`list_filter`/`date_hierarchy`/`list_editable` customization. Proven end-to-end by a real socket-level integration test (`examples/school/tests/admin_crud.rs`) exercising add/changelist/grade-edit/delete through actual HTTP against the full middleware stack, each step verified against real DB state *(5.9, commit 259c448)*.
 
 ### Phase 6 — CLI & developer experience (~6–8 weeks, parallel with 5)
 - [ ] `djangors` binary: `djangors new <project>` (generates workspace, settings, git, tuned dev profile), `djangors new-app <name>` (generates app crate wired into registry), `djangors run` (watch/rebuild/livereload per design 4.5), `djangors check` (system check framework — port Django's checks: model issues, missing migrations, security misconfigs for deploy).

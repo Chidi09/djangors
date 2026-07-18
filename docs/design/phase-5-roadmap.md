@@ -1,6 +1,6 @@
 # Phase 5 roadmap — status, sequencing, and the deferred-items ledger
 
-**Last updated:** 2026-07-18 (after commit b9aed08). This is the authoritative status document
+**Last updated:** 2026-07-18 (after commit 259c448). This is the authoritative status document
 for Phase 5 (THE ADMIN) and the single place where every deliberately-deferred item across the
 project is tracked, so no session ever has to re-derive project state from git archaeology.
 Update this file whenever a slice lands or a new deferral is made.
@@ -10,6 +10,11 @@ Update this file whenever a slice lands or a new deferral is made.
 Phases 0–4 are fully done and committed (Phase 4 DoD met: polls requires login to vote,
 password-reset works via console mail backend, OWASP self-assessment written —
 `security-checklist.md` / `threat-model.md` in this directory are the living security docs).
+
+**Phase 5's own DoD is now met as of 5.9** (`examples/school` — real CRUD through the admin
+alone, zero custom views, verified end-to-end). Theming/history/extension points (5.8) are the
+one remaining unstarted top-level Phase 5 bullet; everything else is either done or an optional,
+non-blocking follow-up (see the sequencing section below).
 
 Phase 5 slices landed so far:
 
@@ -28,6 +33,7 @@ Phase 5 slices landed so far:
 | 5.6.6 | `5.6.6-changelist-csv-export.md` | 6f49e30 | CSV export v1: a plain `GET export-csv/` link exporting every row matching the current search/`list_filter`/order/`date_hierarchy` state (not just checked rows) — revises the prior roadmap prediction that this would be a third `formaction` bulk-action button; Django has no built-in CSV export at all, so there was no real parity pull toward the selected-rows shape, and the GET-link version needs zero interaction with the shared bulk-delete/`list_editable` `<form>`. Two prerequisite pure-extraction refactors (`parse_changelist_query_state` out of `admin_changelist`; `effective_columns`/`build_filtered_queryset`/`row_values` out of `changelist()`), verified against the three pre-existing regression-sensitive tests (list_display/search, list_filter, date_hierarchy) passing unmodified. Hand-rolled RFC 4180 CSV escaping (`csv_escape_field`) rather than a new `csv` crate dependency, matching `html_escape`/`url_encode_query_value` precedent. No row cap or streaming — whole result set buffered in memory, deferred for very large tables. Fourth zero-bug slice this segment (after 5.5, 5.6.4, 5.6.5). |
 | 5.7.1 | `5.7.1-permissions-data-model.md` | bb284a4 | Permissions data model (djangors-auth, not djangors-admin): `Permission`/`Group`/`UserGroup`/`GroupPermission`/`UserPermission` as plain FK-based join tables (no real many-to-many ORM support needed — `RelationKind::ManyToMany` remains an unused metadata stub, confirmed via repo-wide grep). New `AuthUser::is_superuser()`, `has_perm(db, user_id, codename)` (direct-or-via-group check via two small raw-SQL joins, deliberately not superuser-aware itself — callers check `is_superuser()` first), `sync_permissions()` + `dj createpermissions` (idempotent standard view/add/change/delete codename seeding per registered model, explicit CLI step mirroring `createsuperuser`'s shape since there's no real migration system to hook an automatic seed into). Fifth zero-bug slice this segment — the design doc's called-out risk (FK columns have no `_id` suffix in this codebase's convention, easy to get wrong in hand-written join SQL, plus `user`/`group` needing Postgres reserved-word quoting) was implemented correctly on the first pass. Does **not** touch `djangors-admin` — every admin route still only checks `is_staff`; wiring `has_perm` into actual view gates is 5.7.2. |
 | 5.7.2 | `5.7.2-admin-permission-enforcement.md` | b9aed08 | Wires `has_perm` into every `djangors-admin` view via a new `require_perm` helper (per-action codename: `view`/`add`/`change`/`delete`), superusers bypassing `has_perm` entirely. `require_staff` now returns the resolved `User` instead of `()`. `admin_index` filters the model list to only what the current user can `view` (matching Django), rather than listing every registered model unconditionally. **Real, large blast radius handled correctly:** every existing admin test's "staff" fixture user (`is_superuser: false`, previously had free run of every feature) needed promoting to `is_superuser: true` to keep passing under the new enforcement — including `examples/polls/tests/voting.rs`'s own staff fixture, which the dispatch correctly found and fixed even though the design doc only explicitly named `djangors-admin`'s own test file. All 10 pre-existing admin tests plus the polls integration test verified passing unmodified in outcome, plus one new dedicated test (`test_admin_permissions_enforcement`) covering direct grants, group-membership grants, per-action scoping, `admin_index` filtering, and the superuser bypass. Sixth zero-bug slice this segment. |
+| 5.9 | `5.9-school-example-dod.md` | 259c448 | **Phase 5's own DoD acceptance test.** New `examples/school` crate (`Student`/`Course`/`Enrollment`), registered with real `ModelAdminConfig` customization rather than bare registration, zero custom CRUD views (only `login`/`logout` plus the mounted admin — every Student/Course/Enrollment operation goes through the generic admin). One real socket-level integration test (mirroring `polls/tests/voting.rs`'s style — actual TCP listener, raw HTTP through the full `tower` stack including CSRF, not the in-process `router.handle()` shortcut) proves add/changelist/`list_editable` grade edit/delete end-to-end, verified against real DB state at each step, not just HTTP status codes. Found and worked around a real gap along the way: `register_with`'s `list_display` validation only checks `meta.fields`, not `meta.relations`, so naming a relation field there panics even though it renders fine at runtime — logged in the ledger next to the pre-existing FK-display item, not fixed in this slice (out of scope for an example app). Seventh zero-bug slice this segment. |
 
 Working infrastructure a new session should know exists (all proven by tests):
 - `Model::field_values(&self) -> Vec<(&'static str, Value)>` and `Model::field_names()` —
@@ -125,9 +131,14 @@ Working infrastructure a new session should know exists (all proven by tests):
    HTML until then, deliberately). This is also the natural point to revisit the CSRF
    header-only limitation (5.4's ledger entry) since server-rendered forms become the primary
    POST surface once theming replaces the plain `format!` HTML.
-4. **School example + DoD**: the Phase 5 DoD references a school example that does not exist
-   yet — building it (models: students, enrollment, grades) is its own slice near the end,
-   and is the real acceptance test for "a non-programmer can CRUD comfortably".
+4. **School example + DoD: done.** `examples/school` (`Student`/`Course`/`Enrollment`,
+   real `ModelAdminConfig` customization, zero custom CRUD views) with a real socket-level
+   end-to-end integration test proving add/changelist/`list_editable`/delete all work through the
+   generic admin alone (5.9, commit `259c448`). **This is the literal Phase 5 DoD text being
+   met** — CRUD through the admin with zero custom views, verified against real DB state, not
+   just asserted. What's left in Phase 5 after this is 5.8 (theming/history/extension points,
+   still not started) and the optional 5.6.7+/5.7.3+ items above — none of them block calling
+   Phase 5's core CRUD/permissions story done.
 
 ## Deferred-items ledger (project-wide)
 
