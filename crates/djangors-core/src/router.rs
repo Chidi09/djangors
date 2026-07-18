@@ -331,6 +331,32 @@ impl Router {
             .with_state(self.state.clone())
             .with_extensions(parts.extensions);
 
+        if let Some(pending) = req.ext::<crate::middleware::CsrfPendingFormCheck>() {
+            let is_form_content_type = req
+                .header("content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|ct| ct.starts_with("application/x-www-form-urlencoded"));
+
+            let form_token = if is_form_content_type {
+                serde_urlencoded::from_bytes::<std::collections::HashMap<String, String>>(
+                    req.body_bytes().await,
+                )
+                .ok()
+                .and_then(|form| form.get("csrfmiddlewaretoken").cloned())
+            } else {
+                None
+            };
+
+            let valid = form_token
+                .map(|t| crate::middleware::constant_time_eq(t.as_bytes(), pending.0.as_bytes()))
+                .unwrap_or(false);
+
+            if !valid {
+                let err = DjangorsError::Forbidden("CSRF token missing or invalid".to_string());
+                return err.into_response().into_hyper();
+            }
+        }
+
         match self.handle(req).await {
             Ok(resp) => resp.into_hyper(),
             Err(e) => e.into_response().into_hyper(),
@@ -369,6 +395,38 @@ impl Router {
         let req = Request::new(parts.method, parts.uri, parts.headers, body_bytes)
             .with_state(self.state.clone())
             .with_extensions(parts.extensions);
+
+        if let Some(pending) = req.ext::<crate::middleware::CsrfPendingFormCheck>() {
+            let is_form_content_type = req
+                .header("content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|ct| ct.starts_with("application/x-www-form-urlencoded"));
+
+            let form_token = if is_form_content_type {
+                serde_urlencoded::from_bytes::<std::collections::HashMap<String, String>>(
+                    req.body_bytes().await,
+                )
+                .ok()
+                .and_then(|form| form.get("csrfmiddlewaretoken").cloned())
+            } else {
+                None
+            };
+
+            let valid = form_token
+                .map(|t| crate::middleware::constant_time_eq(t.as_bytes(), pending.0.as_bytes()))
+                .unwrap_or(false);
+
+            if !valid {
+                let err = DjangorsError::Forbidden("CSRF token missing or invalid".to_string());
+                let resp = if debug {
+                    crate::debug_page::render_debug_page(&err, &req)
+                } else {
+                    crate::debug_page::render_production_error_page(err.status_code())
+                };
+                return resp.into_hyper();
+            }
+        }
+
         let req_clone = req.clone();
 
         match self.handle(req).await {

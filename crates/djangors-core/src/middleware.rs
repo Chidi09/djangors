@@ -159,11 +159,11 @@ pub fn request_id_layer() -> RequestIdLayer {
     RequestIdLayer
 }
 
-/// Cheaply `Clone`, inserted into the request's extensions by `CsrfLayer`
-/// (via the same `Request::ext::<T>()` mechanism `Session` uses) so
-/// handlers/templates can read the current request's token value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CsrfToken(pub String);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CsrfPendingFormCheck(pub String);
 
 /// CSRF protection middleware implementing a double-submit cookie scheme.
 ///
@@ -269,7 +269,7 @@ fn generate_csrf_token() -> String {
     s
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
@@ -331,13 +331,8 @@ where
                 }
             }
             if !is_valid {
-                let response = hyper::Response::builder()
-                    .status(403)
-                    .body(Full::new(Bytes::from(
-                        "403 Forbidden: CSRF token missing or invalid",
-                    )))
-                    .unwrap();
-                return Box::pin(async move { Ok(response) });
+                req.extensions_mut()
+                    .insert(CsrfPendingFormCheck(token_value.clone()));
             }
         }
 
@@ -532,8 +527,18 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = counter.clone();
 
-        let inner_svc = service_fn(move |_req: hyper::Request<Full<Bytes>>| {
+        let inner_svc = service_fn(move |req: hyper::Request<Full<Bytes>>| {
             counter_clone.fetch_add(1, Ordering::SeqCst);
+            let pending = req
+                .extensions()
+                .get::<CsrfPendingFormCheck>()
+                .expect("CsrfPendingFormCheck should exist");
+            let token = req
+                .extensions()
+                .get::<CsrfToken>()
+                .expect("CsrfToken should exist");
+            assert_eq!(pending.0, token.0);
+
             let resp = hyper::Response::builder()
                 .status(200)
                 .body(Full::new(Bytes::from("ok")))
@@ -550,8 +555,8 @@ mod tests {
             .unwrap();
 
         let resp = svc.ready().await.unwrap().call(req).await.unwrap();
-        assert_eq!(resp.status(), 403);
-        assert_eq!(counter.load(Ordering::SeqCst), 0); // Inner handler never called
+        assert_eq!(resp.status(), 200);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -559,8 +564,13 @@ mod tests {
         let counter = Arc::new(AtomicUsize::new(0));
         let counter_clone = counter.clone();
 
-        let inner_svc = service_fn(move |_req: hyper::Request<Full<Bytes>>| {
+        let inner_svc = service_fn(move |req: hyper::Request<Full<Bytes>>| {
             counter_clone.fetch_add(1, Ordering::SeqCst);
+            let pending = req
+                .extensions()
+                .get::<CsrfPendingFormCheck>()
+                .expect("CsrfPendingFormCheck should exist");
+            assert_eq!(pending.0, "validtoken1234567890123456789012");
             let resp = hyper::Response::builder()
                 .status(200)
                 .body(Full::new(Bytes::from("ok")))
@@ -579,10 +589,27 @@ mod tests {
             .unwrap();
 
         let resp1 = svc.ready().await.unwrap().call(req1).await.unwrap();
-        assert_eq!(resp1.status(), 403);
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        assert_eq!(resp1.status(), 200);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
 
         // Case 2: Cookie present, header mismatched
+        let counter2 = Arc::new(AtomicUsize::new(0));
+        let counter2_clone = counter2.clone();
+        let inner_svc2 = service_fn(move |req: hyper::Request<Full<Bytes>>| {
+            counter2_clone.fetch_add(1, Ordering::SeqCst);
+            let pending = req
+                .extensions()
+                .get::<CsrfPendingFormCheck>()
+                .expect("CsrfPendingFormCheck should exist");
+            assert_eq!(pending.0, "validtoken1234567890123456789012");
+            let resp = hyper::Response::builder()
+                .status(200)
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap();
+            async move { Ok::<_, Infallible>(resp) }
+        });
+        let mut svc2 = CsrfLayer::new().layer(inner_svc2);
+
         let req2 = hyper::Request::builder()
             .method("POST")
             .uri("/")
@@ -591,9 +618,9 @@ mod tests {
             .body(Full::new(Bytes::new()))
             .unwrap();
 
-        let resp2 = svc.ready().await.unwrap().call(req2).await.unwrap();
-        assert_eq!(resp2.status(), 403);
-        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        let resp2 = svc2.ready().await.unwrap().call(req2).await.unwrap();
+        assert_eq!(resp2.status(), 200);
+        assert_eq!(counter2.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -690,6 +717,19 @@ mod tests {
 
         let resp3 = svc.ready().await.unwrap().call(req3).await.unwrap();
         assert_eq!(resp3.status(), StatusCode::FORBIDDEN);
+
+        // 4. POST carrying cookie, no X-CSRFToken header, but valid csrfmiddlewaretoken in body
+        let body_content = format!("csrfmiddlewaretoken={}", cookie_value);
+        let req4 = hyper::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header(COOKIE, format!("csrftoken={}", cookie_value))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(Full::new(Bytes::from(body_content)))
+            .unwrap();
+
+        let resp4 = svc.ready().await.unwrap().call(req4).await.unwrap();
+        assert_eq!(resp4.status(), StatusCode::OK);
     }
 
     #[tokio::test]
