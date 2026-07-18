@@ -1,6 +1,6 @@
 # Phase 5 roadmap — status, sequencing, and the deferred-items ledger
 
-**Last updated:** 2026-07-18 (after commit 6f49e30). This is the authoritative status document
+**Last updated:** 2026-07-18 (after commit bb284a4). This is the authoritative status document
 for Phase 5 (THE ADMIN) and the single place where every deliberately-deferred item across the
 project is tracked, so no session ever has to re-derive project state from git archaeology.
 Update this file whenever a slice lands or a new deferral is made.
@@ -26,6 +26,7 @@ Phase 5 slices landed so far:
 | 5.6.4 | `5.6.4-changelist-date-hierarchy.md` | a744250 | `date_hierarchy` v1: one configured `DateTime` field, year → month → day drilldown nav above the changelist. New generic `QuerySet::filter_datetime_range(field, gte, lt)` — `filter()`'s `__gte`/`__lt` suffix lookups can't be used here since the field name is only known at runtime, not a `&'static str` literal safe to concatenate. Drilldown link values (which years/months/days have data) come from a dedicated raw-SQL `EXTRACT(...)` query, deliberately *not* combined with the current search/`list_filter` state — a scoped-out future improvement, see ledger. Every existing changelist link site (sort headers, pager, search box, filter All/Yes/No) forwards `year`/`month`/`day` alongside the existing params — this exact class of bug (a new dimension not threaded through every link site) shipped once in 5.6.1 and once in 5.6.2 before being caught in review; this time it was called out as a required review checklist item in the design doc itself, and every site was verified by hand against the diff. Second slice this segment (after 5.5) where independent review found zero bugs. |
 | 5.6.5 | `5.6.5-changelist-list-editable.md` | 27bce9e | `list_editable` v1: text/numeric `list_display` columns (not Boolean — an unchecked checkbox and "not part of this edit" are indistinguishable without formset machinery this admin doesn't have) render as inline `<input>`s, with a "Save" button. Resolves the "two forms around one table" problem flagged when this slice was scheduled: the Save button and 5.6.3's bulk-delete button share the SAME `<form>`, routed to different URLs (`save-changelist/` vs. `bulk-delete/`) via plain HTML5 `formaction` per `<button>` — no JS, and 5.6.3's own route/handler are untouched. New `ModelAdmin::update_fields_from_form` (an `update_from_form` variant where an absent form key means "not edited," not "required-field error") + a new `save-changelist/` route parsing `edit-{pk}-{field}` keys, allowlisted against `list_editable_fields()`. No cross-row transaction — matches every other save path in this codebase; rows that validate are written even if others in the same submission fail. Third zero-bug slice this segment (after 5.5 and 5.6.4). |
 | 5.6.6 | `5.6.6-changelist-csv-export.md` | 6f49e30 | CSV export v1: a plain `GET export-csv/` link exporting every row matching the current search/`list_filter`/order/`date_hierarchy` state (not just checked rows) — revises the prior roadmap prediction that this would be a third `formaction` bulk-action button; Django has no built-in CSV export at all, so there was no real parity pull toward the selected-rows shape, and the GET-link version needs zero interaction with the shared bulk-delete/`list_editable` `<form>`. Two prerequisite pure-extraction refactors (`parse_changelist_query_state` out of `admin_changelist`; `effective_columns`/`build_filtered_queryset`/`row_values` out of `changelist()`), verified against the three pre-existing regression-sensitive tests (list_display/search, list_filter, date_hierarchy) passing unmodified. Hand-rolled RFC 4180 CSV escaping (`csv_escape_field`) rather than a new `csv` crate dependency, matching `html_escape`/`url_encode_query_value` precedent. No row cap or streaming — whole result set buffered in memory, deferred for very large tables. Fourth zero-bug slice this segment (after 5.5, 5.6.4, 5.6.5). |
+| 5.7.1 | `5.7.1-permissions-data-model.md` | bb284a4 | Permissions data model (djangors-auth, not djangors-admin): `Permission`/`Group`/`UserGroup`/`GroupPermission`/`UserPermission` as plain FK-based join tables (no real many-to-many ORM support needed — `RelationKind::ManyToMany` remains an unused metadata stub, confirmed via repo-wide grep). New `AuthUser::is_superuser()`, `has_perm(db, user_id, codename)` (direct-or-via-group check via two small raw-SQL joins, deliberately not superuser-aware itself — callers check `is_superuser()` first), `sync_permissions()` + `dj createpermissions` (idempotent standard view/add/change/delete codename seeding per registered model, explicit CLI step mirroring `createsuperuser`'s shape since there's no real migration system to hook an automatic seed into). Fifth zero-bug slice this segment — the design doc's called-out risk (FK columns have no `_id` suffix in this codebase's convention, easy to get wrong in hand-written join SQL, plus `user`/`group` needing Postgres reserved-word quoting) was implemented correctly on the first pass. Does **not** touch `djangors-admin` — every admin route still only checks `is_staff`; wiring `has_perm` into actual view gates is 5.7.2. |
 
 Working infrastructure a new session should know exists (all proven by tests):
 - `Model::field_values(&self) -> Vec<(&'static str, Value)>` and `Model::field_names()` —
@@ -107,9 +108,19 @@ Working infrastructure a new session should know exists (all proven by tests):
    cut from 5.6.4), cross-row transactional atomicity for `list_editable` saves (deliberately cut
    from 5.6.5), a "selected rows only" CSV export mode, and true CSV streaming for very large
    tables (both deliberately cut from 5.6.6) are all optional, not blocking.
-2. **5.7 — Permissions**: requires groups/model-level permissions, which were *deferred out of
-   Phase 4* — that work (auth tables, permission checks) has to land before "permission
-   enforcement everywhere" is possible. Design it as its own auth-side doc first.
+2. **5.7 — Permissions**: **5.7.1 (data model) is done** — `Permission`/`Group`/`UserGroup`/
+   `GroupPermission`/`UserPermission` models, `has_perm(db, user_id, codename)`,
+   `sync_permissions()`/`dj createpermissions` (`docs/design/5.7.1-permissions-data-model.md`,
+   commit `bb284a4`). **Next: 5.7.2**, wiring `has_perm` into `djangors-admin`'s actual view gates
+   — every admin route currently checks only `is_staff` (via `require_staff()`); this needs
+   per-view codename checks (`{app_label}.view_{model}` for changelist/export,
+   `add_{model}`/`change_{model}`/`delete_{model}` for the corresponding routes, including
+   `list_editable`'s save route and bulk-delete), with superusers short-circuiting past `has_perm`
+   entirely (per 5.7.1's own doc comment on `has_perm` — it deliberately doesn't special-case
+   superusers itself). Needs its own design pass: deciding exactly where each check goes,
+   whether a missing permission means 403 or "hide the model from the admin index entirely" (Django
+   does the latter), and what happens to `AdminSite`'s registry iteration once some models are
+   permission-gated per-user rather than globally visible.
 3. **5.8 — History/audit, theming, extension points**: after CRUD is complete. Theming is the
    right moment to introduce djangors-template into the admin (every page is plain `format!`
    HTML until then, deliberately). This is also the natural point to revisit the CSRF
@@ -125,8 +136,20 @@ Deliberate deferrals, where they're documented, and when they should land. Nothi
 forgotten-by-accident; do not silently re-defer past the milestone listed.
 
 **Blocking parts of Phase 5:**
-- **Groups + model-level permissions** (deferred from Phase 4, `4.9`-era decision): needed for
-  5.7 permission enforcement. The admin currently has exactly one permission: `is_staff`.
+- **Groups + model-level permissions** (deferred from Phase 4, `4.9`-era decision): the *data
+  model* landed in 5.7.1 (`Permission`/`Group`/join tables/`has_perm`) — the admin's actual view
+  gates are still 5.7.2, not yet done. The admin currently still checks only `is_staff` on every
+  route.
+- **No real many-to-many query support in the ORM** (`RelationKind::ManyToMany` is a pure
+  metadata stub, confirmed zero real usage anywhere — found while scoping 5.7.1): 5.7.1's
+  Group/Permission join tables sidestepped this by modeling them as plain two-FK structs instead
+  of waiting for real M2M support, which works fine for this specific case but means a *general*
+  M2M field (the kind a user's own app models might want) still doesn't exist. Its own project
+  when someone needs it for a non-auth model.
+- **No admin UI for managing groups/permissions** (5.7.1 scope decision): `Group`/`Permission`
+  rows can only be created via raw SQL or a future seed script today — Django's own admin ships
+  built-in pages for this. Worth adding once 5.7.2 lands (there needs to be a working permission
+  *check* to protect those pages with first).
 - **Generic `AuthUser` support in the admin** (5.1 scope decision): the staff gate is hardcoded
   to concrete `djangors_auth::User`; extending `AuthUser` with `is_staff()` is the documented
   path when a real custom-user use case appears.
