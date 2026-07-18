@@ -1,6 +1,6 @@
 # Phase 5 roadmap — status, sequencing, and the deferred-items ledger
 
-**Last updated:** 2026-07-18 (after commit 965fb24). This is the authoritative status document
+**Last updated:** 2026-07-18 (after commit 8b7dce5). This is the authoritative status document
 for Phase 5 (THE ADMIN) and the single place where every deliberately-deferred item across the
 project is tracked, so no session ever has to re-derive project state from git archaeology.
 Update this file whenever a slice lands or a new deferral is made.
@@ -13,10 +13,10 @@ password-reset works via console mail backend, OWASP self-assessment written —
 
 **Phase 5's own DoD is now met as of 5.9** (`examples/school` — real CRUD through the admin
 alone, zero custom views, verified end-to-end). Theming/history/extension points (5.8) is the
-one remaining top-level Phase 5 bullet — three pages converted to the new template mechanism so
-far (5.8.1 `admin_index`, 5.8.2 delete confirm, 5.8.3 bulk-delete confirm), the rest is a
-straightforward continuation of that pattern; everything else is either done or an optional,
-non-blocking follow-up (see the sequencing section below).
+one remaining top-level Phase 5 bullet — four pages converted to the new template mechanism so
+far (5.8.1 `admin_index`, 5.8.2 delete confirm, 5.8.3 bulk-delete confirm, 5.8.4 list_editable
+save-error page), the rest is a straightforward continuation of that pattern; everything else is
+either done or an optional, non-blocking follow-up (see the sequencing section below).
 
 Phase 5 slices landed so far:
 
@@ -38,6 +38,7 @@ Phase 5 slices landed so far:
 | 5.8.1 | `5.8.1-admin-template-engine-pilot.md` | eb1a916 | Begins 5.8 (theming): new `TemplateEngine::from_embedded(templates)` in `djangors-template` (compiles templates into the binary via `include_str!`, needed because a *published* library crate's templates can't be resolved from a filesystem path relative to whatever project consumes it — the existing filesystem-loader constructor is for an application's own project-level templates only). Converts exactly one admin page (`admin_index`) to render through a real template, producing byte-identical output to the old `format!()` — proven by `test_admin_index_endpoints` and 5.7.2's `test_admin_permissions_enforcement` both passing with zero assertion changes. Uses `minijinja::value::Value::from_safe_string` for the rendered `href`/`label` fields since minijinja's HTML autoescaping also escapes `/` as `&#x2f;`, which would have broken byte-identical output — safe only because both values are built from `ModelMeta`'s compile-time `&'static str` fields, never user input; commented accordingly against reuse for anything request/database-derived. **Process note:** the dispatch hit a genuine stall mid-verification (its `agy` process died during a post-`cargo clean` full rebuild after running low on disk space) — inspected partial progress rather than blindly redispatching, found the implementation substantially complete and correct, and finished independent verification directly. Every other admin page is untouched; real visual theming (CSS/layout/branding) is later 5.8.x work. |
 | 5.8.2 | `5.8.2-admin-template-delete-confirm.md` | dfe6ec0 | Second page converted (delete confirmation, `admin_delete_get`) — the first template conversion with genuinely dynamic, database-derived content (object field values, related-object warnings) rather than only compile-time `ModelMeta` strings, so the first real proof `djangors-template`'s autoescaping protects real content end-to-end. Manual `html_escape` calls removed entirely from this handler; plain `String` context fields, no `Safe`-wrapping needed (unlike 5.8.1's `href`/`label`). Identified a real, non-blocking subtlety before dispatch: `html_escape` escapes `/` as `&#x2F;`, minijinja's own autoescape uses `&#x2f;` — functionally identical, not byte-identical; confirmed the existing test's data contains none of the six specially-escaped characters, so `test_admin_delete_endpoints` passes with zero assertion changes, same byte-identical-output proof 5.8.1 established. `ADMIN_TEMPLATES` now registers two templates on the one shared engine, not a second engine. |
 | 5.8.3 | `5.8.3-admin-template-bulk-delete-confirm.md` | 965fb24 | Third page converted — `admin_bulk_delete_post`'s confirm-step HTML only (its delete-step response is a bare redirect, nothing to template). Same shape as 5.8.2 (dynamic per-row display text + a pk list), no `Safe`-wrapping needed for either. `test_phase5_part6_3_bulk_delete` passes with zero assertion changes. `ADMIN_TEMPLATES` now registers three templates on the one shared engine. |
+| 5.8.4 | `5.8.4-admin-template-save-changelist-error.md` | 8b7dce5 | Fourth page converted — `admin_save_changelist_post`'s validation-error branch only (its success path is a bare redirect, nothing to template). Flattens the nested per-pk/per-field error loop into `Vec<SaveChangelistErrorRow>`. Established a cleaner URL-building pattern going forward: substitute `app`/`model` path *segments* individually into literal template markup that already contains the `/` separators as static text, rather than pre-assembling the whole URL string in Rust — avoids 5.8.1's `Safe`-wrapping problem entirely, so no `from_safe_string` needed here despite the page building a URL. `test_phase5_part6_5_list_editable` passes with zero assertion changes. `ADMIN_TEMPLATES` now registers four templates on the one shared engine. Eighth zero-bug slice this segment. |
 | 5.9 | `5.9-school-example-dod.md` | 259c448 | **Phase 5's own DoD acceptance test.** New `examples/school` crate (`Student`/`Course`/`Enrollment`), registered with real `ModelAdminConfig` customization rather than bare registration, zero custom CRUD views (only `login`/`logout` plus the mounted admin — every Student/Course/Enrollment operation goes through the generic admin). One real socket-level integration test (mirroring `polls/tests/voting.rs`'s style — actual TCP listener, raw HTTP through the full `tower` stack including CSRF, not the in-process `router.handle()` shortcut) proves add/changelist/`list_editable` grade edit/delete end-to-end, verified against real DB state at each step, not just HTTP status codes. Found and worked around a real gap along the way: `register_with`'s `list_display` validation only checks `meta.fields`, not `meta.relations`, so naming a relation field there panics even though it renders fine at runtime — logged in the ledger next to the pre-existing FK-display item, not fixed in this slice (out of scope for an example app). Seventh zero-bug slice this segment. |
 
 Working infrastructure a new session should know exists (all proven by tests):
@@ -142,10 +143,10 @@ Working infrastructure a new session should know exists (all proven by tests):
    just not hidden in the UI), batching `admin_index`'s current N-query-per-model permission
    check, and `AuthUser`-generic (not hardcoded to `djangors_auth::User`) permission support,
    the same standing limitation as the 5.1 staff gate.
-3. **5.8 — History/audit, theming, extension points**: **5.8.1, 5.8.2, and 5.8.3 (template engine
-   mechanism, proven on `admin_index`, the delete-confirm page, and the bulk-delete confirm page)
-   are done** (commits `eb1a916`, `dfe6ec0`, `965fb24`). **Next: 5.8.4+** — convert the remaining
-   pages: `list_editable`'s error page (small, same shape as the last two), then add/change forms
+3. **5.8 — History/audit, theming, extension points**: **5.8.1, 5.8.2, 5.8.3, and 5.8.4 (template
+   engine mechanism, proven on `admin_index`, the delete-confirm page, the bulk-delete confirm
+   page, and the `list_editable` save-error page) are done** (commits `eb1a916`, `dfe6ec0`,
+   `965fb24`, `8b7dce5`). **Next: 5.8.5+** — convert the remaining pages: add/change forms
    (`render_form` — genuinely more complex, per-field-kind branching logic, save for once the
    small ones are all done), then the changelist (the biggest and most complex — do it last, once
    every simpler page has proven the pattern). *Then* real visual theming (CSS custom properties,
