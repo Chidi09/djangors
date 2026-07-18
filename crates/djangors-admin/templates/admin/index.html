@@ -1,1 +1,1 @@
-<ul>{% for m in models %}<li><a href="{{ m.href }}">{{ m.label }}</a></li>{% endfor %}</ul>
+{% extends "admin/base.html" %}{% block content %}<ul>{% for m in models %}<li><a href="{{ m.href }}">{{ m.label }}</a></li>{% endfor %}</ul>{% endblock %}

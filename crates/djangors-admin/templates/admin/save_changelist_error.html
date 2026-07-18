@@ -1,1 +1,1 @@
-<p>Some rows could not be saved (rows without errors were saved):</p><ul>{% for e in errors %}<li>Row {{ e.pk }}: {{ e.field }}: {{ e.message }}</li>{% endfor %}</ul><a href="/{{ app }}/{{ model }}/">Back to changelist</a>
+{% extends "admin/base.html" %}{% block content %}<p>Some rows could not be saved (rows without errors were saved):</p><ul>{% for e in errors %}<li>Row {{ e.pk }}: {{ e.field }}: {{ e.message }}</li>{% endfor %}</ul><a href="/{{ app }}/{{ model }}/">Back to changelist</a>{% endblock %}

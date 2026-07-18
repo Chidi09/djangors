@@ -36,6 +36,10 @@ static ADMIN_TEMPLATES: std::sync::LazyLock<djangors_template::TemplateEngine> =
                 "admin/changelist.html",
                 include_str!("../templates/admin/changelist.html"),
             ),
+            (
+                "admin/base.html",
+                include_str!("../templates/admin/base.html"),
+            ),
         ])
         .expect("admin templates are compiled into the binary and must always be valid")
     });
