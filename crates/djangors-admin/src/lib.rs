@@ -742,6 +742,13 @@ pub const ACTION_ADDITION: i32 = 1;
 pub const ACTION_CHANGE: i32 = 2;
 pub const ACTION_DELETION: i32 = 3;
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct FieldDiffItem {
+    pub field: String,
+    pub old: String,
+    pub new: String,
+}
+
 #[derive(DeriveModel, Debug, Clone, serde::Serialize, sqlx::FromRow)]
 #[djangors(app = "admin", table_name = "djangors_admin_log")]
 pub struct LogEntry {
@@ -755,6 +762,7 @@ pub struct LogEntry {
     pub object_repr: String,
     pub action_flag: i32,
     pub change_message: String,
+    pub field_diff: Option<String>,
 }
 
 async fn log_action(
@@ -764,6 +772,7 @@ async fn log_action(
     object_id: i64,
     action_flag: i32,
     change_message: &str,
+    field_diff: Option<String>,
 ) -> Result<(), DjangorsError> {
     let res = LogEntry {
         id: 0,
@@ -775,6 +784,7 @@ async fn log_action(
         object_repr: format!("{} object ({})", meta.struct_name, object_id),
         action_flag,
         change_message: change_message.to_string(),
+        field_diff,
     }
     .save(db)
     .await;
@@ -1546,7 +1556,7 @@ async fn admin_index(
 
     let recent_rows_res: Result<Vec<LogEntry>, _> = sqlx::query_as(sqlx::AssertSqlSafe(
         "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, \
-         action_flag, change_message FROM djangors_admin_log WHERE user_id = $1 \
+         action_flag, change_message, field_diff FROM djangors_admin_log WHERE user_id = $1 \
          ORDER BY action_time DESC LIMIT 10",
     ))
     .bind(user.id)
@@ -2321,6 +2331,7 @@ async fn admin_add_post(
                 new_pk,
                 ACTION_ADDITION,
                 "Added.",
+                None,
             )
             .await?;
             Ok(Response::redirect(&format!("/{}/{}/", app, model)))
@@ -2448,8 +2459,48 @@ async fn admin_change_post(
     let Form(form_data) =
         Form::<std::collections::HashMap<String, String>>::from_request(&req).await?;
 
+    let old_row_vals = admin.get_by_pk(db, pk).await?;
+
     match admin.update_from_form(db, pk, &form_data).await? {
         Ok(()) => {
+            let field_diff = if let Some(old_vals) = old_row_vals {
+                let meta = admin.model_meta();
+                let mut diff_items = Vec::new();
+                for (f_name, old_val) in old_vals {
+                    let mut new_val_opt = None;
+                    if let Some(f) = meta.fields.iter().find(|f| f.name == f_name) {
+                        if !f.auto && !f.primary_key {
+                            let raw = form_data.get(f.name).map(|s| s.as_str());
+                            if let Ok(nv) = parse_field_value(f, raw) {
+                                new_val_opt = Some(nv);
+                            }
+                        }
+                    } else if let Some(r) = meta.relations.iter().find(|r| r.field_name == f_name) {
+                        let raw = form_data.get(r.field_name).map(|s| s.as_str());
+                        if let Ok(nv) = parse_relation_value(r, raw) {
+                            new_val_opt = Some(nv);
+                        }
+                    }
+
+                    if let Some(new_val) = new_val_opt {
+                        if old_val != new_val {
+                            diff_items.push(FieldDiffItem {
+                                field: f_name.to_string(),
+                                old: old_val.to_string(),
+                                new: new_val.to_string(),
+                            });
+                        }
+                    }
+                }
+                if diff_items.is_empty() {
+                    None
+                } else {
+                    serde_json::to_string(&diff_items).ok()
+                }
+            } else {
+                None
+            };
+
             log_action(
                 db,
                 user.id,
@@ -2457,6 +2508,7 @@ async fn admin_change_post(
                 pk,
                 ACTION_CHANGE,
                 "Changed.",
+                field_diff,
             )
             .await?;
             Ok(Response::redirect(&format!("/{}/{}/", app, model)))
@@ -2810,6 +2862,7 @@ async fn admin_delete_post(
             pk,
             ACTION_DELETION,
             "Deleted.",
+            None,
         )
         .await?;
         Ok(Response::redirect(&format!("/{}/{}/", app, model)))
@@ -2838,6 +2891,7 @@ struct HistoryEntryView {
     action_flag: i32,
     username: String,
     change_message: String,
+    field_diff: Option<Vec<FieldDiffItem>>,
 }
 
 #[derive(serde::Serialize)]
@@ -2851,6 +2905,7 @@ struct ObjectHistoryContext {
     accent_color: Option<String>,
 }
 
+#[allow(clippy::type_complexity)]
 async fn admin_history(
     req: Request,
     params: PathParams,
@@ -2877,15 +2932,20 @@ async fn admin_history(
 
     let meta = admin.model_meta();
 
-    let rows: Vec<(i64, String, chrono::DateTime<chrono::Utc>, i32, String)> = sqlx::query_as(
-        sqlx::AssertSqlSafe(
-            "SELECT l.user_id, COALESCE(u.username, '?'), l.action_time, l.action_flag, l.change_message \
-             FROM djangors_admin_log l \
-             LEFT JOIN auth_user u ON u.id = l.user_id \
-             WHERE l.app_label = $1 AND l.model_name = $2 AND l.object_id = $3 \
-             ORDER BY l.action_time DESC",
-        ),
-    )
+    let rows: Vec<(
+        i64,
+        String,
+        chrono::DateTime<chrono::Utc>,
+        i32,
+        String,
+        Option<String>,
+    )> = sqlx::query_as(sqlx::AssertSqlSafe(
+        "SELECT l.user_id, COALESCE(u.username, '?'), l.action_time, l.action_flag, l.change_message, l.field_diff \
+         FROM djangors_admin_log l \
+         LEFT JOIN auth_user u ON u.id = l.user_id \
+         WHERE l.app_label = $1 AND l.model_name = $2 AND l.object_id = $3 \
+         ORDER BY l.action_time DESC",
+    ))
     .bind(meta.app_label)
     .bind(meta.struct_name)
     .bind(pk)
@@ -2896,11 +2956,22 @@ async fn admin_history(
     let history: Vec<HistoryEntryView> = rows
         .into_iter()
         .map(
-            |(_, username, action_time, action_flag, change_message)| HistoryEntryView {
-                action_time: action_time.format("%Y-%m-%d %H:%M:%S").to_string(),
-                action_flag,
-                username,
-                change_message,
+            |(_, username, action_time, action_flag, change_message, raw_diff)| {
+                let field_diff = raw_diff.and_then(|s| {
+                    let items: Vec<FieldDiffItem> = serde_json::from_str(&s).ok()?;
+                    if items.is_empty() {
+                        None
+                    } else {
+                        Some(items)
+                    }
+                });
+                HistoryEntryView {
+                    action_time: action_time.format("%Y-%m-%d %H:%M:%S").to_string(),
+                    action_flag,
+                    username,
+                    change_message,
+                    field_diff,
+                }
             },
         )
         .collect();
@@ -3005,7 +3076,7 @@ async fn admin_bulk_action_post(
 
     let meta = admin.model_meta();
     for &pk in &pks {
-        log_action(db, user.id, meta, pk, ACTION_CHANGE, action.label).await?;
+        log_action(db, user.id, meta, pk, ACTION_CHANGE, action.label, None).await?;
     }
 
     Ok(Response::redirect(&format!("/{}/{}/", app, model)))
@@ -3108,6 +3179,7 @@ async fn admin_bulk_delete_post(
                 pk,
                 ACTION_DELETION,
                 "Deleted.",
+                None,
             )
             .await?;
         }
@@ -3195,6 +3267,7 @@ async fn admin_save_changelist_post(
                     *pk,
                     ACTION_CHANGE,
                     "Changed.",
+                    None,
                 )
                 .await?;
             }
@@ -6132,7 +6205,8 @@ mod tests {
                 object_id BIGINT NOT NULL,
                 object_repr VARCHAR(200) NOT NULL,
                 action_flag INTEGER NOT NULL,
-                change_message TEXT NOT NULL
+                change_message TEXT NOT NULL,
+                field_diff TEXT
             )",
         )
         .execute(db.pool())
@@ -6214,7 +6288,7 @@ mod tests {
         );
 
         let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
-            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message FROM djangors_admin_log ORDER BY id ASC",
+            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message, field_diff FROM djangors_admin_log ORDER BY id ASC",
         ))
         .fetch_all(db.pool())
         .await
@@ -7126,7 +7200,8 @@ mod tests {
                 object_id BIGINT NOT NULL,
                 object_repr VARCHAR(200) NOT NULL,
                 action_flag INTEGER NOT NULL,
-                change_message TEXT NOT NULL
+                change_message TEXT NOT NULL,
+                field_diff TEXT
             )",
         )
         .execute(db.pool())
@@ -7205,7 +7280,7 @@ mod tests {
         assert_eq!(res_delete.status(), StatusCode::FOUND);
 
         let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
-            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message FROM djangors_admin_log ORDER BY id ASC",
+            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message, field_diff FROM djangors_admin_log ORDER BY id ASC",
         ))
         .fetch_all(db.pool())
         .await
@@ -7286,7 +7361,8 @@ mod tests {
                 object_id BIGINT NOT NULL,
                 object_repr VARCHAR(200) NOT NULL,
                 action_flag INTEGER NOT NULL,
-                change_message TEXT NOT NULL
+                change_message TEXT NOT NULL,
+                field_diff TEXT
             )",
         )
         .execute(db.pool())
@@ -7360,7 +7436,7 @@ mod tests {
         assert_eq!(res_bulk.status(), StatusCode::FOUND);
 
         let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
-            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message FROM djangors_admin_log WHERE action_flag = 3 ORDER BY id ASC",
+            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message, field_diff FROM djangors_admin_log WHERE action_flag = 3 ORDER BY id ASC",
         ))
         .fetch_all(db.pool())
         .await
@@ -7409,7 +7485,7 @@ mod tests {
         assert_eq!(res_edit.status(), StatusCode::OK);
 
         let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
-            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message FROM djangors_admin_log WHERE action_flag = 2 ORDER BY id ASC",
+            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message, field_diff FROM djangors_admin_log WHERE action_flag = 2 ORDER BY id ASC",
         ))
         .fetch_all(db.pool())
         .await
@@ -7473,7 +7549,8 @@ mod tests {
                 object_id BIGINT NOT NULL,
                 object_repr VARCHAR(200) NOT NULL,
                 action_flag INTEGER NOT NULL,
-                change_message TEXT NOT NULL
+                change_message TEXT NOT NULL,
+                field_diff TEXT
             )",
         )
         .execute(db.pool())
@@ -7521,6 +7598,7 @@ mod tests {
             object_repr: "ModelA object (100)".to_string(),
             action_flag: ACTION_ADDITION,
             change_message: "Added.".to_string(),
+            field_diff: None,
         }
         .save(&db)
         .await
@@ -7536,6 +7614,7 @@ mod tests {
             object_repr: "ModelA object (101)".to_string(),
             action_flag: ACTION_CHANGE,
             change_message: "Changed.".to_string(),
+            field_diff: None,
         }
         .save(&db)
         .await
@@ -8601,7 +8680,8 @@ mod tests {
                 object_id BIGINT NOT NULL,
                 object_repr VARCHAR(200) NOT NULL,
                 action_flag INTEGER NOT NULL,
-                change_message TEXT NOT NULL
+                change_message TEXT NOT NULL,
+                field_diff TEXT
             )",
         )
         .execute(db.pool())
@@ -8642,6 +8722,7 @@ mod tests {
             object_repr: format!("ModelA object ({})", a.id),
             action_flag: ACTION_ADDITION,
             change_message: "Created.".to_string(),
+            field_diff: None,
         }
         .save(&db)
         .await
@@ -8841,6 +8922,173 @@ mod tests {
         assert!(body.contains("Admins"));
 
         let drop_tables = ["auth_user_groups", "auth_group", "auth_user"];
+        for table in drop_tables {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DROP TABLE IF EXISTS {}",
+                table
+            )))
+            .execute(db.pool())
+            .await;
+        }
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_audit_diffing_and_history_rendering() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
+            .execute(db.pool())
+            .await;
+
+        sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE test_model_d (
+                id BIGSERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                content TEXT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE djangors_admin_log (
+                id BIGSERIAL PRIMARY KEY,
+                user_id BIGINT NOT NULL,
+                action_time TIMESTAMPTZ NOT NULL,
+                app_label VARCHAR(100) NOT NULL,
+                model_name VARCHAR(100) NOT NULL,
+                object_id BIGINT NOT NULL,
+                object_repr VARCHAR(200) NOT NULL,
+                action_flag INTEGER NOT NULL,
+                change_message TEXT NOT NULL,
+                field_diff TEXT
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let staff = User {
+            id: 0,
+            username: "staff_diff".to_string(),
+            email: "staff_diff@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: true,
+            is_superuser: true,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let session_staff = djangors_sessions::Session::new_empty();
+        session_staff.set(SESSION_USER_ID_KEY, staff.id);
+        let mut ext = Extensions::new();
+        ext.insert(session_staff.clone());
+
+        let pk = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
+            &db,
+            vec![
+                (
+                    "name",
+                    djangors_orm::expr::Value::Text("OrigName".to_string()),
+                ),
+                (
+                    "content",
+                    djangors_orm::expr::Value::Text("OrigContent".to_string()),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let site = AdminSite::new();
+        site.register::<ModelD>();
+        let router = Router::new().mount("/admin", site.urls());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            hyper::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded".parse().unwrap(),
+        );
+
+        // Submit form changing ONLY 'name', leaving 'content' unchanged ("OrigContent")
+        let req_change = Request::new(
+            Method::POST,
+            Uri::try_from(format!("/admin/admin_test/modeld/{}/change/", pk)).unwrap(),
+            headers,
+            Bytes::from("name=NewName&content=OrigContent"),
+        )
+        .with_extensions(ext.clone())
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res_change = router.handle(req_change).await.unwrap();
+        assert_eq!(res_change.status(), StatusCode::FOUND);
+
+        let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
+            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message, field_diff FROM djangors_admin_log WHERE action_flag = 2 ORDER BY id ASC",
+        ))
+        .fetch_all(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(logs.len(), 1);
+
+        let raw_diff = logs[0]
+            .field_diff
+            .as_ref()
+            .expect("field_diff should be present");
+        let diff_items: Vec<FieldDiffItem> = serde_json::from_str(raw_diff).unwrap();
+        assert_eq!(diff_items.len(), 1);
+        assert_eq!(diff_items[0].field, "name");
+        assert_eq!(diff_items[0].old, "OrigName");
+        assert_eq!(diff_items[0].new, "NewName");
+
+        // Verify history page renders the diff block
+        let req_hist = Request::new(
+            Method::GET,
+            Uri::try_from(format!("/admin/admin_test/modeld/{}/history/", pk)).unwrap(),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_extensions(ext)
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res_hist = router.handle(req_hist).await.unwrap();
+        assert_eq!(res_hist.status(), StatusCode::OK);
+        let body_hist = String::from_utf8(res_hist.body().to_vec()).unwrap();
+        assert!(body_hist.contains("name: OrigName"));
+        assert!(body_hist.contains("NewName"));
+
+        let drop_tables = ["test_model_d", "auth_user", "djangors_admin_log"];
         for table in drop_tables {
             let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "DROP TABLE IF EXISTS {}",

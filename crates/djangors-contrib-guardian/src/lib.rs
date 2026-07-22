@@ -1,0 +1,413 @@
+//! Object-level permissions for Djangors.
+//!
+//! Layered on top of `djangors_auth::has_perm`, `djangors-contrib-guardian` provides
+//! granular object-level permission checking and management.
+//!
+//! # Example: Using in a custom view handler
+//! ```ignore
+//! async fn edit_document_view(
+//!     db: &djangors_db::Database,
+//!     user_id: i64,
+//!     doc_id: i64,
+//! ) -> Result<(), &'static str> {
+//!     let allowed = djangors_contrib_guardian::has_perm_for_object(
+//!         db,
+//!         user_id,
+//!         "change_document",
+//!         "docs",
+//!         "Document",
+//!         doc_id,
+//!     )
+//!     .await
+//!     .map_err(|_| "DB error")?;
+//!
+//!     if !allowed {
+//!         return Err("Permission denied");
+//!     }
+//!     Ok(())
+//! }
+//! ```
+
+use djangors_macros::Model;
+use djangors_orm::ForeignKey;
+
+/// Per-object permission grant model mapping a user, permission, and target object.
+#[derive(Model, Debug, Clone)]
+#[djangors(
+    app = "djangors_contrib_guardian",
+    table_name = "djangors_object_permission"
+)]
+pub struct ObjectPermission {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub user: ForeignKey<djangors_auth::User>,
+    pub permission: ForeignKey<djangors_auth::Permission>,
+    #[djangors(max_length = 100)]
+    pub app_label: String,
+    #[djangors(max_length = 100)]
+    pub model_name: String,
+    pub object_id: i64,
+}
+
+/// Checks whether `user_id` has been granted `codename` for a specific model instance `(app_label, model_name, object_id)`.
+///
+/// Returns `true` if `djangors_auth::has_perm` already grants model-level permission, OR if an [`ObjectPermission`]
+/// row exists granting `codename` on this exact object instance.
+pub async fn has_perm_for_object(
+    db: &djangors_db::Database,
+    user_id: i64,
+    codename: &str,
+    app_label: &str,
+    model_name: &str,
+    object_id: i64,
+) -> Result<bool, djangors_auth::AuthError> {
+    if djangors_auth::has_perm(db, user_id, codename).await? {
+        return Ok(true);
+    }
+
+    let count: i64 = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
+        "SELECT COUNT(*) FROM djangors_object_permission op \
+         JOIN auth_permission p ON p.id = op.permission \
+         WHERE op.\"user\" = $1 AND p.codename = $2 AND op.app_label = $3 AND op.model_name = $4 AND op.object_id = $5"
+            .to_string(),
+    ))
+    .bind(user_id)
+    .bind(codename)
+    .bind(app_label)
+    .bind(model_name)
+    .bind(object_id)
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+
+    Ok(count > 0)
+}
+
+/// Grants an object-level permission `codename` on `(app_label, model_name, object_id)` to `user_id`.
+pub async fn grant_object_permission(
+    db: &djangors_db::Database,
+    user_id: i64,
+    codename: &str,
+    app_label: &str,
+    model_name: &str,
+    object_id: i64,
+) -> Result<ObjectPermission, djangors_auth::AuthError> {
+    let perm_id: i64 = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
+        "SELECT id FROM auth_permission WHERE codename = $1".to_string(),
+    ))
+    .bind(codename)
+    .fetch_optional(db.pool())
+    .await
+    .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?
+    .ok_or_else(|| {
+        djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(
+            djangors_orm::sqlx::Error::RowNotFound,
+        ))
+    })?;
+
+    let existing: Option<i64> = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
+        "SELECT id FROM djangors_object_permission WHERE \"user\" = $1 AND permission = $2 AND app_label = $3 AND model_name = $4 AND object_id = $5".to_string(),
+    ))
+    .bind(user_id)
+    .bind(perm_id)
+    .bind(app_label)
+    .bind(model_name)
+    .bind(object_id)
+    .fetch_optional(db.pool())
+    .await
+    .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+
+    if let Some(id) = existing {
+        return Ok(ObjectPermission {
+            id,
+            user: ForeignKey::new(user_id),
+            permission: ForeignKey::new(perm_id),
+            app_label: app_label.to_string(),
+            model_name: model_name.to_string(),
+            object_id,
+        });
+    }
+
+    let obj_perm = ObjectPermission {
+        id: 0,
+        user: ForeignKey::new(user_id),
+        permission: ForeignKey::new(perm_id),
+        app_label: app_label.to_string(),
+        model_name: model_name.to_string(),
+        object_id,
+    };
+    let saved = obj_perm
+        .save(db)
+        .await
+        .map_err(djangors_auth::AuthError::Database)?;
+    Ok(saved)
+}
+
+/// Revokes an object-level permission `codename` on `(app_label, model_name, object_id)` from `user_id`.
+pub async fn revoke_object_permission(
+    db: &djangors_db::Database,
+    user_id: i64,
+    codename: &str,
+    app_label: &str,
+    model_name: &str,
+    object_id: i64,
+) -> Result<bool, djangors_auth::AuthError> {
+    let perm_id: Option<i64> = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
+        "SELECT id FROM auth_permission WHERE codename = $1".to_string(),
+    ))
+    .bind(codename)
+    .fetch_optional(db.pool())
+    .await
+    .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+
+    let Some(p_id) = perm_id else {
+        return Ok(false);
+    };
+
+    let result = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(
+        "DELETE FROM djangors_object_permission WHERE \"user\" = $1 AND permission = $2 AND app_label = $3 AND model_name = $4 AND object_id = $5".to_string(),
+    ))
+    .bind(user_id)
+    .bind(p_id)
+    .bind(app_label)
+    .bind(model_name)
+    .bind(object_id)
+    .execute(db.pool())
+    .await
+    .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use djangors_auth::User;
+    use std::sync::Mutex;
+
+    static DB_MUTEX: Mutex<()> = Mutex::new(());
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_guardian_has_perm_for_object() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let drop_tables = [
+            "djangors_object_permission",
+            "auth_user_permissions",
+            "auth_user_groups",
+            "auth_group_permissions",
+            "auth_group",
+            "auth_permission",
+            "auth_user",
+        ];
+        for table in drop_tables {
+            let _ = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
+                "DROP TABLE IF EXISTS {}",
+                table
+            )))
+            .execute(db.pool())
+            .await;
+        }
+
+        djangors_orm::sqlx::query(
+            "CREATE TABLE auth_user (
+                id BIGSERIAL PRIMARY KEY,
+                username VARCHAR(150) NOT NULL,
+                email VARCHAR(254) NOT NULL,
+                password TEXT NOT NULL,
+                is_active BOOLEAN NOT NULL,
+                is_staff BOOLEAN NOT NULL,
+                is_superuser BOOLEAN NOT NULL,
+                date_joined TIMESTAMPTZ NOT NULL,
+                last_login TIMESTAMPTZ
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        djangors_orm::sqlx::query(
+            "CREATE TABLE auth_permission (
+                id BIGSERIAL PRIMARY KEY,
+                codename VARCHAR(255) NOT NULL UNIQUE,
+                name VARCHAR(255) NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        djangors_orm::sqlx::query(
+            "CREATE TABLE auth_user_permissions (
+                id BIGSERIAL PRIMARY KEY,
+                \"user\" BIGINT NOT NULL REFERENCES auth_user(id),
+                permission BIGINT NOT NULL REFERENCES auth_permission(id)
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        djangors_orm::sqlx::query(
+            "CREATE TABLE auth_group (
+                id BIGSERIAL PRIMARY KEY,
+                name VARCHAR(150) NOT NULL UNIQUE
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        djangors_orm::sqlx::query(
+            "CREATE TABLE auth_user_groups (
+                id BIGSERIAL PRIMARY KEY,
+                \"user\" BIGINT NOT NULL REFERENCES auth_user(id),
+                \"group\" BIGINT NOT NULL REFERENCES auth_group(id)
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        djangors_orm::sqlx::query(
+            "CREATE TABLE auth_group_permissions (
+                id BIGSERIAL PRIMARY KEY,
+                \"group\" BIGINT NOT NULL REFERENCES auth_group(id),
+                permission BIGINT NOT NULL REFERENCES auth_permission(id)
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        djangors_orm::sqlx::query(
+            "CREATE TABLE djangors_object_permission (
+                id BIGSERIAL PRIMARY KEY,
+                \"user\" BIGINT NOT NULL REFERENCES auth_user(id),
+                permission BIGINT NOT NULL REFERENCES auth_permission(id),
+                app_label VARCHAR(100) NOT NULL,
+                model_name VARCHAR(100) NOT NULL,
+                object_id BIGINT NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let now = chrono::Utc::now();
+        let user1 = User {
+            id: 0,
+            username: "guardian_u1".to_string(),
+            email: "g1@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: false,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let user2 = User {
+            id: 0,
+            username: "guardian_u2".to_string(),
+            email: "g2@example.com".to_string(),
+            password: "hash".to_string(),
+            is_active: true,
+            is_staff: false,
+            is_superuser: false,
+            date_joined: now,
+            last_login: Some(now),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let perm1 = djangors_auth::Permission {
+            id: 0,
+            codename: "change_document".to_string(),
+            name: "Can change document".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        // 1. Model-level grant alone gives true for user1
+        djangors_orm::sqlx::query(
+            "INSERT INTO auth_user_permissions (\"user\", permission) VALUES ($1, $2)",
+        )
+        .bind(user1.id)
+        .bind(perm1.id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let has_perm_u1 =
+            has_perm_for_object(&db, user1.id, "change_document", "docs", "Document", 100)
+                .await
+                .unwrap();
+        assert!(
+            has_perm_u1,
+            "User1 has model-level permission so has_perm_for_object must return true"
+        );
+
+        // 2. User2 has NO model-level perm initially
+        let has_perm_u2_before =
+            has_perm_for_object(&db, user2.id, "change_document", "docs", "Document", 100)
+                .await
+                .unwrap();
+        assert!(!has_perm_u2_before, "User2 has no permissions initially");
+
+        // 3. Grant object-specific perm for user2 on object 100
+        grant_object_permission(&db, user2.id, "change_document", "docs", "Document", 100)
+            .await
+            .unwrap();
+
+        let has_perm_u2_obj100 =
+            has_perm_for_object(&db, user2.id, "change_document", "docs", "Document", 100)
+                .await
+                .unwrap();
+        assert!(
+            has_perm_u2_obj100,
+            "User2 has object permission for object 100"
+        );
+
+        // 4. User2 on a DIFFERENT object id (200) should be FALSE
+        let has_perm_u2_obj200 =
+            has_perm_for_object(&db, user2.id, "change_document", "docs", "Document", 200)
+                .await
+                .unwrap();
+        assert!(
+            !has_perm_u2_obj200,
+            "User2 object perm for object 100 does not grant perm for object 200"
+        );
+
+        // 5. Test revoke_object_permission
+        let revoked =
+            revoke_object_permission(&db, user2.id, "change_document", "docs", "Document", 100)
+                .await
+                .unwrap();
+        assert!(revoked, "Revoking object perm returned true");
+
+        let has_perm_u2_after_revoke =
+            has_perm_for_object(&db, user2.id, "change_document", "docs", "Document", 100)
+                .await
+                .unwrap();
+        assert!(!has_perm_u2_after_revoke, "User2 has no perm after revoke");
+
+        for table in drop_tables {
+            let _ = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
+                "DROP TABLE IF EXISTS {}",
+                table
+            )))
+            .execute(db.pool())
+            .await;
+        }
+    }
+}

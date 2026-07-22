@@ -646,6 +646,7 @@ dependencies = [
  "minijinja",
  "percent-encoding",
  "serde",
+ "serde_json",
  "sqlx",
  "tokio",
 ]
@@ -722,6 +723,22 @@ dependencies = [
  "djangors-orm",
  "djangors-test",
  "hyper",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "djangors-contrib-guardian"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "djangors-auth",
+ "djangors-core",
+ "djangors-db",
+ "djangors-macros",
+ "djangors-orm",
+ "djangors-test",
+ "serde",
  "sqlx",
  "tokio",
 ]

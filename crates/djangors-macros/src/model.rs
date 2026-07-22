@@ -529,7 +529,10 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
 
     // 5. Generate save, update, delete SQL building & binds
     let save_fields: Vec<&ModelField> = model_fields.iter().filter(|f| !f.is_auto).collect();
-    let save_cols: Vec<String> = save_fields.iter().map(|f| f.column_name.clone()).collect();
+    let save_cols: Vec<String> = save_fields
+        .iter()
+        .map(|f| format!("\"{}\"", f.column_name))
+        .collect();
     let save_placeholders: Vec<String> =
         (1..=save_fields.len()).map(|i| format!("${}", i)).collect();
     let save_sql = format!(
@@ -560,10 +563,10 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         model_fields.iter().filter(|f| !f.is_primary_key).collect();
     let mut update_set_clauses = Vec::new();
     for (i, f) in update_fields.iter().enumerate() {
-        update_set_clauses.push(format!("{} = ${}", f.column_name, i + 1));
+        update_set_clauses.push(format!("\"{}\" = ${}", f.column_name, i + 1));
     }
     let update_sql = format!(
-        "UPDATE {} SET {} WHERE {} = ${}",
+        "UPDATE {} SET {} WHERE \"{}\" = ${}",
         table_name,
         update_set_clauses.join(", "),
         pk_field.column_name,
