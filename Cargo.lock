@@ -920,6 +920,19 @@ dependencies = [
 [[package]]
 name = "djangors-rest"
 version = "0.0.1"
+dependencies = [
+ "bytes",
+ "chrono",
+ "djangors-core",
+ "djangors-db",
+ "djangors-macros",
+ "djangors-orm",
+ "hyper",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
 
 [[package]]
 name = "djangors-sessions"
