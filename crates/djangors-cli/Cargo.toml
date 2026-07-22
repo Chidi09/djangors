@@ -19,7 +19,9 @@ djangors-staticfiles = { path = "../djangors-staticfiles" }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros"] }
 djangors-auth = { path = "../djangors-auth" }
 djangors-orm = { path = "../djangors-orm" }
+djangors-core = { path = "../djangors-core" }
 chrono = { version = "0.4.45", features = ["std", "serde"] }
+toml = "0.8.20"
 
 [dev-dependencies]
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }

@@ -1,8 +1,18 @@
 [package]
 name = "djangors-test"
-description = "Testing utilities for the Djangors web framework (placeholder release)"
+description = "Testing utilities for the Djangors web framework"
 repository = "https://github.com/djangors/djangors"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+
+[dependencies]
+djangors-core = { path = "../djangors-core" }
+djangors-db = { path = "../djangors-db" }
+djangors-sessions = { path = "../djangors-sessions" }
+bytes = "1.12.1"
+hyper = "1.10.1"
+serde_urlencoded = "0.7.1"
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros"] }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }

@@ -37,6 +37,9 @@ pub enum Commands {
         #[arg(long, default_value_t = 8000)]
         port: u16,
     },
+    /// Check project settings and structure.
+    #[command(name = "check")]
+    Check,
     /// Apply database migrations.
     #[command(name = "migrate")]
     Migrate,

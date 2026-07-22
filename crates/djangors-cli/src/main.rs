@@ -16,11 +16,31 @@ async fn main() {
             }
         }
         Commands::NewApp { name } => {
-            commands::new_app(&name);
+            if let Err(e) = commands::new_app(&name) {
+                eprintln!("[dj new-app] error: {e}");
+                std::process::exit(1);
+            }
         }
         Commands::Run { port } => {
-            commands::run(port);
+            if let Err(e) = commands::run(port) {
+                eprintln!("[dj run] error: {e}");
+                std::process::exit(1);
+            }
         }
+        Commands::Check => match commands::check() {
+            Ok(issues) if issues.is_empty() => println!("[dj check] no issues found"),
+            Ok(issues) => {
+                println!("[dj check] {} issue(s) found:", issues.len());
+                for issue in issues {
+                    println!("- {issue}");
+                }
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!("[dj check] error: {e}");
+                std::process::exit(1);
+            }
+        },
         Commands::Migrate => {
             commands::migrate().await;
         }

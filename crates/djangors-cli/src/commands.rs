@@ -1,8 +1,9 @@
 //! Stub implementations for all dj subcommands.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
-fn validate_project_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_project_name(name: &str) -> Result<(), String> {
     let path = std::path::Path::new(name);
     let crate_name = path
         .file_name()
@@ -28,7 +29,7 @@ fn validate_project_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn djangors_crates_dir() -> std::path::PathBuf {
+pub(crate) fn djangors_crates_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("djangors-cli has a parent directory")
@@ -170,19 +171,203 @@ Then visit http://127.0.0.1:8000/.
 }
 
 /// Create a new app within a project.
-pub fn new_app(name: &str) {
-    println!(
-        "[dj new-app] would create app '{}' (not yet implemented)",
-        name
-    );
+pub fn new_app(name: &str) -> Result<(), String> {
+    if !Path::new("Cargo.toml").is_file() || !Path::new("djangors.toml").is_file() {
+        return Err("not a Djangors project (expected Cargo.toml and djangors.toml)".into());
+    }
+    validate_project_name(name)?;
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!("invalid app name '{name}': Rust module names may only contain ASCII letters, numbers, and underscores"));
+    }
+    if name.chars().next().is_none_or(|c| c.is_ascii_digit()) {
+        return Err(format!(
+            "invalid app name '{name}': app names cannot start with a digit"
+        ));
+    }
+    let dir = Path::new("src").join(name);
+    if dir.exists() {
+        return Err(format!("destination 'src/{name}' already exists"));
+    }
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("failed to create '{}': {e}", dir.display()))?;
+    let files = [
+        (
+            "mod.rs",
+            "pub mod admin;\npub mod models;\npub mod views;\n".to_string(),
+        ),
+        (
+            "models.rs",
+            r#"//! Models for this app.
+//!
+//! Uncomment and adapt this example after adding the required model dependencies.
+// use djangors_macros::Model;
+//
+// #[derive(Model, Debug, Clone)]
+// #[djangors(app = "my_app", table_name = "my_app_student")]
+// pub struct Student {
+//     #[djangors(primary_key, auto)]
+//     pub id: i64,
+//     #[djangors(max_length = 100)]
+//     pub first_name: String,
+//     #[djangors(max_length = 100)]
+//     pub last_name: String,
+//     #[djangors(max_length = 254, unique)]
+//     pub email: String,
+//     pub is_active: bool,
+// }
+"#
+            .to_string(),
+        ),
+        (
+            "views.rs",
+            r#"use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
+
+pub async fn index(_req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
+    Ok(Response::text(StatusCode::OK, "Welcome to this Djangors app"))
+}
+"#
+            .to_string(),
+        ),
+        (
+            "admin.rs",
+            r#"//! Admin registrations for this app.
+//!
+//! Example once a model is enabled in models.rs:
+// use djangors_admin::AdminSite;
+// use crate::my_app::models::Student;
+// site.register::<Student>();
+"#
+            .to_string(),
+        ),
+    ];
+    for (file, content) in files {
+        std::fs::write(dir.join(file), content)
+            .map_err(|e| format!("failed to write 'src/{name}/{file}': {e}"))?;
+    }
+    println!("[dj new-app] created 'src/{name}/'");
+    println!("[dj new-app] next: add 'mod {name};' to src/main.rs, and mount its routes");
+    Ok(())
 }
 
 /// Start the dev server.
-pub fn run(port: u16) {
-    println!(
-        "[dj run] would start the dev server on port {} (not yet implemented)",
-        port
-    );
+pub fn run(port: u16) -> Result<(), String> {
+    if !Path::new("Cargo.toml").is_file() || !Path::new("djangors.toml").is_file() {
+        return Err("not a Djangors project (expected Cargo.toml and djangors.toml)".into());
+    }
+    let manifest = std::fs::read_to_string("Cargo.toml").map_err(|e| e.to_string())?;
+    let value: toml::Value =
+        toml::from_str(&manifest).map_err(|e| format!("invalid Cargo.toml: {e}"))?;
+    let package = value
+        .get("package")
+        .and_then(|v| v.get("name"))
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| "Cargo.toml has no [package].name".to_string())?
+        .to_string();
+    let source = Path::new("src");
+    let mut child = None;
+    let mut needs_build = true;
+    let mut last_mtime = project_mtime(source).max(file_mtime(Path::new("Cargo.toml")));
+    // v1 has no signal-handling dependency in the workspace; Ctrl-C may leave the child running.
+    loop {
+        if child.is_none() && needs_build {
+            println!("[dj run] building...");
+            let status = std::process::Command::new("cargo")
+                .arg("build")
+                .status()
+                .map_err(|e| format!("failed to run cargo build: {e}"))?;
+            needs_build = false;
+            if status.success() {
+                let binary = Path::new("target/debug").join(&package);
+                let spawned = std::process::Command::new(binary)
+                    .env("DJANGORS_PORT", port.to_string())
+                    .spawn();
+                match spawned {
+                    Ok(process) => {
+                        child = Some(process);
+                        println!("[dj run] serving on http://127.0.0.1:{port}");
+                    }
+                    Err(e) => eprintln!("[dj run] failed to start binary: {e}"),
+                }
+            } else {
+                println!("[dj run] build failed, watching for changes...");
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+        let current = project_mtime(source).max(file_mtime(Path::new("Cargo.toml")));
+        if current > last_mtime {
+            last_mtime = current;
+            println!("[dj run] change detected, rebuilding...");
+            if let Some(mut process) = child.take() {
+                let _ = process.kill();
+                let _ = process.wait();
+            }
+            needs_build = true;
+        }
+    }
+}
+
+fn file_mtime(path: &Path) -> SystemTime {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+fn project_mtime(path: &Path) -> SystemTime {
+    let mut newest = file_mtime(path);
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let mtime = if p.is_dir() {
+                project_mtime(&p)
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                file_mtime(&p)
+            } else {
+                SystemTime::UNIX_EPOCH
+            };
+            if mtime > newest {
+                newest = mtime;
+            }
+        }
+    }
+    newest
+}
+
+/// Check externally observable project settings and structure. Model/admin checks are
+/// intentionally unavailable because those registries only exist in the target binary.
+pub fn check() -> Result<Vec<String>, String> {
+    let mut issues = Vec::new();
+    match djangors_core::DjangorsSettings::load() {
+        Ok((settings, warnings)) => {
+            issues.extend(
+                warnings
+                    .into_iter()
+                    .map(|w| format!("settings warning: {w}")),
+            );
+            if let Err(e) = settings.validate() {
+                issues.push(e.to_string());
+            }
+        }
+        Err(e) => issues.push(e.to_string()),
+    }
+    let manifest_path = Path::new("Cargo.toml");
+    if !manifest_path.is_file() {
+        issues.push("Cargo.toml is missing".into());
+    } else {
+        let content = std::fs::read_to_string(manifest_path).map_err(|e| e.to_string())?;
+        let value: toml::Value =
+            toml::from_str(&content).map_err(|e| format!("invalid Cargo.toml: {e}"))?;
+        if value
+            .get("bin")
+            .and_then(toml::Value::as_array)
+            .is_none_or(|bins| bins.is_empty())
+        {
+            issues.push("Cargo.toml has no [[bin]] table".into());
+        }
+    }
+    if !Path::new("src/main.rs").is_file() {
+        issues.push("src/main.rs is missing".into());
+    }
+    Ok(issues)
 }
 
 /// Apply database migrations.
@@ -381,6 +566,7 @@ mod tests {
     use djangors_orm::Model as _;
 
     static DB_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static FS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
@@ -577,11 +763,67 @@ mod tests {
         assert!(new("").is_err());
     }
 
+    /// Slow because it builds a generated standalone project; run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn test_new_app_generates_module() {
+        let _guard = FS_MUTEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("dj_test_app_{}", std::process::id()));
+        let project = root.join("project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        new(project.to_str().unwrap()).unwrap();
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&project).unwrap();
+        new_app("accounts").unwrap();
+        assert!(project.join("src/accounts/mod.rs").exists());
+        assert!(project.join("src/accounts/models.rs").exists());
+        assert!(project.join("src/accounts/views.rs").exists());
+        assert!(project.join("src/accounts/admin.rs").exists());
+        std::fs::write(
+            project.join("src/main.rs"),
+            format!(
+                "{}\nmod accounts;\n",
+                std::fs::read_to_string(project.join("src/main.rs")).unwrap()
+            ),
+        )
+        .unwrap();
+        let status = std::process::Command::new("cargo")
+            .args(["build", "--offline"])
+            .current_dir(&project)
+            .status()
+            .unwrap();
+        std::env::set_current_dir(old).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+        assert!(status.success());
+    }
+
+    #[test]
+    fn test_check_generated_project_and_invalid_settings() {
+        let _guard = FS_MUTEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("dj_test_check_{}", std::process::id()));
+        let project = root.join("project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        new(project.to_str().unwrap()).unwrap();
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&project).unwrap();
+        assert!(check().unwrap().is_empty());
+        std::fs::write("djangors.toml", "debug = false\n").unwrap();
+        let issues = check().unwrap();
+        std::env::set_current_dir(old).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("SECRET_KEY cannot be empty")));
+    }
+
     /// End-to-end proof that a generated project compiles and serves the welcome page over HTTP.
     /// Run explicitly via `cargo test -p djangors-cli -- --ignored`.
     #[test]
     #[ignore]
     fn test_new_generated_project_builds_and_serves() {
+        let _guard = FS_MUTEX.lock().unwrap();
         use std::io::{Read, Write};
         use std::net::TcpStream;
         use std::time::{Duration, Instant};
@@ -660,5 +902,112 @@ mod tests {
             response.contains("It worked!"),
             "Expected 'It worked!', got: {response}"
         );
+    }
+
+    /// Slow end-to-end proof of the hand-rolled build/watch/restart loop.
+    /// Run with `cargo test -p djangors-cli -- --ignored`.
+    #[test]
+    #[ignore]
+    fn test_run_rebuilds_after_source_change() {
+        let _guard = FS_MUTEX.lock().unwrap();
+        use std::io::{Read, Write};
+        use std::net::TcpStream;
+        use std::time::{Duration, Instant};
+        let root = std::env::temp_dir().join(format!("dj_test_run_{}", std::process::id()));
+        let project = root.join("project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        new(project.to_str().unwrap()).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+        let mut runner = std::process::Command::new("cargo")
+            .args(["run", "--manifest-path"])
+            .arg(&manifest)
+            .args([
+                "-p",
+                "djangors-cli",
+                "--",
+                "run",
+                "--port",
+                &port.to_string(),
+            ])
+            .current_dir(&project)
+            .spawn()
+            .unwrap();
+        let request = |expected: &str| -> bool {
+            if let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) {
+                let _ = stream.write_all(
+                    "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".as_bytes(),
+                );
+                let mut body = String::new();
+                let _ = stream.read_to_string(&mut body);
+                body.contains(expected)
+            } else {
+                false
+            }
+        };
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(90) && !request("It worked!") {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        assert!(request("It worked!"), "watch server did not start");
+        let views = project.join("src/views.rs");
+        let content = std::fs::read_to_string(&views)
+            .unwrap()
+            .replace("It worked!", "Changed by watcher");
+        std::fs::write(views, content).unwrap();
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(90) && !request("Changed by watcher") {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let changed = request("Changed by watcher");
+        let _ = runner.kill();
+        let _ = runner.wait();
+        // `runner` is the `cargo run` process; `dj run`'s own watch loop spawns the
+        // generated server binary as ITS child. A hard kill of `runner` does not
+        // cascade to that grandchild (SIGKILL never propagates to descendants), so
+        // it survives as an orphan holding the port (and, inheriting this test
+        // process's stdio, would otherwise hang anything piping this test's output
+        // waiting for EOF that never comes). Find and kill it directly by matching
+        // its cmdline against this test's own unique binary path.
+        kill_processes_matching(&project.join("target/debug"));
+        let _ = std::fs::remove_dir_all(root);
+        assert!(changed, "watch server did not serve rebuilt content");
+    }
+
+    /// Best-effort: SIGKILL any running process whose *resolved executable path*
+    /// is under `dir` (Linux-only, via /proc — acceptable since this whole test
+    /// suite already assumes a Linux/Postgres environment). Must check
+    /// `/proc/<pid>/exe` (which always resolves to the real absolute path, even
+    /// for a since-deleted binary), not `cmdline` — `dj run` spawns the built
+    /// binary via a *relative* path (`target/debug/<pkg>`, since it runs with the
+    /// project directory as its cwd), so `cmdline` alone would never match an
+    /// absolute `dir`.
+    fn kill_processes_matching(dir: &Path) {
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let pid_str = entry.file_name();
+            let Some(pid_str) = pid_str.to_str() else {
+                continue;
+            };
+            if pid_str.parse::<u32>().is_err() {
+                continue;
+            }
+            let exe_path = entry.path().join("exe");
+            let Ok(resolved) = std::fs::read_link(&exe_path) else {
+                continue;
+            };
+            if resolved.starts_with(dir) {
+                let _ = std::process::Command::new("kill")
+                    .args(["-9", pid_str])
+                    .status();
+            }
+        }
     }
 }

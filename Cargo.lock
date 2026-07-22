@@ -622,12 +622,14 @@ dependencies = [
  "chrono",
  "clap",
  "djangors-auth",
+ "djangors-core",
  "djangors-db",
  "djangors-migrations",
  "djangors-orm",
  "djangors-staticfiles",
  "sqlx",
  "tokio",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -772,6 +774,16 @@ dependencies = [
 [[package]]
 name = "djangors-test"
 version = "0.0.1"
+dependencies = [
+ "bytes",
+ "djangors-core",
+ "djangors-db",
+ "djangors-sessions",
+ "hyper",
+ "serde_urlencoded",
+ "sqlx",
+ "tokio",
+]
 
 [[package]]
 name = "dotenvy"
