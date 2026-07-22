@@ -21,6 +21,8 @@ tokio = { version = "1.53.0", features = [
     "rt-multi-thread",
     "macros",
     "io-util",
+    "signal",
+    "time",
 ] }
 tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7.0", features = [

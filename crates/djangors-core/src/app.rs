@@ -1,4 +1,5 @@
 use tokio::net::TcpListener;
+use tokio::task::JoinSet;
 
 use crate::error::DjangorsError;
 use crate::router::Router;
@@ -48,22 +49,31 @@ impl Djangors {
     /// Per-connection errors are logged via `eprintln!` and the loop
     /// continues; a single bad connection never kills the server.
     pub async fn serve(self, listener: TcpListener) -> Result<(), DjangorsError> {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _peer_addr)) => {
-                    let router = self.router.clone();
-                    let debug = self.settings.debug;
-                    tokio::task::spawn(async move {
-                        if let Err(e) = serve_connection(stream, router, debug).await {
-                            eprintln!("Connection error: {e}");
-                        }
-                    });
-                }
-                Err(e) => {
-                    eprintln!("Accept error: {e}");
+        self.serve_with_shutdown(listener, os_shutdown_signal())
+            .await
+    }
+
+    /// Serve incoming connections until `shutdown` resolves, then drain active connections.
+    pub async fn serve_with_shutdown<F>(
+        self,
+        listener: TcpListener,
+        shutdown: F,
+    ) -> Result<(), DjangorsError>
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        let router = self.router;
+        let debug = self.settings.debug;
+        serve_with_shutdown_loop(listener, shutdown, move |stream| {
+            let router = router.clone();
+            async move {
+                if let Err(e) = serve_connection(stream, router, debug).await {
+                    eprintln!("Connection error: {e}");
                 }
             }
-        }
+        })
+        .await;
+        Ok(())
     }
 
     /// Bind the configured address and serve connections forever.
@@ -74,6 +84,15 @@ impl Djangors {
     pub async fn run(self) -> Result<(), DjangorsError> {
         let listener = self.bind().await?;
         self.serve(listener).await
+    }
+
+    /// Bind the configured address and serve until `shutdown` resolves.
+    pub async fn run_with_shutdown<F>(self, shutdown: F) -> Result<(), DjangorsError>
+    where
+        F: std::future::Future<Output = ()>,
+    {
+        let listener = self.bind().await?;
+        self.serve_with_shutdown(listener, shutdown).await
     }
 
     /// Get a reference to the settings.
@@ -97,21 +116,38 @@ impl Djangors {
             + 'static,
         S::Future: Send + 'static,
     {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _peer_addr)) => {
-                    let service = service.clone();
-                    tokio::task::spawn(async move {
-                        if let Err(e) = serve_connection_service(stream, service).await {
-                            eprintln!("Connection error: {e}");
-                        }
-                    });
-                }
-                Err(e) => {
-                    eprintln!("Accept error: {e}");
+        self.serve_service_with_shutdown(listener, service, os_shutdown_signal())
+            .await
+    }
+
+    /// Serve layered-service connections until `shutdown` resolves, then drain active connections.
+    pub async fn serve_service_with_shutdown<S, F>(
+        self,
+        listener: TcpListener,
+        service: S,
+        shutdown: F,
+    ) -> Result<(), DjangorsError>
+    where
+        S: tower::Service<
+                hyper::Request<hyper::body::Incoming>,
+                Response = hyper::Response<http_body_util::Full<bytes::Bytes>>,
+                Error = std::convert::Infallible,
+            > + Clone
+            + Send
+            + 'static,
+        S::Future: Send + 'static,
+        F: std::future::Future<Output = ()>,
+    {
+        serve_with_shutdown_loop(listener, shutdown, move |stream| {
+            let service = service.clone();
+            async move {
+                if let Err(e) = serve_connection_service(stream, service).await {
+                    eprintln!("Connection error: {e}");
                 }
             }
-        }
+        })
+        .await;
+        Ok(())
     }
 
     /// Bind the configured address and serve connections forever using a custom layered service.
@@ -128,6 +164,90 @@ impl Djangors {
     {
         let listener = self.bind().await?;
         self.serve_service(listener, service).await
+    }
+
+    /// Bind the configured address and serve layered-service connections until `shutdown` resolves.
+    pub async fn run_service_with_shutdown<S, F>(
+        self,
+        service: S,
+        shutdown: F,
+    ) -> Result<(), DjangorsError>
+    where
+        S: tower::Service<
+                hyper::Request<hyper::body::Incoming>,
+                Response = hyper::Response<http_body_util::Full<bytes::Bytes>>,
+                Error = std::convert::Infallible,
+            > + Clone
+            + Send
+            + 'static,
+        S::Future: Send + 'static,
+        F: std::future::Future<Output = ()>,
+    {
+        let listener = self.bind().await?;
+        self.serve_service_with_shutdown(listener, service, shutdown)
+            .await
+    }
+}
+
+async fn os_shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler");
+        signal.recv().await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+}
+
+async fn serve_with_shutdown_loop<F, H, Fut>(listener: TcpListener, shutdown: F, handler: H)
+where
+    F: std::future::Future<Output = ()>,
+    H: Fn(tokio::net::TcpStream) -> Fut + Clone + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut join_set = JoinSet::new();
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                match accepted {
+                    Ok((stream, _peer_addr)) => {
+                        let connection_handler = handler.clone();
+                        join_set.spawn(async move {
+                            connection_handler(stream).await;
+                        });
+                    }
+                    Err(e) => eprintln!("Accept error: {e}"),
+                }
+            }
+            _ = &mut shutdown => {
+                println!("[djangors] shutdown signal received, draining in-flight connections...");
+                break;
+            }
+        }
+    }
+
+    let drain = async { while join_set.join_next().await.is_some() {} };
+    if tokio::time::timeout(std::time::Duration::from_secs(30), drain)
+        .await
+        .is_err()
+    {
+        eprintln!(
+            "[djangors] graceful shutdown timed out after 30s, aborting remaining connections"
+        );
+        join_set.abort_all();
     }
 }
 
@@ -202,6 +322,11 @@ mod tests {
 
     async fn hello_handler(_: Request, _: PathParams) -> Result<Response, DjangorsError> {
         Ok(Response::text(StatusCode::OK, "Hello from Djangors!"))
+    }
+
+    async fn slow_handler(_: Request, _: PathParams) -> Result<Response, DjangorsError> {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        Ok(Response::text(StatusCode::OK, "Slow response"))
     }
 
     #[tokio::test]
@@ -297,6 +422,60 @@ mod tests {
         assert!(
             response_lower.contains("set-cookie: csrftoken="),
             "Expected 'set-cookie: csrftoken=' header, got: {response}"
+        );
+    }
+
+    #[tokio::test]
+    async fn graceful_shutdown_drains_in_flight_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        let settings = DjangorsSettings {
+            host: "127.0.0.1".to_string(),
+            port: addr.port(),
+            ..Default::default()
+        };
+        let router = Router::new().get("/slow", slow_handler);
+        let app = Djangors::new(settings, router);
+
+        let server = tokio::spawn(async move {
+            app.serve_with_shutdown(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let response_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            stream.read_to_end(&mut buf).await.unwrap();
+            String::from_utf8(buf).unwrap()
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let shutdown_started = tokio::time::Instant::now();
+        shutdown_tx.send(()).unwrap();
+        server.await.unwrap();
+        let shutdown_elapsed = shutdown_started.elapsed();
+
+        assert!(
+            shutdown_elapsed >= std::time::Duration::from_millis(250),
+            "server returned before the in-flight request drained: {shutdown_elapsed:?}"
+        );
+        let response = response_task.await.unwrap();
+        assert!(
+            response.contains("200 OK"),
+            "Expected 200 OK, got: {response}"
+        );
+        assert!(
+            response.contains("Slow response"),
+            "Expected complete response body, got: {response}"
         );
     }
 
