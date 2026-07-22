@@ -10,7 +10,10 @@ async fn main() {
 
     match cli.command {
         Commands::New { name } => {
-            commands::new(&name);
+            if let Err(e) = commands::new(&name) {
+                eprintln!("[dj new] error: {e}");
+                std::process::exit(1);
+            }
         }
         Commands::NewApp { name } => {
             commands::new_app(&name);
