@@ -39,7 +39,14 @@ pub enum Commands {
     },
     /// Check project settings and structure.
     #[command(name = "check")]
-    Check,
+    Check {
+        /// Run production deployment pre-flight checks.
+        #[arg(long)]
+        deploy: bool,
+    },
+    /// Open an interactive database shell using psql.
+    #[command(name = "dbshell")]
+    Dbshell,
     /// Apply database migrations.
     #[command(name = "migrate")]
     Migrate,
@@ -152,6 +159,28 @@ mod tests {
                 assert_eq!(email, "admin@example.com");
             }
             _ => panic!("Expected Commands::Createsuperuser"),
+        }
+    }
+
+    #[test]
+    fn test_parse_check_deploy() {
+        let args = vec!["dj", "check", "--deploy"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Commands::Check { deploy } => {
+                assert!(deploy);
+            }
+            _ => panic!("Expected Commands::Check"),
+        }
+    }
+
+    #[test]
+    fn test_parse_dbshell() {
+        let args = vec!["dj", "dbshell"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Commands::Dbshell => {}
+            _ => panic!("Expected Commands::Dbshell"),
         }
     }
 }

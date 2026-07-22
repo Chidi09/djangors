@@ -36,6 +36,13 @@ pub(crate) fn djangors_crates_dir() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+pub(crate) fn require_project_root() -> Result<(), String> {
+    if !Path::new("Cargo.toml").is_file() || !Path::new("djangors.toml").is_file() {
+        return Err("not a Djangors project (expected Cargo.toml and djangors.toml)".into());
+    }
+    Ok(())
+}
+
 /// Create a new Djangors project.
 pub fn new(name: &str) -> Result<(), String> {
     let target_dir = std::path::Path::new(name);
@@ -84,7 +91,9 @@ async fn main() -> Result<(), DjangorsError> {
         eprintln!("settings warning: {w}");
     }
 
-    let router = Router::new().get("/", views::welcome);
+    let router = Router::new()
+        .get("/", views::welcome)
+        .get("/healthz", views::healthz);
     let router_service = djangors_core::router::RouterService::new(router, settings.debug);
 
     let service = tower::ServiceBuilder::new()
@@ -106,11 +115,53 @@ pub async fn welcome(_req: Request, _params: PathParams) -> Result<Response, Dja
             .to_string(),
     ))
 }
+
+pub async fn healthz(_req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
+    Ok(Response::text(StatusCode::OK, "ok"))
+}
 "#;
 
     let gitignore = "/target\n*.env\n";
 
     let djangors_toml = "debug = true\n";
+
+    let dockerfile = format!(
+        r#"FROM rust:1-slim AS builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/{crate_name} /app/server
+EXPOSE 8000
+ENV DJANGORS_PORT=8000
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8000/healthz || exit 1
+CMD ["/app/server"]
+"#
+    );
+
+    let systemd_service = format!(
+        r#"[Unit]
+Description=Djangors Web Application ({crate_name})
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/{crate_name}
+ExecStart=/var/www/{crate_name}/{crate_name}
+Restart=on-failure
+RestartSec=5s
+EnvironmentFile=/etc/{crate_name}/djangors.env
+
+[Install]
+WantedBy=multi-user.target
+"#
+    );
 
     let readme = format!(
         r#"# {crate_name}
@@ -123,6 +174,12 @@ A Djangors project.
 
 Then visit http://127.0.0.1:8000/.
 
+## Deploying
+
+- **Dockerfile**: Includes a multi-stage build (`rust:1-slim` builder + `debian:bookworm-slim` runtime) with a `HEALTHCHECK` probing `/healthz`.
+- **systemd**: See `deploy/djangors.service` for a sample unit file template.
+- **Pre-flight Check**: Run `dj check --deploy` to verify production settings before deploying.
+
 ## Next steps
 
 - Add models: see `examples/school` in the djangors repo for a real worked example
@@ -134,6 +191,9 @@ Then visit http://127.0.0.1:8000/.
 
     std::fs::create_dir_all(target_dir.join("src"))
         .map_err(|e| format!("failed to create directory '{name}/src': {e}"))?;
+
+    std::fs::create_dir_all(target_dir.join("deploy"))
+        .map_err(|e| format!("failed to create directory '{name}/deploy': {e}"))?;
 
     std::fs::write(target_dir.join("Cargo.toml"), cargo_toml)
         .map_err(|e| format!("failed to write '{name}/Cargo.toml': {e}"))?;
@@ -149,6 +209,12 @@ Then visit http://127.0.0.1:8000/.
 
     std::fs::write(target_dir.join("djangors.toml"), djangors_toml)
         .map_err(|e| format!("failed to write '{name}/djangors.toml': {e}"))?;
+
+    std::fs::write(target_dir.join("Dockerfile"), dockerfile)
+        .map_err(|e| format!("failed to write '{name}/Dockerfile': {e}"))?;
+
+    std::fs::write(target_dir.join("deploy/djangors.service"), systemd_service)
+        .map_err(|e| format!("failed to write '{name}/deploy/djangors.service': {e}"))?;
 
     std::fs::write(target_dir.join("README.md"), readme)
         .map_err(|e| format!("failed to write '{name}/README.md': {e}"))?;
@@ -172,9 +238,7 @@ Then visit http://127.0.0.1:8000/.
 
 /// Create a new app within a project.
 pub fn new_app(name: &str) -> Result<(), String> {
-    if !Path::new("Cargo.toml").is_file() || !Path::new("djangors.toml").is_file() {
-        return Err("not a Djangors project (expected Cargo.toml and djangors.toml)".into());
-    }
+    require_project_root()?;
     validate_project_name(name)?;
     if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!("invalid app name '{name}': Rust module names may only contain ASCII letters, numbers, and underscores"));
@@ -251,9 +315,7 @@ pub async fn index(_req: Request, _params: PathParams) -> Result<Response, Djang
 
 /// Start the dev server.
 pub fn run(port: u16) -> Result<(), String> {
-    if !Path::new("Cargo.toml").is_file() || !Path::new("djangors.toml").is_file() {
-        return Err("not a Djangors project (expected Cargo.toml and djangors.toml)".into());
-    }
+    require_project_root()?;
     let manifest = std::fs::read_to_string("Cargo.toml").map_err(|e| e.to_string())?;
     let value: toml::Value =
         toml::from_str(&manifest).map_err(|e| format!("invalid Cargo.toml: {e}"))?;
@@ -334,21 +396,44 @@ fn project_mtime(path: &Path) -> SystemTime {
 
 /// Check externally observable project settings and structure. Model/admin checks are
 /// intentionally unavailable because those registries only exist in the target binary.
-pub fn check() -> Result<Vec<String>, String> {
+pub fn check(deploy: bool) -> Result<Vec<String>, String> {
+    require_project_root()?;
     let mut issues = Vec::new();
-    match djangors_core::DjangorsSettings::load() {
-        Ok((settings, warnings)) => {
-            issues.extend(
-                warnings
-                    .into_iter()
-                    .map(|w| format!("settings warning: {w}")),
-            );
-            if let Err(e) = settings.validate() {
-                issues.push(e.to_string());
+    let (settings_opt, warnings) = match djangors_core::DjangorsSettings::load() {
+        Ok((settings, warnings)) => (Some(settings), warnings),
+        Err(e) => {
+            issues.push(e.to_string());
+            (None, Vec::new())
+        }
+    };
+    issues.extend(
+        warnings
+            .into_iter()
+            .map(|w| format!("settings warning: {w}")),
+    );
+
+    if let Some(ref settings) = settings_opt {
+        if let Err(e) = settings.validate() {
+            issues.push(e.to_string());
+        }
+
+        if deploy {
+            if settings.debug {
+                issues.push("DEBUG is true; must be false in production".into());
+            }
+            if settings.secret_key.len() < 32 && (!settings.secret_key.is_empty() || settings.debug)
+            {
+                issues.push("SECRET_KEY should be at least 32 characters".into());
+            }
+            let default_hosts = vec!["127.0.0.1".to_string(), "localhost".to_string()];
+            if !settings.debug && settings.allowed_hosts == default_hosts {
+                issues.push(
+                    "ALLOWED_HOSTS looks like the default; set it explicitly for production".into(),
+                );
             }
         }
-        Err(e) => issues.push(e.to_string()),
     }
+
     let manifest_path = Path::new("Cargo.toml");
     if !manifest_path.is_file() {
         issues.push("Cargo.toml is missing".into());
@@ -404,11 +489,9 @@ pub async fn migrate() {
 }
 
 /// Generate new migrations.
-pub fn makemigrations(check: bool) {
-    println!(
-        "[dj makemigrations] would generate new migrations (check={}) (not yet implemented)",
-        check
-    );
+pub fn makemigrations(_check: bool) -> Result<(), String> {
+    require_project_root()?;
+    Err("dj makemigrations cannot introspect model registrations across binary boundaries (project models are registered at compile-time in the project binary, not dj)".into())
 }
 
 /// Create a superuser in the database.
@@ -524,14 +607,52 @@ pub async fn createpermissions() {
     }
 }
 
-/// Open a REPL.
-pub fn shell() {
-    println!("[dj shell] would open a REPL (not yet implemented)");
+/// Open an interactive database shell using psql.
+pub fn dbshell() -> Result<(), String> {
+    require_project_root()?;
+    let db_url = std::env::var("DATABASE_URL")
+        .map_err(|_| "DATABASE_URL environment variable is not set".to_string())?;
+
+    let status = std::process::Command::new("psql")
+        .arg(&db_url)
+        .status()
+        .map_err(|e| format!("failed to execute 'psql' (is psql installed and on PATH?): {e}"))?;
+
+    if !status.success() {
+        return Err(format!("psql exited with status {status}"));
+    }
+    Ok(())
+}
+
+/// Connect to DATABASE_URL and display shell guidance.
+pub async fn shell() -> Result<(), String> {
+    require_project_root()?;
+    let db_url = std::env::var("DATABASE_URL")
+        .map_err(|_| "DATABASE_URL environment variable is not set".to_string())?;
+
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let _db = djangors_db::Database::connect(&config)
+        .await
+        .map_err(|e| format!("failed to connect to database: {e}"))?;
+
+    println!("[dj shell] Connected to database successfully.");
+    println!("[dj shell] Note: An interactive Rust REPL is not yet available (requires evcxr integration).");
+    println!("[dj shell] For interactive database access, use 'dj dbshell'.");
+    Ok(())
 }
 
 /// Run the test suite.
-pub fn test() {
-    println!("[dj test] would run the test suite (not yet implemented)");
+pub fn test() -> Result<(), String> {
+    require_project_root()?;
+    let status = std::process::Command::new("cargo")
+        .arg("test")
+        .status()
+        .map_err(|e| format!("failed to run cargo test: {e}"))?;
+
+    if !status.success() {
+        std::process::exit(status.code().unwrap_or(1));
+    }
+    Ok(())
 }
 
 /// Collect static files from source directories into one output directory.
@@ -707,6 +828,17 @@ mod tests {
         assert!(project_path.join(".gitignore").exists());
         assert!(project_path.join("djangors.toml").exists());
         assert!(project_path.join("README.md").exists());
+        assert!(project_path.join("Dockerfile").exists());
+        assert!(project_path.join("deploy/djangors.service").exists());
+
+        let readme_content = std::fs::read_to_string(project_path.join("README.md")).unwrap();
+        assert!(readme_content.contains("## Deploying"));
+
+        let views_content = std::fs::read_to_string(project_path.join("src/views.rs")).unwrap();
+        assert!(views_content.contains("pub async fn healthz"));
+
+        let main_content = std::fs::read_to_string(project_path.join("src/main.rs")).unwrap();
+        assert!(main_content.contains("/healthz"));
 
         let cargo_toml_content = std::fs::read_to_string(project_path.join("Cargo.toml")).unwrap();
         assert!(cargo_toml_content.contains("name = \"my_test_proj\""));
@@ -808,14 +940,184 @@ mod tests {
         new(project.to_str().unwrap()).unwrap();
         let old = std::env::current_dir().unwrap();
         std::env::set_current_dir(&project).unwrap();
-        assert!(check().unwrap().is_empty());
+        assert!(check(false).unwrap().is_empty());
         std::fs::write("djangors.toml", "debug = false\n").unwrap();
-        let issues = check().unwrap();
+        let issues = check(false).unwrap();
         std::env::set_current_dir(old).unwrap();
         let _ = std::fs::remove_dir_all(root);
         assert!(issues
             .iter()
             .any(|issue| issue.contains("SECRET_KEY cannot be empty")));
+    }
+
+    #[test]
+    fn test_check_deploy_clean_and_invalid() {
+        let _guard = FS_MUTEX.lock().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("dj_test_check_deploy_{}", std::process::id()));
+        let project = root.join("project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        new(project.to_str().unwrap()).unwrap();
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&project).unwrap();
+
+        let bad_issues = check(true).unwrap();
+        assert!(bad_issues
+            .iter()
+            .any(|issue| issue.contains("DEBUG is true; must be false in production")));
+
+        std::fs::write(
+            "djangors.toml",
+            r#"
+debug = false
+secret_key = "123456789012345678901234567890123"
+allowed_hosts = ["example.com"]
+"#,
+        )
+        .unwrap();
+
+        let clean_issues = check(true).unwrap();
+        std::env::set_current_dir(old).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+        assert!(
+            clean_issues.is_empty(),
+            "Expected zero deploy issues, got: {:?}",
+            clean_issues
+        );
+    }
+
+    #[test]
+    fn test_makemigrations_structurally_blocked() {
+        let _guard = FS_MUTEX.lock().unwrap();
+        let root =
+            std::env::temp_dir().join(format!("dj_test_makemigrations_{}", std::process::id()));
+        let project = root.join("project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        new(project.to_str().unwrap()).unwrap();
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&project).unwrap();
+
+        let res1 = makemigrations(false);
+        assert!(res1.is_err());
+        assert!(res1.unwrap_err().contains("across binary boundaries"));
+
+        let res2 = makemigrations(true);
+        assert!(res2.is_err());
+        assert!(res2.unwrap_err().contains("across binary boundaries"));
+
+        std::env::set_current_dir(old).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn test_dbshell_missing_database_url() {
+        let _guard = FS_MUTEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("dj_test_dbshell_{}", std::process::id()));
+        let project = root.join("project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        new(project.to_str().unwrap()).unwrap();
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&project).unwrap();
+
+        let old_url = std::env::var("DATABASE_URL").ok();
+        std::env::remove_var("DATABASE_URL");
+
+        let res = dbshell();
+        if let Some(url) = old_url {
+            std::env::set_var("DATABASE_URL", url);
+        }
+        std::env::set_current_dir(old).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .contains("DATABASE_URL environment variable is not set"));
+    }
+
+    #[test]
+    fn test_dbshell_psql_uri_connection() {
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let status = std::process::Command::new("psql")
+            .arg(db_url)
+            .args(["-c", "SELECT 1;"])
+            .status()
+            .expect("failed to execute psql");
+        assert!(status.success(), "psql URI connection failed");
+    }
+
+    #[test]
+    fn test_dj_test_command() {
+        let _guard = FS_MUTEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("dj_test_cmd_{}", std::process::id()));
+        let project = root.join("project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        new(project.to_str().unwrap()).unwrap();
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&project).unwrap();
+
+        let res = test();
+
+        std::env::set_current_dir(old).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+
+        assert!(res.is_ok(), "test() failed: {:?}", res);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_dj_shell_success() {
+        let _guard = FS_MUTEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("dj_test_shell_{}", std::process::id()));
+        let project = root.join("project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        new(project.to_str().unwrap()).unwrap();
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&project).unwrap();
+
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        std::env::set_var("DATABASE_URL", db_url);
+
+        let res = shell().await;
+
+        std::env::set_current_dir(old).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+
+        assert!(res.is_ok(), "shell() failed: {:?}", res);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_dj_shell_missing_db_url() {
+        let _guard = FS_MUTEX.lock().unwrap();
+        let root = std::env::temp_dir().join(format!("dj_test_shell_nodb_{}", std::process::id()));
+        let project = root.join("project");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        new(project.to_str().unwrap()).unwrap();
+        let old = std::env::current_dir().unwrap();
+        std::env::set_current_dir(&project).unwrap();
+
+        let old_url = std::env::var("DATABASE_URL").ok();
+        std::env::remove_var("DATABASE_URL");
+
+        let res = shell().await;
+
+        if let Some(url) = old_url {
+            std::env::set_var("DATABASE_URL", url);
+        }
+        std::env::set_current_dir(old).unwrap();
+        let _ = std::fs::remove_dir_all(root);
+
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .contains("DATABASE_URL environment variable is not set"));
     }
 
     /// End-to-end proof that a generated project compiles and serves the welcome page over HTTP.
@@ -890,17 +1192,37 @@ mod tests {
             .read_to_string(&mut response)
             .expect("failed to read response");
 
+        let health_req =
+            format!("GET /healthz HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        let mut health_response = String::new();
+        if let Ok(mut health_stream) = TcpStream::connect(("127.0.0.1", port)) {
+            health_stream
+                .write_all(health_req.as_bytes())
+                .expect("failed to send health request");
+            health_stream
+                .read_to_string(&mut health_response)
+                .expect("failed to read health response");
+        }
+
         let _ = child.kill();
         let _ = child.wait();
         let _ = std::fs::remove_dir_all(&temp_dir);
 
         assert!(
             response.contains("200 OK"),
-            "Expected 200 OK, got: {response}"
+            "Expected 200 OK for /, got: {response}"
         );
         assert!(
             response.contains("It worked!"),
             "Expected 'It worked!', got: {response}"
+        );
+        assert!(
+            health_response.contains("200 OK"),
+            "Expected 200 OK for /healthz, got: {health_response}"
+        );
+        assert!(
+            health_response.contains("ok"),
+            "Expected 'ok' for /healthz body, got: {health_response}"
         );
     }
 

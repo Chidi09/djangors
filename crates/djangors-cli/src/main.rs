@@ -27,7 +27,7 @@ async fn main() {
                 std::process::exit(1);
             }
         }
-        Commands::Check => match commands::check() {
+        Commands::Check { deploy } => match commands::check(deploy) {
             Ok(issues) if issues.is_empty() => println!("[dj check] no issues found"),
             Ok(issues) => {
                 println!("[dj check] {} issue(s) found:", issues.len());
@@ -41,11 +41,20 @@ async fn main() {
                 std::process::exit(1);
             }
         },
+        Commands::Dbshell => {
+            if let Err(e) = commands::dbshell() {
+                eprintln!("[dj dbshell] error: {e}");
+                std::process::exit(1);
+            }
+        }
         Commands::Migrate => {
             commands::migrate().await;
         }
         Commands::Makemigrations { check } => {
-            commands::makemigrations(check);
+            if let Err(e) = commands::makemigrations(check) {
+                eprintln!("[dj makemigrations] error: {e}");
+                std::process::exit(1);
+            }
         }
         Commands::Createsuperuser { username, email } => {
             commands::createsuperuser(username, email).await;
@@ -54,10 +63,16 @@ async fn main() {
             commands::createpermissions().await;
         }
         Commands::Shell => {
-            commands::shell();
+            if let Err(e) = commands::shell().await {
+                eprintln!("[dj shell] error: {e}");
+                std::process::exit(1);
+            }
         }
         Commands::Test => {
-            commands::test();
+            if let Err(e) = commands::test() {
+                eprintln!("[dj test] error: {e}");
+                std::process::exit(1);
+            }
         }
         Commands::Collectstatic { source, output } => {
             commands::collectstatic(source, output);
