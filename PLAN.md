@@ -371,7 +371,7 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 **DoD:** e-commerce example uses cache, messages, audit, and mail end-to-end.
 
 ### Phase 8 — API & real-time (~2–3 months)
-- [ ] djangors-rest: serializers derived from ModelMeta (+ manual), ViewSets + routers, auth (session + token + JWT via feature), permissions classes, throttling, pagination, filtering integration with QuerySet, **OpenAPI 3.1 generation** from the type system (Rust's edge: schemas are *actually correct*), browsable API page.
+- [ ] djangors-rest: **done (v1 core):** serializers derived from `ModelMeta` (`serialize`/`deserialize`, generic over any `Model`, relation fields as raw ids), `ViewSet<M>` (list/retrieve/create/update/destroy), `viewset_routes` router mounting, pagination (reuses `djangors_core::Paginator` from 7.2) *(8.1, commit `a3f2257`)*. **This v1 has zero access control — do not mount in production until auth/permissions lands**, documented loudly in the crate itself. **remaining:** auth (session + token + JWT via feature), permissions classes, throttling, filtering/ordering query-param integration with `QuerySet`, OpenAPI 3.1 generation, browsable API page — each a separate future 8.x slice.
 - [ ] djangors-channels: WebSocket handlers with auth/session access, SSE, groups/broadcast (in-process + Redis backplane).
 - [ ] Background tasks: `#[task]` functions, DB-backed queue (Postgres SKIP LOCKED) default + Redis backend, scheduled tasks (cron syntax), admin visibility into queue. (Django never shipped this and everyone needs it — ship it.)
 
