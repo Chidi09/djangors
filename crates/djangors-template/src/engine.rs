@@ -61,6 +61,7 @@ impl TemplateEngine {
         env.add_filter("intcomma", filters::intcomma);
         env.add_filter("filesizeformat", filters::filesizeformat);
         env.add_filter("naturaltime", filters::naturaltime);
+        env.add_filter("trans", djangors_i18n::trans);
 
         // Note: 'default' filter is built-in to minijinja and behaves matching Django's
         // default template filter when the value is undefined or falsy.
@@ -97,6 +98,7 @@ impl TemplateEngine {
         env.add_filter("intcomma", filters::intcomma);
         env.add_filter("filesizeformat", filters::filesizeformat);
         env.add_filter("naturaltime", filters::naturaltime);
+        env.add_filter("trans", djangors_i18n::trans);
 
         Ok(TemplateEngine { env })
     }

@@ -1,0 +1,24 @@
+[package]
+name = "djangors-i18n"
+description = "Runtime internationalization for Djangors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+chrono = { version = "0.4.45", features = ["std", "serde"] }
+djangors-sessions = { path = "../djangors-sessions" }
+fluent = "0.17.0"
+fluent-bundle = "0.16.0"
+hyper = { version = "1.10.1", features = ["http1"] }
+minijinja = "2.21.0"
+thiserror = "2.0.18"
+tower = "0.5.3"
+unic-langid = "0.9.6"
+
+[dev-dependencies]
+bytes = "1.12.1"
+http-body-util = "0.1.4"
+hyper = { version = "1.10.1", features = ["http1"] }
+tokio = { version = "1.53.0", features = ["macros", "rt-multi-thread"] }

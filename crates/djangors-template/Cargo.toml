@@ -12,6 +12,7 @@ minijinja = { version = "2.21.0", features = ["loader"] }
 thiserror = "2.0.18"
 serde = { version = "1.0.228", features = ["derive"] }
 djangors-core = { path = "../djangors-core" }
+djangors-i18n = { path = "../djangors-i18n" }
 chrono = { version = "0.4", features = ["std", "serde"] }
 
 [dev-dependencies]
