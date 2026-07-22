@@ -1,58 +1,224 @@
-//! Minimal mail support for Djangors.
-//!
-//! # WARNING: Minimal Scope (Phase 4 v1)
-//!
-//! This crate is a minimal, console-only slice pull-forward needed for Phase 4 password reset testing.
-//! It is NOT the full Phase 7 `djangors-mail` deliverable, which will include SMTP, TLS, file,
-//! in-memory test backends, and HTML-multipart messages.
-//!
-//! Do not use this for production SMTP email delivery.
+//! Email messages and pluggable delivery backends.
 
 use async_trait::async_trait;
+use lettre::{
+    message::{header::ContentType, Mailbox, MultiPart, SinglePart},
+    AsyncSmtpTransport, AsyncTransport, Message as LettreMessage, Tokio1Executor,
+};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use thiserror::Error;
 
-/// A simple, plain-text email message.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
-    /// List of recipient email addresses.
     pub to: Vec<String>,
-    /// The sender's email address.
     pub from: String,
-    /// The subject line of the email.
     pub subject: String,
-    /// The plain text body of the email.
     pub body: String,
+    pub html_body: Option<String>,
 }
 
-/// Errors returned by mail backends.
 #[derive(Error, Debug)]
 pub enum MailError {
-    /// Failed to send the mail message.
     #[error("failed to send mail: {0}")]
     Send(String),
+    #[error("invalid mail configuration: {0}")]
+    Configuration(String),
 }
 
-/// A backend capable of sending email messages.
 #[async_trait]
 pub trait MailBackend: Send + Sync {
-    /// Sends the given message.
     async fn send(&self, message: &Message) -> Result<(), MailError>;
 }
 
-/// A mail backend that outputs messages to the console using the tracing subscriber.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ConsoleBackend;
-
 #[async_trait]
 impl MailBackend for ConsoleBackend {
     async fn send(&self, message: &Message) -> Result<(), MailError> {
-        tracing::info!(
-            to = ?message.to,
-            from = %message.from,
-            subject = %message.subject,
-            body = %message.body,
-            "ConsoleBackend sending mail"
-        );
+        tracing::info!(to=?message.to, from=%message.from, subject=%message.subject, body=%message.body, html_body=?message.html_body, "ConsoleBackend sending mail");
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SmtpConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub use_tls: bool,
+}
+impl SmtpConfig {
+    pub fn new(host: impl Into<String>) -> Self {
+        Self {
+            host: host.into(),
+            port: 587,
+            username: None,
+            password: None,
+            use_tls: true,
+        }
+    }
+    pub fn port(mut self, port: u16) -> Self {
+        self.port = port;
+        self
+    }
+    pub fn credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
+        self.username = Some(username.into());
+        self.password = Some(password.into());
+        self
+    }
+    pub fn use_tls(mut self, use_tls: bool) -> Self {
+        self.use_tls = use_tls;
+        self
+    }
+    fn validate(&self) -> Result<(), MailError> {
+        if self.host.trim().is_empty() {
+            return Err(MailError::Configuration("SMTP host cannot be empty".into()));
+        }
+        if (self.username.is_some()) != (self.password.is_some()) {
+            return Err(MailError::Configuration(
+                "SMTP username and password must be supplied together".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub struct SmtpBackend {
+    transport: AsyncSmtpTransport<Tokio1Executor>,
+}
+impl SmtpBackend {
+    pub fn new(config: SmtpConfig) -> Result<Self, MailError> {
+        config.validate()?;
+        // `relay` uses implicit TLS; when TLS is disabled, `builder_dangerous` is explicit.
+        // No TLS downgrade is performed when `use_tls` is true.
+        let mut builder = if config.use_tls {
+            AsyncSmtpTransport::<Tokio1Executor>::relay(&config.host)
+                .map_err(|e| MailError::Configuration(e.to_string()))?
+        } else {
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.host)
+        };
+        builder = builder.port(config.port);
+        if let (Some(user), Some(pass)) = (config.username, config.password) {
+            builder = builder.credentials(
+                lettre::transport::smtp::authentication::Credentials::new(user, pass),
+            );
+        }
+        Ok(Self {
+            transport: builder.build(),
+        })
+    }
+    fn build_message(message: &Message) -> Result<LettreMessage, MailError> {
+        let from: Mailbox = message
+            .from
+            .parse()
+            .map_err(|e| MailError::Send(format!("invalid sender: {e}")))?;
+        let mut builder = LettreMessage::builder()
+            .from(from)
+            .subject(&message.subject);
+        for to in &message.to {
+            builder = builder.to(to
+                .parse()
+                .map_err(|e| MailError::Send(format!("invalid recipient: {e}")))?);
+        }
+        if let Some(html) = &message.html_body {
+            builder
+                .multipart(MultiPart::alternative_plain_html(
+                    message.body.clone(),
+                    html.clone(),
+                ))
+                .map_err(|e| MailError::Send(e.to_string()))
+        } else {
+            builder
+                .singlepart(
+                    SinglePart::builder()
+                        .header(ContentType::TEXT_PLAIN)
+                        .body(message.body.clone()),
+                )
+                .map_err(|e| MailError::Send(e.to_string()))
+        }
+    }
+    #[cfg(test)]
+    fn serialize(message: &Message) -> Result<Vec<u8>, MailError> {
+        Ok(Self::build_message(message)?.formatted())
+    }
+}
+#[async_trait]
+impl MailBackend for SmtpBackend {
+    async fn send(&self, message: &Message) -> Result<(), MailError> {
+        self.transport
+            .send(Self::build_message(message)?)
+            .await
+            .map(|_| ())
+            .map_err(|e| MailError::Send(e.to_string()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileBackend {
+    directory: PathBuf,
+}
+impl FileBackend {
+    pub fn new(directory: impl Into<PathBuf>) -> Self {
+        Self {
+            directory: directory.into(),
+        }
+    }
+    fn format(message: &Message) -> String {
+        format!(
+            "From: {}\nTo: {}\nSubject: {}\n\n{}{}",
+            message.from,
+            message.to.join(", "),
+            message.subject,
+            message.body,
+            message
+                .html_body
+                .as_ref()
+                .map(|h| format!("\n\n[HTML body]\n{h}"))
+                .unwrap_or_default()
+        )
+    }
+}
+#[async_trait]
+impl MailBackend for FileBackend {
+    async fn send(&self, message: &Message) -> Result<(), MailError> {
+        tokio::fs::create_dir_all(&self.directory)
+            .await
+            .map_err(|e| MailError::Send(e.to_string()))?;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let path = self.directory.join(format!("{}.eml", nanos));
+        tokio::fs::write(path, Self::format(message))
+            .await
+            .map_err(|e| MailError::Send(e.to_string()))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InMemoryBackend {
+    messages: Arc<Mutex<Vec<Message>>>,
+}
+impl InMemoryBackend {
+    pub fn sent_messages(&self) -> Vec<Message> {
+        self.messages
+            .lock()
+            .expect("in-memory mail mutex poisoned")
+            .clone()
+    }
+}
+#[async_trait]
+impl MailBackend for InMemoryBackend {
+    async fn send(&self, message: &Message) -> Result<(), MailError> {
+        self.messages
+            .lock()
+            .map_err(|_| MailError::Send("in-memory mail mutex poisoned".into()))?
+            .push(message.clone());
         Ok(())
     }
 }
@@ -60,18 +226,45 @@ impl MailBackend for ConsoleBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    fn message() -> Message {
+        Message {
+            to: vec!["recipient@example.com".into()],
+            from: "sender@example.com".into(),
+            subject: "Subject".into(),
+            body: "plain body".into(),
+            html_body: Some("<p>html body</p>".into()),
+        }
+    }
     #[tokio::test]
-    async fn test_console_backend_send_does_not_panic_or_error() {
-        let msg = Message {
-            to: vec!["recipient@example.com".to_string()],
-            from: "sender@example.com".to_string(),
-            subject: "Reset Password".to_string(),
-            body: "Click here to reset: https://example.com/reset/token".to_string(),
-        };
-
-        let backend = ConsoleBackend;
-        let result = backend.send(&msg).await;
-        assert!(result.is_ok(), "ConsoleBackend::send failed: {:?}", result);
+    async fn console_send() {
+        ConsoleBackend.send(&message()).await.unwrap();
+    }
+    #[tokio::test]
+    async fn in_memory_send_and_inspect() {
+        let b = InMemoryBackend::default();
+        b.send(&message()).await.unwrap();
+        assert_eq!(b.sent_messages(), vec![message()]);
+    }
+    #[tokio::test]
+    async fn file_send_can_be_read_back() {
+        let dir = std::env::temp_dir().join(format!("djangors-mail-{}", std::process::id()));
+        let b = FileBackend::new(&dir);
+        b.send(&message()).await.unwrap();
+        let mut entries = tokio::fs::read_dir(&dir).await.unwrap();
+        let p = entries.next_entry().await.unwrap().unwrap().path();
+        let text = tokio::fs::read_to_string(p).await.unwrap();
+        assert!(text.contains("plain body") && text.contains("html body"));
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+    #[test]
+    fn smtp_config_rejects_empty_host() {
+        assert!(SmtpBackend::new(SmtpConfig::new(" ")).is_err());
+    }
+    #[test]
+    fn html_message_is_multipart_alternative() {
+        let raw = SmtpBackend::serialize(&message()).unwrap();
+        let text = String::from_utf8(raw).unwrap();
+        assert!(text.contains("multipart/alternative"));
+        assert!(text.contains("plain body") && text.contains("html body"));
     }
 }

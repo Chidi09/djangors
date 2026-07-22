@@ -632,6 +632,7 @@ pub async fn request_password_reset<U: AuthUser>(
                  If you did not request this reset, you can safely ignore this email.",
                 reset_link
             ),
+            html_body: None,
         };
         mail.send(&message)
             .await
