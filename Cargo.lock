@@ -712,12 +712,58 @@ dependencies = [
 ]
 
 [[package]]
+name = "djangors-contrib-flatpages"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "djangors-admin",
+ "djangors-core",
+ "djangors-macros",
+ "djangors-orm",
+ "djangors-test",
+ "hyper",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "djangors-contrib-messages"
 version = "0.0.1"
 dependencies = [
  "djangors-sessions",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "djangors-contrib-redirects"
+version = "0.0.1"
+dependencies = [
+ "bytes",
+ "djangors-admin",
+ "djangors-core",
+ "djangors-macros",
+ "djangors-orm",
+ "djangors-test",
+ "hyper",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
+name = "djangors-contrib-sitemaps"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "djangors-core",
+]
+
+[[package]]
+name = "djangors-contrib-syndication"
+version = "0.0.1"
+dependencies = [
+ "chrono",
+ "djangors-core",
 ]
 
 [[package]]

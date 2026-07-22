@@ -1,0 +1,12 @@
+[package]
+name = "djangors-contrib-syndication"
+description = "RSS and Atom feeds for Djangors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+chrono = "0.4"
+djangors-core = { path = "../djangors-core" }
+
