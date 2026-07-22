@@ -1,16 +1,15 @@
 //! REST framework core for Djangors: generic serialization, ViewSets, and router mounting.
 //!
-//! # Security Warning
-//!
-//! **IMPORTANT**: This initial version (Phase 8.1) includes **ZERO access control / permissions**.
-//! Every route mounted via [`viewset_routes`] is open to unauthenticated access. Do **NOT** mount
-//! these routes in production or on endpoints serving real sensitive data until Phase 8.2
-//! (Authentication & Permissions) lands.
+//! ViewSet routes require an authenticated user by default. Public routes must opt into
+//! [`AllowAny`] explicitly through [`viewset_routes_with_permission`].
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
+use djangors_auth::AuthUser;
 use djangors_core::error::DjangorsError;
+use djangors_core::extract::FromRequest;
 use djangors_core::pagination::Paginator;
 use djangors_core::path_params::PathParams;
 use djangors_core::request::Request;
@@ -21,6 +20,189 @@ use djangors_orm::meta::{FieldKind, Model};
 use djangors_orm::queryset::QuerySet;
 use djangors_orm::FromRow;
 use hyper::StatusCode;
+use rand::RngCore;
+
+/// A database-backed token for authenticating API requests.
+#[derive(djangors_macros::Model, Debug, Clone)]
+#[djangors(app = "djangors_rest", table_name = "djangors_rest_authtoken")]
+pub struct AuthToken {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub user: djangors_orm::ForeignKey<djangors_auth::User>,
+    #[djangors(max_length = 64, unique)]
+    pub key: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Generates a 256-bit, hexadecimal API token key.
+pub fn generate_token_key() -> String {
+    let mut bytes = [0_u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The user authenticated by the `Authorization: Token <key>` scheme.
+#[derive(Debug, Clone)]
+pub struct TokenAuth(pub djangors_auth::User);
+
+#[async_trait::async_trait]
+impl FromRequest for TokenAuth {
+    async fn from_request(req: &Request) -> Result<Self, DjangorsError> {
+        let key = req
+            .header("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Token "))
+            .filter(|key| !key.is_empty() && !key.chars().any(char::is_whitespace))
+            .ok_or_else(|| DjangorsError::Unauthorized("not authenticated".to_string()))?;
+
+        let db = req
+            .state::<djangors_db::Database>()
+            .ok_or_else(|| DjangorsError::Internal("database state absent".to_string()))?;
+        let token = AuthToken::objects()
+            .filter(djangors_orm::q!(key = key))
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+            .get(db)
+            .await
+            .map_err(|e| match e {
+                djangors_orm::OrmError::NotFound { .. } => {
+                    DjangorsError::Unauthorized("invalid token".to_string())
+                }
+                _ => DjangorsError::Internal(e.to_string()),
+            })?;
+
+        let user = djangors_auth::User::objects()
+            .filter(djangors_orm::q!(id = token.user.id))
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+            .get(db)
+            .await
+            .map_err(|e| match e {
+                djangors_orm::OrmError::NotFound { .. } => {
+                    DjangorsError::Unauthorized("user not found".to_string())
+                }
+                _ => DjangorsError::Internal(e.to_string()),
+            })?;
+
+        if !user.is_active() {
+            return Err(DjangorsError::Unauthorized("account inactive".to_string()));
+        }
+        Ok(TokenAuth(user))
+    }
+}
+
+#[cfg(feature = "jwt")]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct JwtClaims {
+    user_id: i64,
+    exp: u64,
+}
+
+#[cfg(feature = "jwt")]
+/// Encodes a user id as an HS256 JWT signed with `secret`.
+pub fn encode_jwt(user_id: i64, secret: &str) -> String {
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &JwtClaims {
+            user_id,
+            exp: jsonwebtoken::get_current_timestamp() + 60 * 60,
+        },
+        &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .expect("JWT claims are serializable")
+}
+
+#[cfg(feature = "jwt")]
+/// Decodes and validates an HS256 JWT, returning its user id claim.
+pub fn decode_jwt(token: &str, secret: &str) -> Result<i64, jsonwebtoken::errors::Error> {
+    let data = jsonwebtoken::decode::<JwtClaims>(
+        token,
+        &jsonwebtoken::DecodingKey::from_secret(secret.as_bytes()),
+        &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
+    )?;
+    Ok(data.claims.user_id)
+}
+
+#[cfg(feature = "jwt")]
+/// The user authenticated by the `Authorization: Bearer <jwt>` scheme.
+#[derive(Debug, Clone)]
+pub struct JwtAuth(pub djangors_auth::User);
+
+#[cfg(feature = "jwt")]
+#[async_trait::async_trait]
+impl FromRequest for JwtAuth {
+    async fn from_request(req: &Request) -> Result<Self, DjangorsError> {
+        let token = req
+            .header("authorization")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .filter(|token| !token.is_empty() && !token.chars().any(char::is_whitespace))
+            .ok_or_else(|| DjangorsError::Unauthorized("not authenticated".to_string()))?;
+        let user_id = decode_jwt(token, settings_secret(req)?)
+            .map_err(|_| DjangorsError::Unauthorized("invalid token".to_string()))?;
+        let db = req
+            .state::<djangors_db::Database>()
+            .ok_or_else(|| DjangorsError::Internal("database state absent".to_string()))?;
+        let user = djangors_auth::User::objects()
+            .filter(djangors_orm::q!(id = user_id))
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+            .get(db)
+            .await
+            .map_err(|e| match e {
+                djangors_orm::OrmError::NotFound { .. } => {
+                    DjangorsError::Unauthorized("user not found".to_string())
+                }
+                _ => DjangorsError::Internal(e.to_string()),
+            })?;
+        if !user.is_active() {
+            return Err(DjangorsError::Unauthorized("account inactive".to_string()));
+        }
+        Ok(JwtAuth(user))
+    }
+}
+
+#[cfg(feature = "jwt")]
+fn settings_secret(req: &Request) -> Result<&str, DjangorsError> {
+    req.state::<djangors_core::DjangorsSettings>()
+        .map(|settings| settings.secret_key.as_str())
+        .ok_or_else(|| DjangorsError::Internal("settings state absent".to_string()))
+}
+
+/// A policy deciding whether a request may reach a ViewSet handler.
+#[async_trait::async_trait]
+pub trait Permission: Send + Sync + 'static {
+    async fn has_permission(&self, req: &Request) -> bool;
+}
+
+/// Explicitly permits unauthenticated requests.
+pub struct AllowAny;
+
+#[async_trait::async_trait]
+impl Permission for AllowAny {
+    async fn has_permission(&self, _req: &Request) -> bool {
+        true
+    }
+}
+
+/// Requires a valid session or API token (and, when enabled, JWT).
+pub struct IsAuthenticated;
+
+#[async_trait::async_trait]
+impl Permission for IsAuthenticated {
+    async fn has_permission(&self, req: &Request) -> bool {
+        if djangors_auth::Auth::<djangors_auth::User>::from_request(req)
+            .await
+            .is_ok()
+            || TokenAuth::from_request(req).await.is_ok()
+        {
+            return true;
+        }
+        #[cfg(feature = "jwt")]
+        {
+            return JwtAuth::from_request(req).await.is_ok();
+        }
+        #[cfg(not(feature = "jwt"))]
+        false
+    }
+}
 
 /// Default page size for REST ViewSet list pagination.
 /// Matches the admin's per-page convention (100).
@@ -518,14 +700,25 @@ fn parse_page_param(query: &str) -> Option<i64> {
 /// - `PATCH {base_path}/{pk:i64}` -> update
 /// - `DELETE {base_path}/{pk:i64}` -> destroy
 ///
-/// # Security Warning
-///
-/// **WARNING**: This v1 implementation has zero access control. Routes mounted with
-/// `viewset_routes` are publicly accessible. Do NOT mount on production routes or
-/// routes serving sensitive data until Phase 8.2 (Authentication & Permissions) lands.
 pub fn viewset_routes<M>(router: Router, base_path: &str) -> Router
 where
     M: Model + FromRow + Send + Sync + 'static,
+{
+    viewset_routes_with_permission::<M, IsAuthenticated>(router, base_path, IsAuthenticated)
+}
+
+/// Mounts standard REST routes with an explicit permission policy.
+///
+/// [`viewset_routes`] uses [`IsAuthenticated`] by default. Pass [`AllowAny`] here only for
+/// endpoints that are intentionally public.
+pub fn viewset_routes_with_permission<M, P>(
+    router: Router,
+    base_path: &str,
+    permission: P,
+) -> Router
+where
+    M: Model + FromRow + Send + Sync + 'static,
+    P: Permission,
 {
     let clean_base = base_path.trim_end_matches('/');
     let detail_path = format!("{clean_base}/{{pk:i64}}");
@@ -534,18 +727,48 @@ where
     } else {
         clean_base
     };
+    let permission = Arc::new(permission);
 
     router
-        .get(list_create_path, ViewSet::<M>::list)
-        .post(list_create_path, ViewSet::<M>::create)
-        .get(&detail_path, ViewSet::<M>::retrieve)
-        .put(&detail_path, ViewSet::<M>::update)
+        .get(
+            list_create_path,
+            guarded(permission.clone(), ViewSet::<M>::list),
+        )
+        .post(
+            list_create_path,
+            guarded(permission.clone(), ViewSet::<M>::create),
+        )
+        .get(
+            &detail_path,
+            guarded(permission.clone(), ViewSet::<M>::retrieve),
+        )
+        .put(
+            &detail_path,
+            guarded(permission.clone(), ViewSet::<M>::update),
+        )
         .route(
             &detail_path,
             hyper::http::Method::PATCH,
-            ViewSet::<M>::update,
+            guarded(permission.clone(), ViewSet::<M>::update),
         )
-        .delete(&detail_path, ViewSet::<M>::destroy)
+        .delete(&detail_path, guarded(permission, ViewSet::<M>::destroy))
+}
+
+fn guarded<P, F, Fut>(permission: Arc<P>, handler: F) -> impl djangors_core::Handler
+where
+    P: Permission,
+    F: Fn(Request, PathParams) -> Fut + Copy + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<Response, DjangorsError>> + Send + 'static,
+{
+    move |req: Request, params: PathParams| {
+        let permission = permission.clone();
+        async move {
+            if !permission.has_permission(&req).await {
+                return Err(DjangorsError::Unauthorized("not authenticated".to_string()));
+            }
+            handler(req, params).await
+        }
+    }
 }
 
 #[cfg(test)]
@@ -632,6 +855,53 @@ mod tests {
         assert!(errs.get("view_count").unwrap().contains("valid integer"));
     }
 
+    #[test]
+    fn token_keys_are_high_entropy_and_fit_the_model() {
+        let first = generate_token_key();
+        let second = generate_token_key();
+        assert_eq!(first.len(), 64);
+        assert!(first.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
+
+    #[tokio::test]
+    async fn viewset_routes_require_authentication_by_default() {
+        let router = viewset_routes::<TestArticle>(Router::new(), "/api/articles");
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/api/articles"),
+            HeaderMap::new(),
+            Bytes::new(),
+        );
+        assert!(matches!(
+            router.handle(req).await,
+            Err(DjangorsError::Unauthorized(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn malformed_token_header_is_unauthorized() {
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        );
+        assert!(matches!(
+            TokenAuth::from_request(&req).await,
+            Err(DjangorsError::Unauthorized(_))
+        ));
+    }
+
+    #[cfg(feature = "jwt")]
+    #[test]
+    fn jwt_round_trip_and_tamper_rejection() {
+        let token = encode_jwt(42, "test-secret");
+        assert_eq!(decode_jwt(&token, "test-secret").unwrap(), 42);
+        assert!(decode_jwt(&format!("{token}tampered"), "test-secret").is_err());
+        assert!(decode_jwt(&token, "wrong-secret").is_err());
+    }
+
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_viewset_crud_end_to_end() {
@@ -679,8 +949,12 @@ mod tests {
         .await
         .unwrap();
 
-        let router =
-            viewset_routes::<TestArticle>(Router::new(), "/api/articles").with_state(db.clone());
+        let router = viewset_routes_with_permission::<TestArticle, _>(
+            Router::new(),
+            "/api/articles",
+            AllowAny,
+        )
+        .with_state(db.clone());
 
         // 1. Create Article via POST (Validation Error test)
         let invalid_create_body = serde_json::json!({
@@ -870,8 +1144,12 @@ mod tests {
             .unwrap();
         }
 
-        let router =
-            viewset_routes::<TestArticle>(Router::new(), "/api/articles").with_state(db.clone());
+        let router = viewset_routes_with_permission::<TestArticle, _>(
+            Router::new(),
+            "/api/articles",
+            AllowAny,
+        )
+        .with_state(db.clone());
 
         // Page 1 (default page = 1)
         let req = Request::new(
