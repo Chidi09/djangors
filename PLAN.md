@@ -359,13 +359,14 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 ### Phase 7 — Batteries (contrib) (~2–3 months, parallelizable, community-friendly)
 - [x] djangors-cache: **done (v1):** `Cache` trait (`get`/`set`/`delete`/`get_or_set`, object-safe raw-byte values + a `CacheExt` for typed JSON), `InMemoryCache` (moka), `DatabaseCache` (reuses `djangors_db::Database`, lazily created table), `RedisCache` (optional `redis` Cargo feature, not default), `CacheLayer` tower middleware (explicit opt-in via a `CacheableResponse` marker, never blanket-caches every GET — a deliberate security decision), template fragment caching via a plain `get_or_set_fragment` helper (not a new minijinja tag) *(7.1, commit `c87a76d`)*. **remaining:** a real `{% cache %}` template-tag syntax if minijinja's custom-tag support turns out to make that worthwhile later.
 - [x] djangors-mail: **done (v1):** extends the Phase-4-minimal console-only crate — `SmtpBackend` (`lettre`, real TLS), `FileBackend` (one file per message), `InMemoryBackend` (test inspection), `Message.html_body` for real `multipart/alternative` HTML+text mail *(7.1, commit `c87a76d`)*.
-- [ ] djangors-contrib-messages (flash messages, template integration).
+- [x] djangors-contrib-messages: **done (v1):** per-session flash-message queue (`add`/`take`, `Level::{Debug,Info,Success,Warning,Error}`) built on `djangors_sessions::Session`'s existing get/set/remove — template integration is documented with an example, not auto-wired (no generic way to discover a project's own render call sites) *(7.2, commit `168dd5c`)*.
 - [ ] djangors-i18n: message extraction from templates+code, Fluent-based catalogs, locale middleware, `{% trans %}`, localized formats; l10n of dates/numbers.
 - [ ] djangors-contrib-audit: every model change recorded (who/when/what diff) — **default-on in generated projects**; admin timeline view. Banking table stakes.
 - [ ] djangors-contrib-guardian: object-level permissions integrated with admin + auth guards.
 - [ ] djangors-contrib-otp: TOTP enrollment + verification, admin 2FA enforcement setting; WebAuthn stretch.
-- [ ] Sitemaps, syndication, humanize, flatpages, redirects app.
-- [ ] Pagination utility (shared by admin + user code).
+- [ ] Sitemaps, syndication, flatpages, redirects app.
+- [x] Humanize: **done (v1):** `intcomma`/`filesizeformat`/`naturaltime` template filters added to `djangors-template` *(7.2, commit `168dd5c`)*.
+- [x] Pagination utility (shared by admin + user code): **done:** `djangors_core::Paginator` extracted from djangors-admin's previously-inline math, admin now consumes it, all 30 pre-existing admin tests pass unmodified *(7.2, commit `168dd5c`)*.
 
 **DoD:** e-commerce example uses cache, messages, audit, and mail end-to-end.
 
