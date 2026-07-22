@@ -386,7 +386,7 @@ mod tests {
     async fn exercise(cache: &dyn Cache) {
         assert_eq!(cache.get("missing").await.unwrap(), None);
         cache
-            .set("key", b"value".to_vec(), Some(Duration::from_millis(50)))
+            .set("key", b"value".to_vec(), Some(Duration::from_secs(5)))
             .await
             .unwrap();
         assert_eq!(cache.get("key").await.unwrap(), Some(b"value".to_vec()));

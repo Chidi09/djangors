@@ -1,8 +1,11 @@
 [package]
 name = "djangors"
-description = "The Django of Rust: batteries-included web framework — ORM, migrations, admin, forms, auth. Placeholder release; development in progress."
+description = "The Django of Rust: batteries-included web framework — ORM, migrations, admin, forms, auth."
 repository = "https://github.com/djangors/djangors"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
+
+[dependencies]
+djangors-tasks = { path = "../djangors-tasks" }

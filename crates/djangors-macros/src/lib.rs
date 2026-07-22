@@ -7,6 +7,7 @@ use syn::{parse_macro_input, DeriveInput};
 
 mod form;
 mod model;
+mod task;
 
 #[proc_macro_derive(Model, attributes(djangors))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
@@ -20,6 +21,13 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
 pub fn derive_form(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     form::expand_derive_form(input)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
+#[proc_macro_attribute]
+pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
+    task::expand_task(attr.into(), item.into())
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }
