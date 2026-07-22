@@ -378,7 +378,9 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 **DoD:** e-commerce exposes a versioned JSON API with generated OpenAPI docs; order-status page updates live over WebSocket; emails send via background task.
 
 ### Phase 9 — Docs, tutorial, website (starts Phase 1, finishes never)
-- [ ] Docs site (Starlight or mdBook): **Tutorial parts 1–8** (mirror Django's polls tutorial structure exactly — it's the best framework tutorial ever written), topic guides (ORM, templates, forms, auth, admin, testing, deployment, security), reference (rustdoc, 100% public-API coverage enforced), how-tos, and a **"Djangors for Django developers"** side-by-side translation guide (your single biggest adoption lever).
+- [x] **Tutorial parts 1–8** — **done (v1, 9.1, commit `5b29298`):** `docs/tutorial/01`–`08-*.md`, mirroring Django's polls tutorial structure, every snippet/attribute/CLI flag verified against real `examples/polls` source and `djangors-cli`'s real subcommands; `cargo test --package polls` passes. **Remaining:** not yet wired into a real docs-site generator (mdBook/Starlight) — currently plain Markdown, readable on GitHub but no built nav/search/site.
+- [ ] Docs site (Starlight or mdBook) scaffold to actually build/serve the tutorial + future content as a site.
+- [ ] Topic guides (ORM, templates, forms, auth, admin, testing, deployment, security), reference (rustdoc, 100% public-API coverage enforced), how-tos, and a **"Djangors for Django developers"** side-by-side translation guide (your single biggest adoption lever).
 - [ ] Every doc code block extracted and compiled in CI (doctests / skeptic-style).
 - [ ] `djangors.rs` (or chosen domain) landing page: pitch, live admin demo (deployed e-commerce example, read-only), benchmark numbers, "deploy in 5 minutes" screencast.
 
