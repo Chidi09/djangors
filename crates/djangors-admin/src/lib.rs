@@ -1969,13 +1969,10 @@ async fn admin_changelist(
         rows.push(ChangelistRowData { pk, cells });
     }
 
-    let total_pages = if page_data.total == 0 {
-        1
-    } else {
-        (page_data.total + CHANGELIST_PER_PAGE - 1) / CHANGELIST_PER_PAGE
-    };
+    let paginator = djangors_core::Paginator::new(page_data.total, CHANGELIST_PER_PAGE);
+    let total_pages = paginator.total_pages();
 
-    let prev_href = if page > 1 {
+    let prev_href = if paginator.has_previous(page) {
         let prev_page_str = (page - 1).to_string();
         let mut pairs = vec![("page", Some(prev_page_str.as_str())), ("o", o), ("q", q)];
         for &(f, val) in &active_filters {
@@ -1989,7 +1986,7 @@ async fn admin_changelist(
         None
     };
 
-    let next_href = if page * CHANGELIST_PER_PAGE < page_data.total {
+    let next_href = if paginator.has_next(page) {
         let next_page_str = (page + 1).to_string();
         let mut pairs = vec![("page", Some(next_page_str.as_str())), ("o", o), ("q", q)];
         for &(f, val) in &active_filters {

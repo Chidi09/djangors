@@ -170,3 +170,201 @@ pub fn truncatewords(value: Value, arg: Value) -> Result<String, MJError> {
         Ok(format!("{}…", truncated))
     }
 }
+
+/// Format an integer or numeric value with thousands separators (commas).
+///
+/// Example: `{{ 1234567|intcomma }}` -> `"1,234,567"`
+pub fn intcomma(value: Value) -> Result<String, MJError> {
+    let s = value.to_string();
+
+    let (sign, rest) = if let Some(stripped) = s.strip_prefix('-') {
+        ("-", stripped)
+    } else if let Some(stripped) = s.strip_prefix('+') {
+        ("+", stripped)
+    } else {
+        ("", s.as_str())
+    };
+
+    let (int_part, dec_part) = match rest.split_once('.') {
+        Some((int_p, dec_p)) => (int_p, Some(dec_p)),
+        None => (rest, None),
+    };
+
+    if int_part.is_empty() || !int_part.chars().all(|c| c.is_ascii_digit()) {
+        return Ok(s);
+    }
+
+    let mut formatted_int = String::new();
+    let len = int_part.len();
+    for (i, c) in int_part.chars().enumerate() {
+        if i > 0 && (len - i) % 3 == 0 {
+            formatted_int.push(',');
+        }
+        formatted_int.push(c);
+    }
+
+    let mut result = format!("{}{}", sign, formatted_int);
+    if let Some(dec) = dec_part {
+        result.push('.');
+        result.push_str(dec);
+    }
+    Ok(result)
+}
+
+/// Format a byte count into a human-readable size string.
+///
+/// Example: `{{ 1536|filesizeformat }}` -> `"1.5 KB"`
+pub fn filesizeformat(value: Value) -> Result<String, MJError> {
+    let bytes = match value.as_str() {
+        Some(s) => s.parse::<f64>().map_err(|e| {
+            MJError::new(
+                MJErrorKind::InvalidOperation,
+                format!("filesizeformat filter: value must be a number: {}", e),
+            )
+        })?,
+        None => {
+            if let Ok(f) = f64::try_from(value.clone()) {
+                f
+            } else if let Ok(i) = i64::try_from(value.clone()) {
+                i as f64
+            } else {
+                return Err(MJError::new(
+                    MJErrorKind::InvalidOperation,
+                    format!("filesizeformat filter: value must be a number: {}", value),
+                ));
+            }
+        }
+    };
+
+    if bytes < 0.0 {
+        return Ok("0 bytes".to_string());
+    }
+
+    if bytes < 1024.0 {
+        let b = bytes as i64;
+        if b == 1 {
+            Ok("1 byte".to_string())
+        } else {
+            Ok(format!("{} bytes", b))
+        }
+    } else {
+        let units = ["KB", "MB", "GB", "TB", "PB"];
+        let mut scaled = bytes / 1024.0;
+        let mut unit_idx = 0;
+        while scaled >= 1024.0 && unit_idx < units.len() - 1 {
+            scaled /= 1024.0;
+            unit_idx += 1;
+        }
+        Ok(format!("{:.1} {}", scaled, units[unit_idx]))
+    }
+}
+
+/// Format a datetime as relative time ("3 minutes ago", "just now", "in 5 minutes").
+///
+/// Example: `{{ created_at|naturaltime }}`
+pub fn naturaltime(value: Value) -> Result<String, MJError> {
+    let dt_str = value.to_string();
+    let dt = if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&dt_str) {
+        parsed.with_timezone(&chrono::Utc)
+    } else if let Ok(parsed) = chrono::NaiveDateTime::parse_from_str(&dt_str, "%Y-%m-%d %H:%M:%S") {
+        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(parsed, chrono::Utc)
+    } else if let Ok(parsed) = chrono::NaiveDate::parse_from_str(&dt_str, "%Y-%m-%d") {
+        let ndt = parsed.and_hms_opt(0, 0, 0).unwrap();
+        chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc)
+    } else {
+        return Err(MJError::new(
+            MJErrorKind::InvalidOperation,
+            format!(
+                "naturaltime filter: could not parse date/time value: {}",
+                dt_str
+            ),
+        ));
+    };
+
+    let now = chrono::Utc::now();
+    let seconds = (dt - now).num_seconds();
+
+    if (-1..=1).contains(&seconds) {
+        Ok("just now".to_string())
+    } else if seconds < -1 {
+        let ago = -seconds;
+        if ago < 60 {
+            Ok(format!("{} seconds ago", ago))
+        } else if ago < 3600 {
+            let mins = (ago + 30) / 60;
+            if mins == 1 {
+                Ok("1 minute ago".to_string())
+            } else {
+                Ok(format!("{} minutes ago", mins))
+            }
+        } else if ago < 86400 {
+            let hours = (ago + 1800) / 3600;
+            if hours == 1 {
+                Ok("1 hour ago".to_string())
+            } else {
+                Ok(format!("{} hours ago", hours))
+            }
+        } else if ago < 2592000 {
+            let days = (ago + 43200) / 86400;
+            if days == 1 {
+                Ok("1 day ago".to_string())
+            } else {
+                Ok(format!("{} days ago", days))
+            }
+        } else if ago < 31536000 {
+            let months = (ago + 1296000) / 2592000;
+            if months == 1 {
+                Ok("1 month ago".to_string())
+            } else {
+                Ok(format!("{} months ago", months))
+            }
+        } else {
+            let years = (ago + 15768000) / 31536000;
+            if years == 1 {
+                Ok("1 year ago".to_string())
+            } else {
+                Ok(format!("{} years ago", years))
+            }
+        }
+    } else {
+        let in_secs = seconds;
+        if in_secs < 60 {
+            Ok(format!("in {} seconds", in_secs))
+        } else if in_secs < 3600 {
+            let mins = (in_secs + 30) / 60;
+            if mins == 1 {
+                Ok("in 1 minute".to_string())
+            } else {
+                Ok(format!("in {} minutes", mins))
+            }
+        } else if in_secs < 86400 {
+            let hours = (in_secs + 1800) / 3600;
+            if hours == 1 {
+                Ok("in 1 hour".to_string())
+            } else {
+                Ok(format!("in {} hours", hours))
+            }
+        } else if in_secs < 2592000 {
+            let days = (in_secs + 43200) / 86400;
+            if days == 1 {
+                Ok("in 1 day".to_string())
+            } else {
+                Ok(format!("in {} days", days))
+            }
+        } else if in_secs < 31536000 {
+            let months = (in_secs + 1296000) / 2592000;
+            if months == 1 {
+                Ok("in 1 month".to_string())
+            } else {
+                Ok(format!("in {} months", months))
+            }
+        } else {
+            let years = (in_secs + 15768000) / 31536000;
+            if years == 1 {
+                Ok("in 1 year".to_string())
+            } else {
+                Ok(format!("in {} years", years))
+            }
+        }
+    }
+}

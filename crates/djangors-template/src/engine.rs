@@ -58,6 +58,9 @@ impl TemplateEngine {
         env.add_filter("floatformat", filters::floatformat);
         env.add_filter("pluralize", filters::pluralize);
         env.add_filter("truncatewords", filters::truncatewords);
+        env.add_filter("intcomma", filters::intcomma);
+        env.add_filter("filesizeformat", filters::filesizeformat);
+        env.add_filter("naturaltime", filters::naturaltime);
 
         // Note: 'default' filter is built-in to minijinja and behaves matching Django's
         // default template filter when the value is undefined or falsy.
@@ -91,6 +94,9 @@ impl TemplateEngine {
         env.add_filter("floatformat", filters::floatformat);
         env.add_filter("pluralize", filters::pluralize);
         env.add_filter("truncatewords", filters::truncatewords);
+        env.add_filter("intcomma", filters::intcomma);
+        env.add_filter("filesizeformat", filters::filesizeformat);
+        env.add_filter("naturaltime", filters::naturaltime);
 
         Ok(TemplateEngine { env })
     }
@@ -452,5 +458,115 @@ mod tests {
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert!(matches!(err, TemplateError::NotFound { .. }));
+    }
+
+    #[test]
+    fn test_filter_intcomma() {
+        let dir = create_temp_template_dir();
+        fs::write(dir.path().join("comma.html"), "{{ val|intcomma }}").unwrap();
+
+        let engine = TemplateEngine::new(vec![dir.path().to_path_buf()]).unwrap();
+
+        #[derive(Serialize)]
+        struct Context<T> {
+            val: T,
+        }
+
+        assert_eq!(
+            engine
+                .render("comma.html", &Context { val: 1234567 })
+                .unwrap(),
+            "1,234,567"
+        );
+        assert_eq!(
+            engine.render("comma.html", &Context { val: 456 }).unwrap(),
+            "456"
+        );
+        assert_eq!(
+            engine
+                .render("comma.html", &Context { val: -1234567 })
+                .unwrap(),
+            "-1,234,567"
+        );
+        assert_eq!(
+            engine
+                .render("comma.html", &Context { val: "1234.56" })
+                .unwrap(),
+            "1,234.56"
+        );
+    }
+
+    #[test]
+    fn test_filter_filesizeformat() {
+        let dir = create_temp_template_dir();
+        fs::write(dir.path().join("size.html"), "{{ val|filesizeformat }}").unwrap();
+
+        let engine = TemplateEngine::new(vec![dir.path().to_path_buf()]).unwrap();
+
+        #[derive(Serialize)]
+        struct Context {
+            val: u64,
+        }
+
+        assert_eq!(
+            engine.render("size.html", &Context { val: 500 }).unwrap(),
+            "500 bytes"
+        );
+        assert_eq!(
+            engine.render("size.html", &Context { val: 1024 }).unwrap(),
+            "1.0 KB"
+        );
+        assert_eq!(
+            engine.render("size.html", &Context { val: 1536 }).unwrap(),
+            "1.5 KB"
+        );
+        assert_eq!(
+            engine
+                .render("size.html", &Context { val: 1048576 })
+                .unwrap(),
+            "1.0 MB"
+        );
+    }
+
+    #[test]
+    fn test_filter_naturaltime() {
+        let dir = create_temp_template_dir();
+        fs::write(dir.path().join("time.html"), "{{ val|naturaltime }}").unwrap();
+
+        let engine = TemplateEngine::new(vec![dir.path().to_path_buf()]).unwrap();
+
+        #[derive(Serialize)]
+        struct Context {
+            val: String,
+        }
+
+        let now = chrono::Utc::now();
+
+        // 1. Very recent ("just now")
+        let recent_val = now.to_rfc3339();
+        assert_eq!(
+            engine
+                .render("time.html", &Context { val: recent_val })
+                .unwrap(),
+            "just now"
+        );
+
+        // 2. Past offset (e.g. 5 minutes ago)
+        let past_val = (now - chrono::Duration::seconds(300)).to_rfc3339();
+        assert_eq!(
+            engine
+                .render("time.html", &Context { val: past_val })
+                .unwrap(),
+            "5 minutes ago"
+        );
+
+        // 3. Future offset (e.g. 5 minutes in the future)
+        let future_val = (now + chrono::Duration::seconds(300)).to_rfc3339();
+        assert_eq!(
+            engine
+                .render("time.html", &Context { val: future_val })
+                .unwrap(),
+            "in 5 minutes"
+        );
     }
 }

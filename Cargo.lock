@@ -712,6 +712,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "djangors-contrib-messages"
+version = "0.0.1"
+dependencies = [
+ "djangors-sessions",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "djangors-core"
 version = "0.0.1"
 dependencies = [
