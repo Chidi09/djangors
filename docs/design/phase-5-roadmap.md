@@ -183,6 +183,20 @@ Working infrastructure a new session should know exists (all proven by tests):
 Deliberate deferrals, where they're documented, and when they should land. Nothing here is
 forgotten-by-accident; do not silently re-defer past the milestone listed.
 
+**Real, currently-latent gap found during Phase 7 (7.4, 2026-07-22):**
+- **`djangors-orm`'s `QuerySet::filter()`/WHERE-clause building never quotes column names**
+  (`crates/djangors-orm/src/queryset.rs`'s `field_to_col` closures, at least 3 separate call
+  sites) — the exact same class of bug found and fixed in `djangors-macros`' generated INSERT/
+  UPDATE SQL during 7.4 (`f44cfa3`), but in a different, still-unpatched code path. Any model with
+  a field literally named `user`/`group` (or any other Postgres reserved word) would hit a genuine
+  syntax error the moment `.filter(q!(user = ...))` or similar is called — currently **latent, not
+  active**, since nothing in the codebase does this yet (djangors-contrib-guardian's own lookups
+  deliberately use raw hand-quoted SQL instead of `.filter()`, exactly to avoid this). Fix by
+  applying the same double-quoting treatment to `field_to_col`'s output everywhere it's used, and
+  add a regression test that actually filters on a `user`/`group`-named field to prove it. Do not
+  let this surface as a confusing runtime SQL error in some future slice before it's fixed
+  proactively.
+
 **No longer blocking — landed 2026-07-18:**
 - **Groups + model-level permissions** (deferred from Phase 4, `4.9`-era decision): both the data
   model (5.7.1) and admin enforcement (5.7.2) are done. Every admin view checks `has_perm` per
