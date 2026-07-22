@@ -364,7 +364,7 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 - [ ] djangors-contrib-audit: every model change recorded (who/when/what diff) — **default-on in generated projects**; admin timeline view. Banking table stakes.
 - [ ] djangors-contrib-guardian: object-level permissions integrated with admin + auth guards.
 - [ ] djangors-contrib-otp: TOTP enrollment + verification, admin 2FA enforcement setting; WebAuthn stretch.
-- [ ] Sitemaps, syndication, flatpages, redirects app.
+- [x] Sitemaps, syndication, flatpages, redirects app: **done (v1):** `djangors-contrib-sitemaps` (`Sitemap` trait, `/sitemap.xml`), `djangors-contrib-syndication` (`Feed` trait, hand-rolled RSS 2.0 + Atom), `djangors-contrib-flatpages` (real `FlatPage` model, admin-editable, served at explicitly registered paths — no catch-all route mechanism exists yet, documented v1 limit), `djangors-contrib-redirects` (real `Redirect` model, `lookup_redirect` helper with clean fallthrough) *(7.3, commit `845b770`)*.
 - [x] Humanize: **done (v1):** `intcomma`/`filesizeformat`/`naturaltime` template filters added to `djangors-template` *(7.2, commit `168dd5c`)*.
 - [x] Pagination utility (shared by admin + user code): **done:** `djangors_core::Paginator` extracted from djangors-admin's previously-inline math, admin now consumes it, all 30 pre-existing admin tests pass unmodified *(7.2, commit `168dd5c`)*.
 
