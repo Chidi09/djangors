@@ -267,7 +267,7 @@ async fn serve_connection(
     let io = hyper_util::rt::TokioIo::new(stream);
     let svc = hyper::service::service_fn(move |req| {
         let router = router.clone();
-        async move { Ok::<_, std::convert::Infallible>(router.dispatch_debug(req, debug).await) }
+        async move { Ok::<_, std::convert::Infallible>(router.dispatch_boxed(req, debug).await) }
     });
 
     hyper::server::conn::http1::Builder::new()
@@ -489,5 +489,101 @@ mod tests {
         let app = Djangors::new(settings, router);
         let result = app.bind().await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn real_socket_sse_streaming_groups_broadcast() {
+        use crate::groups::Groups;
+        use crate::sse::StreamingResponse;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let settings = DjangorsSettings {
+            host: "127.0.0.1".to_string(),
+            port: addr.port(),
+            ..Default::default()
+        };
+
+        let groups = Groups::new();
+        let sse_groups = groups.clone();
+
+        async fn sse_events_handler(
+            req: Request,
+            _: PathParams,
+        ) -> Result<StreamingResponse, DjangorsError> {
+            let groups = req
+                .state::<Groups>()
+                .expect("Groups state must be attached");
+            let rx = groups.group("events").subscribe();
+            Ok(StreamingResponse::sse(rx))
+        }
+
+        let router = Router::new()
+            .with_state(sse_groups)
+            .sse("/events", sse_events_handler);
+        let app = Djangors::new(settings, router);
+
+        let server_task = tokio::spawn(async move {
+            app.serve(listener).await.unwrap();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let request = "GET /events HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        stream.write_all(request.as_bytes()).await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let publisher = groups.group("events");
+        publisher.send("first message");
+        publisher.send("second message");
+
+        let mut buf = vec![0u8; 1024];
+        let mut full_output = String::new();
+
+        let start = tokio::time::Instant::now();
+        loop {
+            let n = stream.read(&mut buf).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            full_output.push_str(&String::from_utf8_lossy(&buf[..n]));
+            if full_output.contains("data: first message\n\n")
+                && full_output.contains("data: second message\n\n")
+            {
+                break;
+            }
+            if start.elapsed() > std::time::Duration::from_secs(5) {
+                panic!("Timed out waiting for SSE stream data over socket. Output so far:\n{full_output}");
+            }
+        }
+
+        assert!(
+            full_output.contains("200 OK"),
+            "Expected 200 OK, got:\n{full_output}"
+        );
+        assert!(
+            full_output.contains("text/event-stream"),
+            "Expected text/event-stream content-type header, got:\n{full_output}"
+        );
+        assert!(
+            full_output.contains("data: first message\n\n"),
+            "Expected 'data: first message\\n\\n', got:\n{full_output}"
+        );
+        assert!(
+            full_output.contains("data: second message\n\n"),
+            "Expected 'data: second message\\n\\n', got:\n{full_output}"
+        );
+
+        let idx1 = full_output.find("data: first message").unwrap();
+        let idx2 = full_output.find("data: second message").unwrap();
+        assert!(
+            idx1 < idx2,
+            "Expected messages in order, got:\n{full_output}"
+        );
+
+        server_task.abort();
     }
 }

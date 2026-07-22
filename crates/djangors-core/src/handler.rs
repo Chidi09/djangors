@@ -33,3 +33,28 @@ where
         Box::pin(self(req, params))
     }
 }
+
+/// Trait for types that can handle an HTTP request and produce a [`StreamingResponse`].
+pub trait StreamingHandler: Send + Sync {
+    /// Handle an incoming request and return a streaming response (or error).
+    fn call(
+        &self,
+        req: Request,
+        params: PathParams,
+    ) -> Pin<Box<dyn Future<Output = Result<crate::sse::StreamingResponse, DjangorsError>> + Send>>;
+}
+
+impl<F, Fut> StreamingHandler for F
+where
+    F: Fn(Request, PathParams) -> Fut + Send + Sync,
+    Fut: Future<Output = Result<crate::sse::StreamingResponse, DjangorsError>> + Send + 'static,
+{
+    fn call(
+        &self,
+        req: Request,
+        params: PathParams,
+    ) -> Pin<Box<dyn Future<Output = Result<crate::sse::StreamingResponse, DjangorsError>> + Send>>
+    {
+        Box::pin(self(req, params))
+    }
+}

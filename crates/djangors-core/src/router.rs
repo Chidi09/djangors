@@ -5,10 +5,11 @@ use bytes::Bytes;
 use hyper::http::Method;
 
 use crate::error::DjangorsError;
-use crate::handler::Handler;
+use crate::handler::{Handler, StreamingHandler};
 use crate::path_params::PathParams;
 use crate::request::Request;
 use crate::response::Response;
+use crate::sse::StreamingResponse;
 use crate::state::AppState;
 
 #[derive(Debug, Clone)]
@@ -25,12 +26,23 @@ enum Segment {
 }
 
 #[derive(Clone)]
+pub enum HandlerKind {
+    Standard(Arc<dyn Handler>),
+    Streaming(Arc<dyn StreamingHandler>),
+}
+
+pub enum ResponseKind {
+    Standard(Response),
+    Streaming(StreamingResponse),
+}
+
+#[derive(Clone)]
 struct Route {
     pattern: String,
     method: Method,
     segments: Vec<Segment>,
     param_names: Vec<String>,
-    handler: Arc<dyn Handler>,
+    handler: HandlerKind,
 }
 
 /// A URL router that matches incoming requests to registered handlers.
@@ -95,9 +107,41 @@ impl Router {
             method,
             segments,
             param_names,
-            handler: Arc::new(handler),
+            handler: HandlerKind::Standard(Arc::new(handler)),
         });
         self
+    }
+
+    /// Register a streaming handler for the given path and HTTP method.
+    pub fn route_streaming(
+        mut self,
+        path: &str,
+        method: Method,
+        handler: impl StreamingHandler + 'static,
+    ) -> Self {
+        let pattern = path
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .to_string();
+        let (segments, param_names) = Self::parse_pattern(&pattern);
+        Arc::make_mut(&mut self.routes).push(Route {
+            pattern,
+            method,
+            segments,
+            param_names,
+            handler: HandlerKind::Streaming(Arc::new(handler)),
+        });
+        self
+    }
+
+    /// Register an SSE streaming GET handler.
+    pub fn sse(self, path: &str, handler: impl StreamingHandler + 'static) -> Self {
+        self.route_streaming(path, Method::GET, handler)
+    }
+
+    /// Register an SSE streaming GET handler (alias for [`sse`](Self::sse)).
+    pub fn get_sse(self, path: &str, handler: impl StreamingHandler + 'static) -> Self {
+        self.sse(path, handler)
     }
 
     /// Register a GET handler.
@@ -247,7 +291,8 @@ impl Router {
     /// Handler execution is wrapped in a task spawned via `tokio::spawn` to catch
     /// and isolate any panics. A panicking handler must not take down other
     /// in-flight requests or crash the whole server process.
-    pub async fn handle(&self, req: Request) -> Result<Response, DjangorsError> {
+    /// Dispatch a request to the matching handler (standard or streaming).
+    pub async fn handle_dispatch(&self, req: Request) -> Result<ResponseKind, DjangorsError> {
         let path = req.path().to_string();
         let method = req.method().clone();
 
@@ -259,37 +304,64 @@ impl Router {
             .await;
 
         let res = match self.match_path(&path, &method) {
-            Some((idx, params)) => {
-                let handler = self.routes[idx].handler.clone();
-                // Spawn a new task to isolate the handler future. This allows catching
-                // any panics that occur during execution and safely converting them to errors.
-                let join_handle = tokio::spawn(async move { handler.call(req, params).await });
-                match join_handle.await {
-                    Ok(result) => result,
-                    Err(join_err) => {
-                        if join_err.is_panic() {
-                            let payload = join_err.into_panic();
-                            let msg = if let Some(s) = payload.downcast_ref::<&str>() {
-                                s.to_string()
-                            } else if let Some(s) = payload.downcast_ref::<String>() {
-                                s.clone()
+            Some((idx, params)) => match &self.routes[idx].handler {
+                HandlerKind::Standard(handler) => {
+                    let handler = handler.clone();
+                    let join_handle = tokio::spawn(async move { handler.call(req, params).await });
+                    match join_handle.await {
+                        Ok(Ok(resp)) => Ok(ResponseKind::Standard(resp)),
+                        Ok(Err(e)) => Err(e),
+                        Err(join_err) => {
+                            if join_err.is_panic() {
+                                let payload = join_err.into_panic();
+                                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                                    s.to_string()
+                                } else if let Some(s) = payload.downcast_ref::<String>() {
+                                    s.clone()
+                                } else {
+                                    "unknown panic message".to_string()
+                                };
+                                Err(DjangorsError::Panicked(msg))
                             } else {
-                                "unknown panic message".to_string()
-                            };
-                            Err(DjangorsError::Panicked(msg))
-                        } else {
-                            Err(DjangorsError::Internal(format!(
-                                "handler task execution failed: {join_err}"
-                            )))
+                                Err(DjangorsError::Internal(format!(
+                                    "handler task execution failed: {join_err}"
+                                )))
+                            }
                         }
                     }
                 }
-            }
+                HandlerKind::Streaming(handler) => {
+                    let handler = handler.clone();
+                    let join_handle = tokio::spawn(async move { handler.call(req, params).await });
+                    match join_handle.await {
+                        Ok(Ok(resp)) => Ok(ResponseKind::Streaming(resp)),
+                        Ok(Err(e)) => Err(e),
+                        Err(join_err) => {
+                            if join_err.is_panic() {
+                                let payload = join_err.into_panic();
+                                let msg = if let Some(s) = payload.downcast_ref::<&str>() {
+                                    s.to_string()
+                                } else if let Some(s) = payload.downcast_ref::<String>() {
+                                    s.clone()
+                                } else {
+                                    "unknown panic message".to_string()
+                                };
+                                Err(DjangorsError::Panicked(msg))
+                            } else {
+                                Err(DjangorsError::Internal(format!(
+                                    "handler task execution failed: {join_err}"
+                                )))
+                            }
+                        }
+                    }
+                }
+            },
             None => Err(DjangorsError::NotFound),
         };
 
         let status = match &res {
-            Ok(resp) => resp.status().as_u16(),
+            Ok(ResponseKind::Standard(resp)) => resp.status().as_u16(),
+            Ok(ResponseKind::Streaming(resp)) => resp.status().as_u16(),
             Err(err) => err.status_code().as_u16(),
         };
 
@@ -302,6 +374,26 @@ impl Router {
             .await;
 
         res
+    }
+
+    /// Dispatch a fully constructed [`Request`] to the matching handler.
+    ///
+    /// Matches the request's path and method against registered routes, calls
+    /// the matching handler, and returns the response. Returns a 404 error if
+    /// no route matches.
+    ///
+    /// # Panic Isolation
+    ///
+    /// Handler execution is wrapped in a task spawned via `tokio::spawn` to catch
+    /// and isolate any panics. A panicking handler must not take down other
+    /// in-flight requests or crash the whole server process.
+    pub async fn handle(&self, req: Request) -> Result<Response, DjangorsError> {
+        match self.handle_dispatch(req).await? {
+            ResponseKind::Standard(resp) => Ok(resp),
+            ResponseKind::Streaming(_) => Err(DjangorsError::Internal(
+                "Streaming response cannot be handled via buffered handle() call".into(),
+            )),
+        }
     }
 
     /// Dispatch an incoming hyper request, consuming the body, and return a
@@ -438,6 +530,86 @@ impl Router {
                     crate::debug_page::render_production_error_page(e.status_code())
                 };
                 resp.into_hyper()
+            }
+        }
+    }
+
+    /// Dispatch an incoming hyper request and return a boxed hyper response.
+    /// Supports both standard and streaming responses.
+    pub async fn dispatch_boxed<B>(
+        &self,
+        hyper_req: hyper::Request<B>,
+        debug: bool,
+    ) -> hyper::Response<http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>>
+    where
+        B: hyper::body::Body<Data = Bytes> + Send,
+        B::Error: fmt::Display,
+    {
+        let (parts, body) = hyper_req.into_parts();
+
+        let body_bytes = match http_body_util::BodyExt::collect(body).await {
+            Ok(collected) => collected.to_bytes(),
+            Err(e) => {
+                let err = DjangorsError::Internal(format!("failed to read request body: {e}"));
+                let resp = if debug {
+                    let dummy_req =
+                        Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
+                            .with_state(self.state.clone());
+                    crate::debug_page::render_debug_page(&err, &dummy_req)
+                } else {
+                    crate::debug_page::render_production_error_page(err.status_code())
+                };
+                return resp.into_hyper_boxed();
+            }
+        };
+
+        let req = Request::new(parts.method, parts.uri, parts.headers, body_bytes)
+            .with_state(self.state.clone())
+            .with_extensions(parts.extensions);
+
+        if let Some(pending) = req.ext::<crate::middleware::CsrfPendingFormCheck>() {
+            let is_form_content_type = req
+                .header("content-type")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|ct| ct.starts_with("application/x-www-form-urlencoded"));
+
+            let form_token = if is_form_content_type {
+                serde_urlencoded::from_bytes::<std::collections::HashMap<String, String>>(
+                    req.body_bytes().await,
+                )
+                .ok()
+                .and_then(|form| form.get("csrfmiddlewaretoken").cloned())
+            } else {
+                None
+            };
+
+            let valid = form_token
+                .map(|t| crate::middleware::constant_time_eq(t.as_bytes(), pending.0.as_bytes()))
+                .unwrap_or(false);
+
+            if !valid {
+                let err = DjangorsError::Forbidden("CSRF token missing or invalid".to_string());
+                let resp = if debug {
+                    crate::debug_page::render_debug_page(&err, &req)
+                } else {
+                    crate::debug_page::render_production_error_page(err.status_code())
+                };
+                return resp.into_hyper_boxed();
+            }
+        }
+
+        let req_clone = req.clone();
+
+        match self.handle_dispatch(req).await {
+            Ok(ResponseKind::Standard(resp)) => resp.into_hyper_boxed(),
+            Ok(ResponseKind::Streaming(resp)) => resp.into_hyper(),
+            Err(e) => {
+                let resp = if debug {
+                    crate::debug_page::render_debug_page(&e, &req_clone)
+                } else {
+                    crate::debug_page::render_production_error_page(e.status_code())
+                };
+                resp.into_hyper_boxed()
             }
         }
     }

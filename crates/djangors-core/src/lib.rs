@@ -20,6 +20,7 @@ pub mod app;
 pub mod debug_page;
 pub mod error;
 pub mod extract;
+pub mod groups;
 pub mod handler;
 pub mod logging;
 pub mod middleware;
@@ -31,17 +32,20 @@ pub mod router;
 pub mod service;
 pub mod settings;
 pub mod signals;
+pub mod sse;
 pub mod state;
 
 pub use app::Djangors;
 pub use error::DjangorsError;
-pub use handler::Handler;
+pub use groups::{GroupHandle, Groups};
+pub use handler::{Handler, StreamingHandler};
 pub use pagination::Paginator;
 pub use path_params::PathParams;
 pub use request::Request;
 pub use response::Response;
 pub use router::Router;
 pub use settings::DjangorsSettings;
+pub use sse::StreamingResponse;
 pub use state::AppState;
 
 /// Re-export of [`hyper::StatusCode`] for convenience.

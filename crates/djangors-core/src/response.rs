@@ -113,6 +113,29 @@ impl Response {
         res
     }
 
+    /// Convert this response into a hyper [`Response`](hyper::Response) backed by
+    /// a [`BoxBody`](http_body_util::combinators::BoxBody).
+    pub fn into_hyper_boxed(
+        self,
+    ) -> hyper::Response<http_body_util::combinators::BoxBody<Bytes, std::convert::Infallible>>
+    {
+        use http_body_util::BodyExt;
+        let full =
+            http_body_util::Full::new(self.body).map_err(|e: std::convert::Infallible| match e {});
+        let mut res = hyper::Response::new(full.boxed());
+        *res.status_mut() = self.status;
+        *res.headers_mut() = self.headers;
+        res
+    }
+
+    /// Create an SSE streaming response from a stream of strings.
+    pub fn sse<S>(stream: S) -> crate::sse::StreamingResponse
+    where
+        S: futures_util::stream::Stream<Item = String> + Send + Sync + 'static,
+    {
+        crate::sse::StreamingResponse::sse(stream)
+    }
+
     /// The HTTP status code.
     pub fn status(&self) -> StatusCode {
         self.status
