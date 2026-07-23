@@ -11,6 +11,10 @@
 - [Part 7: Admin Site and Customization](tutorial/07-admin-site-and-customization.md)
 - [Part 8: Packaging and Deployment Checks](tutorial/08-packaging-and-deployment-checks.md)
 
+# Djangors for Django Developers
+
+- [Django Developer Comparison Guide](django-comparison.md)
+
 # Topic Guides
 
 - [Object-Relational Mapping (ORM)](guides/orm.md)
@@ -21,3 +25,12 @@
 - [Testing](guides/testing.md)
 - [Deployment](guides/deployment.md)
 - [Security](guides/security.md)
+
+# How-To Guides
+
+- [How to Add a Custom Admin Action](how-to/custom-admin-action.md)
+- [How to Send Email](how-to/send-email.md)
+- [How to Cache a View Response](how-to/cache-views.md)
+- [How to Execute Background Tasks](how-to/background-tasks.md)
+- [How to Stream Server-Sent Events](how-to/stream-sse.md)
+- [How to Internationalize Templates](how-to/i18n-templates.md)
