@@ -378,9 +378,9 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 **DoD:** e-commerce exposes a versioned JSON API with generated OpenAPI docs; order-status page updates live over WebSocket; emails send via background task.
 
 ### Phase 9 — Docs, tutorial, website (starts Phase 1, finishes never)
-- [x] **Tutorial parts 1–8** — **done (v1, 9.1, commit `5b29298`):** `docs/tutorial/01`–`08-*.md`, mirroring Django's polls tutorial structure, every snippet/attribute/CLI flag verified against real `examples/polls` source and `djangors-cli`'s real subcommands; `cargo test --package polls` passes. **Remaining:** not yet wired into a real docs-site generator (mdBook/Starlight) — currently plain Markdown, readable on GitHub but no built nav/search/site.
-- [ ] Docs site (Starlight or mdBook) scaffold to actually build/serve the tutorial + future content as a site.
-- [ ] Topic guides (ORM, templates, forms, auth, admin, testing, deployment, security), reference (rustdoc, 100% public-API coverage enforced), how-tos, and a **"Djangors for Django developers"** side-by-side translation guide (your single biggest adoption lever).
+- [x] **Tutorial parts 1–8** — **done (v1, 9.1, commit `5b29298`; wired into mdBook nav in 9.2):** `docs/src/tutorial/01`–`08-*.md`, mirroring Django's polls tutorial structure, every snippet/attribute/CLI flag verified against real `examples/polls` source and `djangors-cli`'s real subcommands; `cargo test --package polls` passes.
+- [x] **Docs site (mdBook)** — **done (v1, 9.2, commit `1c01335`):** `docs/book.toml` + `docs/src/SUMMARY.md`, `mdbook build docs` confirmed producing real HTML with no broken links.
+- [x] **Topic guides** — **done (v1, 9.2, commit `1c01335`):** ORM, templates, forms, auth, admin, testing, deployment, security — `docs/src/guides/*.md`, every named API verified against real crate source. **Remaining:** reference (rustdoc, 100% public-API coverage enforced), how-tos, and the **"Djangors for Django developers"** side-by-side translation guide (your single biggest adoption lever) are still open.
 - [ ] Every doc code block extracted and compiled in CI (doctests / skeptic-style).
 - [ ] `djangors.rs` (or chosen domain) landing page: pitch, live admin demo (deployed e-commerce example, read-only), benchmark numbers, "deploy in 5 minutes" screencast.
 
