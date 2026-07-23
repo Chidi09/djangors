@@ -1,0 +1,154 @@
+# Authentication & Permissions
+
+`djangors-auth` provides user management, authentication backends, session integration, Argon2id password hashing, and role-based permissions.
+
+## Custom User Models & `AuthUser` Trait
+
+In Djangors, custom user model swapping is achieved at compile time via the `AuthUser` trait (rather than runtime settings strings):
+
+```rust
+#[async_trait::async_trait]
+pub trait AuthUser: djangors_orm::Model + djangors_orm::FromRow + Send + Sync + 'static {
+    fn id(&self) -> i64;
+    fn username(&self) -> &str;
+    fn password_hash(&self) -> &str;
+    fn set_password_hash(&mut self, hash: String);
+    fn is_active(&self) -> bool;
+    fn is_superuser(&self) -> bool;
+    async fn update_user(&self, db: &djangors_db::Database) -> Result<(), djangors_orm::OrmError>;
+}
+```
+
+The crate provides a built-in concrete `User` model implementing `AuthUser`:
+
+```rust
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "djangors_auth", table_name = "auth_user")]
+pub struct User {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    #[djangors(max_length = 150)]
+    pub username: String,
+    #[djangors(max_length = 254)]
+    pub email: String,
+    pub password: String, // PHC Argon2id hash string
+    pub is_active: bool,
+    pub is_staff: bool,
+    pub is_superuser: bool,
+    pub date_joined: chrono::DateTime<chrono::Utc>,
+    pub last_login: Option<chrono::DateTime<chrono::Utc>>,
+}
+```
+
+---
+
+## Request Extraction (`Auth<U>`)
+
+Extract the authenticated user in handlers using `Auth<User>`:
+
+```rust
+use djangors_auth::{Auth, User};
+use djangors_core::extract::FromRequest;
+use djangors_core::{DjangorsError, Request, Response, StatusCode};
+
+pub async fn profile_view(req: Request) -> Result<Response, DjangorsError> {
+    // Extracts authenticated user from session; returns 401 Unauthorized if unauthenticated or inactive
+    let Auth(user) = Auth::<User>::from_request(&req).await?;
+
+    Ok(Response::text(StatusCode::OK, format!("Hello, {}!", user.username)))
+}
+```
+
+---
+
+## Authentication Backends
+
+Authentication is decoupled via the `AuthBackend` trait:
+
+```rust
+#[async_trait::async_trait]
+pub trait AuthBackend {
+    type User: AuthUser;
+
+    async fn authenticate(
+        &self,
+        db: &djangors_db::Database,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<Self::User>, AuthError>;
+}
+```
+
+### `ModelBackend`
+Authenticates against database user records using Argon2id password verification.
+- Emits `LOGIN_SUCCEEDED` / `LOGIN_FAILED` signals.
+- Runs a dummy password verification when username is missing to mitigate timing side-channel attacks.
+
+### `RateLimitedBackend`
+Wraps any `AuthBackend` to enforce sliding-window rate limiting on login attempts:
+
+```rust
+use djangors_auth::{ModelBackend, RateLimitedBackend};
+
+// Limits to 5 failed login attempts per 15 minutes per username
+let backend = RateLimitedBackend::default_login_throttle(ModelBackend);
+```
+
+---
+
+## Session Management (`login` / `logout`)
+
+### `login`
+Establishes an authenticated session for a user. Rotates session key (`session.cycle_key()`) to prevent session fixation attacks, then stores user ID under `_auth_user_id`:
+
+```rust
+use djangors_auth::login;
+
+if let Some(user) = backend.authenticate(&db, &username, &password).await? {
+    login(&session, &user);
+}
+```
+
+### `logout`
+Clears session data (`session.clear()`), generating a fresh session key, and emits the `LOGGED_OUT` signal:
+
+```rust
+use djangors_auth::logout;
+
+logout(&session).await;
+```
+
+---
+
+## Permissions & Groups
+
+`djangors-auth` provides permission management:
+
+- **`Permission`**: Model for permissions with `codename` (`"{app_label}.{action}_{model}"`) and `name`.
+- **`Group`**: Role groups (`name`).
+- **Join Tables**: `UserGroup`, `GroupPermission`, `UserPermission`.
+
+### Checking Permissions (`has_perm`)
+```rust
+use djangors_auth::has_perm;
+
+// Superusers bypass perm checks manually or by calling user.is_superuser()
+if user.is_superuser() || has_perm(&db, user.id(), "polls.add_question").await? {
+    // User is authorized
+}
+```
+
+### Permission Synchronization (`sync_permissions` & `dj createpermissions`)
+`sync_permissions(&db)` scans all registered models (`all_registered_models()`) and generates the 4 standard permissions (`view`, `add`, `change`, `delete`) in `auth_permission`.
+
+Run via CLI:
+```bash
+dj createpermissions
+```
+
+---
+
+## Password Hashing & Password Reset
+
+- **Password Hashing**: `hash_password(password)` and `verify_password(password, hash)` use Argon2id with random salts.
+- **Password Reset**: `generate_password_reset_token`, `verify_password_reset_token`, `request_password_reset`, and `confirm_password_reset` provide HMAC-signed, time-bounded password reset tokens.
