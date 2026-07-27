@@ -1150,10 +1150,14 @@ dependencies = [
  "bytes",
  "djangors-core",
  "djangors-db",
+ "djangors-orm",
  "djangors-sessions",
  "hyper",
+ "serde",
+ "serde_json",
  "serde_urlencoded",
  "sqlx",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
