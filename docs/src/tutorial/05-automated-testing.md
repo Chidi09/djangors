@@ -11,7 +11,7 @@ In Part 5, we write integration tests in Rust to test our endpoints, authenticat
 
 Djangors applications leverage standard Rust integration test files in `tests/`. Create `tests/voting.rs`:
 
-```rust
+```rust,compile
 use djangors_auth::{hash_password, User};
 use djangors_core::middleware::{csrf_layer, security_headers_layer};
 use djangors_core::router::RouterService;
@@ -43,7 +43,20 @@ async fn send_request(addr: SocketAddr, req: &str) -> String {
 
 The test suite initializes test database tables, seeds model data, binds a Tokio TCP listener on an ephemeral port (`127.0.0.1:0`), and tests HTTP requests:
 
-```rust
+```rust,compile
+# use djangors_auth::{hash_password, User};
+# use djangors_core::middleware::{csrf_layer, security_headers_layer};
+# use djangors_core::router::RouterService;
+# use djangors_core::{Djangors, DjangorsSettings, Router};
+# use djangors_db::Database;
+# use djangors_sessions::{SessionLayer, SignedCookieStore};
+# use polls::models::{Choice, Question};
+# use polls::urls;
+# use tokio::net::TcpListener;
+# use tower::ServiceBuilder;
+# static DB_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+# async fn send_request(addr: std::net::SocketAddr, req: &str) -> String { String::new() }
+# #[ignore]
 #[tokio::test]
 async fn test_polls_voting_integration() {
     let _guard = DB_MUTEX.lock().unwrap();
@@ -160,20 +173,4 @@ async fn test_polls_voting_integration() {
 
 > [!IMPORTANT]
 > **Key Architecture Differences from Django:**
-> - **Async Test Runner**: Tests use `#[tokio::test]` rather than `django.test.TestCase`.
-> - **Real HTTP & Socket Execution**: Integration tests start an in-memory Tokio HTTP server listening on a real TCP port to test real headers, cookies, CSRF protection, and status codes.
-> - **Database Isolation**: Tests execute against real database connections, using explicit drop/create SQL queries and mutex locking (`DB_MUTEX`) for safe concurrent execution.
-
----
-
-## Running Tests
-
-Run all integration tests using `dj test` or `cargo test`:
-
-```bash
-# Using CLI wrapper
-dj test
-
-# Using Cargo directly
-cargo test --test voting
-```
+> - **Async Test Runner**: Tests use `

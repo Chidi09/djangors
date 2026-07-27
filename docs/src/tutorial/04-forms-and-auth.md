@@ -13,12 +13,12 @@ Djangors provides a `Form<T>` extractor powered by `serde::Deserialize` for extr
 
 In `src/views.rs`, implement the `vote` view:
 
-```rust
+```rust,compile
+# use polls::models::{Question, Choice};
 use djangors_auth::{Auth, AuthBackend};
 use djangors_core::extract::{Form, FromRequest};
 use djangors_core::{DjangorsError, PathParams, Request, Response};
 use djangors_orm::{q, Model};
-use crate::models::{Choice, Question};
 
 pub async fn vote(req: Request, params: PathParams) -> Result<Response, DjangorsError> {
     // 1. Enforce authentication (returns 401 Unauthorized if user is not logged in)
@@ -70,7 +70,10 @@ Authentication in Djangors leverages `ModelBackend` for credential verification 
 
 Add `login_view` and `logout_view` to `src/views.rs`:
 
-```rust
+```rust,compile
+# use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
+# use djangors_core::extract::{Form, FromRequest};
+# use djangors_auth::AuthBackend;
 #[derive(serde::Deserialize)]
 pub struct LoginForm {
     pub username: String,

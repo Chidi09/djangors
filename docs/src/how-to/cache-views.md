@@ -25,7 +25,7 @@ those guides/crates' own docs for the same pattern.
 below `djangors_core`'s dispatch (i.e. you construct the `CacheableResponse`-marked
 `hyper::Response` yourself, the way `djangors-cache`'s own test suite does):
 
-```rust
+```rust,compile
 use std::sync::Arc;
 use std::time::Duration;
 use bytes::Bytes;

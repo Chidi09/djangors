@@ -6,7 +6,8 @@
 
 Create and configure an `AdminSite` instance:
 
-```rust
+```rust,compile
+# fn main() {
 use djangors_admin::{AdminSite, ModelAdminConfig};
 use polls::models::{Choice, Question};
 
@@ -24,6 +25,7 @@ admin.register_with::<Choice>(ModelAdminConfig {
     list_filter: Some(&[]),
     ..Default::default()
 });
+# }
 ```
 
 ---
@@ -32,7 +34,8 @@ admin.register_with::<Choice>(ModelAdminConfig {
 
 Customize how models are displayed and edited in the admin interface:
 
-```rust
+```rust,compile
+# use djangors_admin::AdminAction;
 pub struct ModelAdminConfig {
     pub list_display: Option<&'static [&'static str]>,
     pub search_fields: Option<&'static [&'static str]>,
@@ -72,11 +75,13 @@ pub struct ModelAdminConfig {
 
 `djangors-admin` includes static favicon serving helper `favicon_routes`:
 
-```rust
+```rust,compile
+# fn main() {
 use djangors_admin::favicon_routes;
 use djangors_core::Router;
 
 let router = favicon_routes(Router::new());
+# }
 ```
 
 Routes served:

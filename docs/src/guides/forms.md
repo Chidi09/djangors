@@ -6,7 +6,7 @@
 
 The `Form<T>` struct (`djangors_core::extract::Form`) extracts and deserializes form data submitted via HTTP `POST` requests (`application/x-www-form-urlencoded`).
 
-```rust
+```rust,compile
 use djangors_core::extract::{Form, FromRequest};
 use djangors_core::{DjangorsError, Request, Response, StatusCode};
 use serde::Deserialize;
@@ -41,7 +41,7 @@ pub async fn vote_handler(req: Request) -> Result<Response, DjangorsError> {
 
 `djangors-core` extractors implement `FromRequest`:
 
-```rust
+```rust,compile
 use djangors_core::extract::{Form, FromRequest, Json, Query};
 ```
 
@@ -54,12 +54,13 @@ use djangors_core::extract::{Form, FromRequest, Json, Query};
 ### Path Parameter Extraction
 Path parameters are retrieved using `extract_path_param`:
 
-```rust
+```rust,compile
+# use djangors_core::{Request, PathParams, Response, DjangorsError};
 use djangors_core::extract::extract_path_param;
-use djangors_core::PathParams;
 
 pub async fn detail(req: Request, params: PathParams) -> Result<Response, DjangorsError> {
     let question_id: i64 = extract_path_param(&params, "id")?;
-    // ...
+    let _ = (req, question_id);
+    Ok(Response::text(djangors_core::StatusCode::OK, ""))
 }
 ```

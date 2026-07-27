@@ -9,7 +9,8 @@ The core rendering engine is `TemplateEngine`.
 ### Filesystem Loading (`TemplateEngine::new`)
 Applications load templates from disk by providing search directories:
 
-```rust
+```rust,compile
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 use djangors_template::TemplateEngine;
 use std::path::PathBuf;
 
@@ -17,6 +18,8 @@ let engine = TemplateEngine::new(vec![
     PathBuf::from("templates"),
     PathBuf::from("apps/polls/templates"),
 ])?;
+# Ok(())
+# }
 ```
 
 Search directories are checked in the specified order. The first directory containing the requested template name wins, supporting Django's template override pattern (project-level templates override app-level templates).
@@ -24,11 +27,14 @@ Search directories are checked in the specified order. The first directory conta
 ### Embedded Loading (`TemplateEngine::from_embedded`)
 Library crates (such as `djangors-admin`) compile templates directly into the binary using `include_str!`:
 
-```rust
-let engine = TemplateEngine::from_embedded(&[
-    ("admin/index.html", include_str!("../templates/admin/index.html")),
-    ("admin/base.html", include_str!("../templates/admin/base.html")),
+```rust,compile
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let engine = djangors_template::TemplateEngine::from_embedded(&[
+    ("admin/index.html", "<h1>Index</h1>"),
+    ("admin/base.html", "<h1>Base</h1>"),
 ])?;
+# Ok(())
+# }
 ```
 
 ---
@@ -38,23 +44,32 @@ let engine = TemplateEngine::from_embedded(&[
 ### Direct Rendering
 Render a template into a `String` with any serializable context (`Serialize`):
 
-```rust
+```rust,compile
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let engine = djangors_template::TemplateEngine::from_embedded(&[("index.html", "Hello {{ name }}")]).unwrap();
 #[derive(serde::Serialize)]
 struct Context {
     name: String,
 }
 
 let html: String = engine.render("index.html", &Context { name: "Alice".into() })?;
+# Ok(())
+# }
 ```
 
 ### HTTP Response Helper (`render`)
 Constructs an HTTP `Response` object (`200 OK`, `text/html` content type):
 
-```rust
+```rust,compile
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let engine = djangors_template::TemplateEngine::from_embedded(&[("polls/index.html", "Hello")]).unwrap();
+# let context = ();
 use djangors_template::render;
 use djangors_core::Response;
 
 let response: Response = render(&engine, "polls/index.html", &context)?;
+# Ok(())
+# }
 ```
 
 ---

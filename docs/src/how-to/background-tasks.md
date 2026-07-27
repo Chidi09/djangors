@@ -8,7 +8,7 @@ Annotate an async task handler with `#[task]` from `djangors_tasks`. Enqueue tas
 
 ## Code Example
 
-```rust
+```rust,compile
 use serde::{Deserialize, Serialize};
 use djangors_tasks::{task, enqueue, Worker, TaskError};
 use djangors_db::Database;

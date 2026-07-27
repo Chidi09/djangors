@@ -1,0 +1,45 @@
+[package]
+name = "doc-code-check"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+djangors = { path = "../../crates/djangors" }
+djangors-core = { path = "../../crates/djangors-core" }
+djangors-db = { path = "../../crates/djangors-db" }
+djangors-orm = { path = "../../crates/djangors-orm" }
+djangors-forms = { path = "../../crates/djangors-forms" }
+djangors-admin = { path = "../../crates/djangors-admin" }
+djangors-auth = { path = "../../crates/djangors-auth" }
+djangors-cache = { path = "../../crates/djangors-cache" }
+djangors-mail = { path = "../../crates/djangors-mail" }
+djangors-migrations = { path = "../../crates/djangors-migrations" }
+djangors-rest = { path = "../../crates/djangors-rest" }
+djangors-sessions = { path = "../../crates/djangors-sessions" }
+djangors-staticfiles = { path = "../../crates/djangors-staticfiles" }
+djangors-tasks = { path = "../../crates/djangors-tasks" }
+djangors-template = { path = "../../crates/djangors-template" }
+djangors-macros = { path = "../../crates/djangors-macros" }
+djangors-test = { path = "../../crates/djangors-test" }
+djangors-i18n = { path = "../../crates/djangors-i18n" }
+djangors-contrib-flatpages = { path = "../../crates/djangors-contrib-flatpages" }
+djangors-contrib-guardian = { path = "../../crates/djangors-contrib-guardian" }
+djangors-contrib-messages = { path = "../../crates/djangors-contrib-messages" }
+djangors-contrib-otp = { path = "../../crates/djangors-contrib-otp" }
+djangors-contrib-redirects = { path = "../../crates/djangors-contrib-redirects" }
+djangors-contrib-sitemaps = { path = "../../crates/djangors-contrib-sitemaps" }
+djangors-contrib-syndication = { path = "../../crates/djangors-contrib-syndication" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+async-stream = "0.3"
+tokio-stream = "0.1"
+minijinja = "2.0"
+bytes = "1"
+http = "1"
+tower = { version = "0.4", features = ["util"] }
+hyper = { version = "1", features = ["full"] }
+http-body-util = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+polls = { path = "../../examples/polls" }

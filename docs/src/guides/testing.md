@@ -9,7 +9,7 @@ Djangors supports two testing paradigms: **in-process route testing** via `djang
 `djangors-test` provides an in-process client that executes requests directly through `Router::handle()` without binding network sockets.
 
 ### In-Process Route Tests
-```rust
+```rust,compile
 use djangors_test::TestClient;
 use djangors_core::{Router, Response, StatusCode, Request, PathParams, DjangorsError};
 use djangors_sessions::Session;
@@ -32,7 +32,11 @@ async fn test_hello_route() {
 ```
 
 ### Form & Session Testing
-```rust
+```rust,compile
+# async fn submit_handler(_: djangors_core::Request, _: djangors_core::PathParams) -> Result<djangors_core::Response, djangors_core::DjangorsError> { Ok(djangors_core::Response::text(djangors_core::StatusCode::CREATED, "")) }
+# use djangors_sessions::Session;
+# use djangors_test::TestClient;
+# use djangors_core::{Router, StatusCode};
 #[tokio::test]
 async fn test_authenticated_form_submit() {
     let router = Router::new().post("/submit", submit_handler);
@@ -50,9 +54,10 @@ async fn test_authenticated_form_submit() {
 ```
 
 ### Database Fixture (`TestDatabase`)
-```rust
+```rust,compile
 use djangors_test::TestDatabase;
 
+# #[ignore]
 #[tokio::test]
 async fn test_database_queries() {
     let test_db = TestDatabase::connect().await.unwrap();
@@ -71,7 +76,7 @@ async fn test_database_queries() {
 For full-stack integration testing (including Tower middleware layers, real HTTP headers, cookie handling, and graceful shutdown), test suites bind a local TCP socket on port `0`.
 
 ### Real-Socket Pattern (As Used in `examples/polls/tests/voting.rs`)
-```rust
+```rust,compile
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -81,6 +86,7 @@ use djangors_core::router::RouterService;
 use djangors_core::middleware::{csrf_layer, security_headers_layer};
 use djangors_sessions::{SessionLayer, SignedCookieStore};
 
+# #[ignore]
 #[tokio::test]
 async fn test_full_stack_socket() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

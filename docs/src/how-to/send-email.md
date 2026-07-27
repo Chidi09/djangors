@@ -10,7 +10,7 @@ Use `djangors_mail::Message` and configure a backend implementing the `MailBacke
 
 ### 1. Sending via SMTP (Production)
 
-```rust
+```rust,compile
 use djangors_mail::{Message, SmtpConfig, SmtpBackend, MailBackend};
 
 pub async fn send_welcome_email(user_email: &str) -> Result<(), djangors_mail::MailError> {
@@ -38,7 +38,7 @@ pub async fn send_welcome_email(user_email: &str) -> Result<(), djangors_mail::M
 
 ### 2. Saving Emails to Disk (Development)
 
-```rust
+```rust,compile
 use djangors_mail::{Message, FileBackend, MailBackend};
 use std::path::PathBuf;
 

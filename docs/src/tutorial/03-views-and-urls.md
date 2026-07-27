@@ -11,9 +11,21 @@ In Part 3, we build out the Polls application views (`index`, `detail`, `results
 
 Register parameterized GET routes for `index`, `detail`, and `results` on the [`Router`](file:///root/dev/Rango/crates/djangors-core):
 
-```rust
+```rust,compile
+# mod views {
+#     use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
+#     pub async fn index(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn detail(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn results(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn vote(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn login_view(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn logout_view(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+# }
+# mod admin {
+#     use djangors_admin::AdminSite;
+#     pub fn admin_site() -> AdminSite { AdminSite::new() }
+# }
 use djangors_core::Router;
-use crate::views;
 
 pub fn urls() -> Router {
     djangors_admin::favicon_routes(
@@ -24,7 +36,7 @@ pub fn urls() -> Router {
             .post("/{question_id:i64}/vote/", views::vote)
             .post("/accounts/login/", views::login_view)
             .post("/accounts/logout/", views::logout_view)
-            .mount("/admin", crate::admin::admin_site().urls()),
+            .mount("/admin", self::admin::admin_site().urls()),
     )
 }
 ```
@@ -35,10 +47,10 @@ pub fn urls() -> Router {
 
 In `src/views.rs`, implement `index` to query the 5 most recent published questions using the ORM `q!()` macro:
 
-```rust
+```rust,compile
+# use polls::models::{Question, Choice};
 use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
 use djangors_orm::{q, Model};
-use crate::models::{Choice, Question};
 
 pub async fn index(req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
     let db = req
@@ -69,7 +81,10 @@ pub async fn index(req: Request, _params: PathParams) -> Result<Response, Django
 
 The `detail` view extracts `question_id` from [`PathParams`](file:///root/dev/Rango/crates/djangors-core) using `.get_as::<i64>("question_id")?`. If the question does not exist, it converts `OrmError::NotFound` into `DjangorsError::NotFound`:
 
-```rust
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
+# use djangors_orm::{q, Model};
 pub async fn detail(req: Request, params: PathParams) -> Result<Response, DjangorsError> {
     let db = req
         .state::<djangors_db::Database>()
@@ -126,7 +141,10 @@ pub async fn detail(req: Request, params: PathParams) -> Result<Response, Django
 
 The `results` view fetches question choices and displays current vote tallies:
 
-```rust
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
+# use djangors_orm::{q, Model};
 pub async fn results(req: Request, params: PathParams) -> Result<Response, DjangorsError> {
     let db = req
         .state::<djangors_db::Database>()

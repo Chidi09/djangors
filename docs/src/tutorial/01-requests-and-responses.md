@@ -57,7 +57,7 @@ In Djangors, HTTP views are asynchronous functions that accept a [`Request`](fil
 
 Create `src/views.rs` and add an index view that returns a simple HTML string:
 
-```rust
+```rust,compile
 use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
 
 pub async fn index(req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
@@ -74,9 +74,14 @@ pub async fn index(req: Request, _params: PathParams) -> Result<Response, Django
 
 Next, map your view to a URL endpoint. Create `src/urls.rs` and define a function that constructs a [`Router`](file:///root/dev/Rango/crates/djangors-core):
 
-```rust
+```rust,compile
+# mod views {
+#     use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
+#     pub async fn index(_: Request, _: PathParams) -> Result<Response, DjangorsError> {
+#         Ok(Response::html(StatusCode::OK, ""))
+#     }
+# }
 use djangors_core::Router;
-use crate::views;
 
 pub fn urls() -> Router {
     Router::new().get("/", views::index)
@@ -85,7 +90,7 @@ pub fn urls() -> Router {
 
 Expose the URL module in `src/lib.rs`:
 
-```rust
+```rust,illustrative
 pub mod admin;
 pub mod models;
 pub mod urls;
@@ -98,7 +103,13 @@ pub mod views;
 
 In `src/main.rs`, initialize dev logging, load environment settings, construct the Tower middleware pipeline, and start the HTTP server:
 
-```rust
+```rust,compile
+# mod polls {
+#     pub mod urls {
+#         use djangors_core::Router;
+#         pub fn urls() -> Router { Router::new() }
+#     }
+# }
 use djangors_core::{Djangors, DjangorsError, DjangorsSettings, Router};
 use polls::urls;
 

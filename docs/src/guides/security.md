@@ -6,13 +6,16 @@ Djangors includes built-in security middleware covering CSRF protection, securit
 
 `CsrfLayer` (`djangors_core::middleware::csrf_layer()`) implements CSRF protection using a double-submit cookie scheme with header and form-body validation fallbacks.
 
-```rust
+```rust,compile
+# fn main() {
+# let router_service = djangors_core::router::RouterService::new(djangors_core::Router::new(), false);
 use djangors_core::middleware::csrf_layer;
 use tower::ServiceBuilder;
 
 let service = ServiceBuilder::new()
     .layer(csrf_layer())
     .service(router_service);
+# }
 ```
 
 ### Mechanism & Verification Flow
@@ -26,12 +29,16 @@ let service = ServiceBuilder::new()
 
 `SecurityHeadersLayer` (`djangors_core::middleware::security_headers_layer()`) sets standard security response headers mimicking Django's `SecurityMiddleware`:
 
-```rust
+```rust,compile
+# fn main() {
+# let router_service = djangors_core::router::RouterService::new(djangors_core::Router::new(), false);
+use tower::ServiceBuilder;
 use djangors_core::middleware::security_headers_layer;
 
 let service = ServiceBuilder::new()
     .layer(security_headers_layer())
     .service(router_service);
+# }
 ```
 
 ### Headers Set
@@ -45,11 +52,13 @@ let service = ServiceBuilder::new()
 
 Enforces HTTPS via HTTP Strict Transport Security (HSTS):
 
-```rust
+```rust,compile
+# fn main() {
 use djangors_core::middleware::hsts_layer;
 
 // Sets Strict-Transport-Security: max-age=31536000; includeSubDomains
 let hsts = hsts_layer(31536000).with_include_subdomains(true);
+# }
 ```
 
 ---
@@ -58,10 +67,12 @@ let hsts = hsts_layer(31536000).with_include_subdomains(true);
 
 `HostValidationLayer` validates incoming HTTP `Host` headers against the project's `ALLOWED_HOSTS` setting:
 
-```rust
+```rust,compile
+# fn main() {
 use djangors_core::middleware::HostValidationLayer;
 
 let layer = HostValidationLayer::new(vec!["example.com".to_string(), "api.example.com".to_string()]);
+# }
 ```
 
 - Strip trailing port numbers before matching.
@@ -73,7 +84,9 @@ let layer = HostValidationLayer::new(vec!["example.com".to_string(), "api.exampl
 
 `SignedCookieStore` (`djangors_sessions::SignedCookieStore`) stores session data in client-side cookies signed with HMAC-SHA256 using `settings.SECRET_KEY`:
 
-```rust
+```rust,compile
+# fn main() {
+# let secret_key_bytes = b"01234567890123456789012345678901";
 use djangors_sessions::{SessionLayer, SignedCookieStore};
 
 let store = SignedCookieStore::new(secret_key_bytes)
@@ -81,6 +94,7 @@ let store = SignedCookieStore::new(secret_key_bytes)
     .with_secure(true); // Enforce Secure attribute in production
 
 let session_layer = SessionLayer::new(store);
+# }
 ```
 
 ### Security Features

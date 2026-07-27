@@ -6,7 +6,8 @@
 
 In Djangors, custom user model swapping is achieved at compile time via the `AuthUser` trait (rather than runtime settings strings):
 
-```rust
+```rust,compile
+# use djangors_orm::FromRow;
 #[async_trait::async_trait]
 pub trait AuthUser: djangors_orm::Model + djangors_orm::FromRow + Send + Sync + 'static {
     fn id(&self) -> i64;
@@ -21,7 +22,8 @@ pub trait AuthUser: djangors_orm::Model + djangors_orm::FromRow + Send + Sync + 
 
 The crate provides a built-in concrete `User` model implementing `AuthUser`:
 
-```rust
+```rust,compile
+use djangors_macros::Model;
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_auth", table_name = "auth_user")]
 pub struct User {
@@ -46,7 +48,7 @@ pub struct User {
 
 Extract the authenticated user in handlers using `Auth<User>`:
 
-```rust
+```rust,compile
 use djangors_auth::{Auth, User};
 use djangors_core::extract::FromRequest;
 use djangors_core::{DjangorsError, Request, Response, StatusCode};
@@ -55,7 +57,7 @@ pub async fn profile_view(req: Request) -> Result<Response, DjangorsError> {
     // Extracts authenticated user from session; returns 401 Unauthorized if unauthenticated or inactive
     let Auth(user) = Auth::<User>::from_request(&req).await?;
 
-    Ok(Response::text(StatusCode::OK, format!("Hello, {}!", user.username)))
+    Ok(Response::text(StatusCode::OK, "Hello, authenticated user!"))
 }
 ```
 
@@ -65,7 +67,9 @@ pub async fn profile_view(req: Request) -> Result<Response, DjangorsError> {
 
 Authentication is decoupled via the `AuthBackend` trait:
 
-```rust
+```rust,compile
+# pub trait AuthUser: djangors_orm::Model + djangors_orm::FromRow + Send + Sync + 'static {}
+# use djangors_auth::AuthError;
 #[async_trait::async_trait]
 pub trait AuthBackend {
     type User: AuthUser;
@@ -87,11 +91,13 @@ Authenticates against database user records using Argon2id password verification
 ### `RateLimitedBackend`
 Wraps any `AuthBackend` to enforce sliding-window rate limiting on login attempts:
 
-```rust
+```rust,compile
+# fn main() {
 use djangors_auth::{ModelBackend, RateLimitedBackend};
 
 // Limits to 5 failed login attempts per 15 minutes per username
 let backend = RateLimitedBackend::default_login_throttle(ModelBackend);
+# }
 ```
 
 ---
@@ -101,21 +107,31 @@ let backend = RateLimitedBackend::default_login_throttle(ModelBackend);
 ### `login`
 Establishes an authenticated session for a user. Rotates session key (`session.cycle_key()`) to prevent session fixation attacks, then stores user ID under `_auth_user_id`:
 
-```rust
-use djangors_auth::login;
+```rust,compile
+# async fn test_login() -> Result<(), Box<dyn std::error::Error>> {
+# let session = djangors_sessions::Session::new_empty();
+# let backend = djangors_auth::ModelBackend;
+# let db = djangors_db::Database::connect(&djangors_db::config::DatabaseConfig::new("postgres://postgres:postgres@localhost/djangors_test")).await.unwrap();
+# let username = ""; let password = "";
+use djangors_auth::{login, AuthBackend};
 
 if let Some(user) = backend.authenticate(&db, &username, &password).await? {
     login(&session, &user);
 }
+# Ok(())
+# }
 ```
 
 ### `logout`
 Clears session data (`session.clear()`), generating a fresh session key, and emits the `LOGGED_OUT` signal:
 
-```rust
+```rust,compile
+# async fn test_logout() {
+# let session = djangors_sessions::Session::new_empty();
 use djangors_auth::logout;
 
 logout(&session).await;
+# }
 ```
 
 ---
@@ -129,13 +145,18 @@ logout(&session).await;
 - **Join Tables**: `UserGroup`, `GroupPermission`, `UserPermission`.
 
 ### Checking Permissions (`has_perm`)
-```rust
-use djangors_auth::has_perm;
+```rust,compile
+# async fn test_perm() -> Result<(), Box<dyn std::error::Error>> {
+# let user = djangors_auth::User { id: 1, username: String::new(), email: String::new(), password: String::new(), is_active: true, is_staff: true, is_superuser: true, date_joined: chrono::Utc::now(), last_login: None };
+# let db = djangors_db::Database::connect(&djangors_db::config::DatabaseConfig::new("postgres://postgres:postgres@localhost/djangors_test")).await.unwrap();
+use djangors_auth::{has_perm, AuthUser};
 
 // Superusers bypass perm checks manually or by calling user.is_superuser()
 if user.is_superuser() || has_perm(&db, user.id(), "polls.add_question").await? {
     // User is authorized
 }
+# Ok(())
+# }
 ```
 
 ### Permission Synchronization (`sync_permissions` & `dj createpermissions`)

@@ -26,7 +26,11 @@ class Book(models.Model):
 
 ### Djangors
 
-```rust
+```rust,compile
+# use djangors_orm::Model;
+# #[derive(djangors_macros::Model, Debug, Clone)]
+# #[djangors(app = "library", table_name = "library_author")]
+# pub struct Author { #[djangors(primary_key, auto)] pub id: i64, #[djangors(max_length = 200)] pub name: String }
 use djangors_macros::Model;
 use djangors_orm::ForeignKey;
 use chrono::{DateTime, Utc};
@@ -40,6 +44,7 @@ pub struct Book {
     #[djangors(max_length = 200)]
     pub title: String,
 
+    #[djangors(foreign_key(on_delete = "cascade", related_name = "books"))]
     pub author: ForeignKey<Author>,
 
     #[djangors(default = true)]
@@ -73,12 +78,17 @@ urlpatterns = [
 
 ### Djangors
 
-```rust
+```rust,compile
+# fn main() {
+# use djangors_core::{Request, PathParams, Response, DjangorsError, StatusCode};
+# async fn list_articles(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::text(StatusCode::OK, "")) }
+# async fn article_detail(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::text(StatusCode::OK, "")) }
 use djangors_core::Router;
 
 let router = Router::new()
     .get("/articles/", list_articles)
     .get("/articles/{id}", article_detail);
+# }
 ```
 
 ### Key Differences & Guarantees
@@ -108,7 +118,11 @@ def article_detail(request, id):
 
 ### Djangors
 
-```rust
+```rust,compile
+# #[derive(djangors_macros::Model, Debug, Clone, serde::Serialize)]
+# #[djangors(app = "library", table_name = "library_article")]
+# pub struct Article { #[djangors(primary_key, auto)] pub id: i64, pub title: String }
+use djangors_orm::Model;
 use djangors_core::{Request, Response, PathParams, DjangorsError, StatusCode};
 
 // A process-wide template engine, mirroring djangors-admin's own `ADMIN_TEMPLATES` pattern.
@@ -123,7 +137,8 @@ pub async fn article_detail(req: Request, params: PathParams) -> Result<Response
         .ok_or_else(|| DjangorsError::Internal("Database state missing".into()))?;
 
     let article = Article::objects()
-        .filter(djangors_orm::q!(id = article_id))?
+            .filter(djangors_orm::q!(id = article_id))
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
         .get(db)
         .await
         .map_err(|_| DjangorsError::NotFound)?;
@@ -164,7 +179,7 @@ Database migrations in Djangors are authored as raw SQL files or generated via p
 `dj shell` launches an interactive Rust REPL via `evcxr` (installed via `cargo install evcxr_repl`).
 
 Because `dj` is a separate binary process from your application, target project models cannot be auto-imported across process boundaries automatically. To import your project's models into the REPL session, use `:dep` with a path dependency:
-```rust
+```rust,illustrative
 :dep my_app = { path = "." }
 use my_app::models::*;
 ```
@@ -190,7 +205,11 @@ class ArticleAdmin(admin.ModelAdmin):
 
 ### Djangors
 
-```rust
+```rust,compile
+# #[derive(djangors_macros::Model, Debug, Clone)]
+# #[djangors(app = "library", table_name = "library_article")]
+# pub struct Article { #[djangors(primary_key, auto)] pub id: i64, pub title: String, pub author: String, pub is_published: bool }
+# fn main() {
 use djangors_admin::{AdminSite, ModelAdminConfig};
 
 let site = AdminSite::new().with_site_header("Admin Console");
@@ -200,6 +219,7 @@ site.register_with::<Article>(ModelAdminConfig {
     list_filter: Some(&["is_published"]),
     ..Default::default()
 });
+# }
 ```
 
 ### Key Differences & Guarantees
@@ -240,10 +260,13 @@ export DJANGORS_PORT=8000
 ```
 
 Loading in Rust:
-```rust
+```rust,compile
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 use djangors_core::DjangorsSettings;
 
 let (settings, warnings) = DjangorsSettings::load()?;
+# Ok(())
+# }
 ```
 
 ---
@@ -267,7 +290,10 @@ In HTML forms:
 
 Adding the CSRF layer — like every Djangors middleware, it's composed via `tower::ServiceBuilder`
 around a `RouterService`, not a method on `Router` itself:
-```rust
+```rust,compile
+# fn main() {
+# let router = djangors_core::Router::new();
+# let settings = djangors_core::DjangorsSettings::default();
 use djangors_core::middleware::csrf_layer;
 use djangors_core::router::RouterService;
 use tower::ServiceBuilder;
@@ -276,6 +302,7 @@ let router_service = RouterService::new(router, settings.debug);
 let service = ServiceBuilder::new()
     .layer(csrf_layer())
     .service(router_service);
+# }
 ```
 
 ---
@@ -299,7 +326,7 @@ def contact_view(request):
 
 ### Djangors
 
-```rust
+```rust,compile
 use serde::Deserialize;
 use djangors_core::extract::{Form, FromRequest};
 use djangors_core::{Request, Response, PathParams, DjangorsError, StatusCode};
@@ -344,7 +371,12 @@ class ArticleViewSet(viewsets.ModelViewSet):
 
 ### Djangors (`djangors-rest`)
 
-```rust
+```rust,compile
+# #[derive(djangors_macros::Model, Debug, Clone, serde::Serialize)]
+# #[djangors(app = "library", table_name = "library_article")]
+# pub struct Article { #[djangors(primary_key, auto)] pub id: i64 }
+# fn main() {
+# let article_instance = Article { id: 1 };
 use djangors_rest::{serialize, viewset_routes};
 use djangors_core::Router;
 
@@ -354,6 +386,7 @@ let json_val = serialize::<Article>(&article_instance);
 // High-level ViewSet registration — `ViewSet<M>` has no instance to construct;
 // its CRUD handlers are mounted directly as a free function, IsAuthenticated by default.
 let router = viewset_routes::<Article>(Router::new(), "/articles");
+# }
 ```
 
 ---

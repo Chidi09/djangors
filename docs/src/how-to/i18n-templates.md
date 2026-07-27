@@ -8,7 +8,7 @@ Use `djangors_i18n::Locales` to load Fluent (`.ftl`) catalogs. Pass `locales_val
 
 ## Code Example
 
-```rust
+```rust,compile
 use std::sync::Arc;
 use djangors_i18n::{Locales, locales_value, trans};
 use minijinja::Environment;

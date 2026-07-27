@@ -26,7 +26,8 @@ CMD ["/app/server"]
 ### `/healthz` Route
 Projects include a dedicated `/healthz` endpoint returning HTTP `200 OK` for container orchestrators (Docker, Kubernetes) and load balancers:
 
-```rust
+```rust,compile
+# use djangors_core::{Request, PathParams, Response, DjangorsError, StatusCode};
 pub async fn healthz(_req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
     Ok(Response::text(StatusCode::OK, "ok"))
 }
@@ -78,10 +79,14 @@ dj check --deploy
 
 `djangors-core` handles process termination signals (`SIGINT` and `SIGTERM`) gracefully via `run_with_shutdown` and `run_service_with_shutdown`:
 
-```rust
+```rust,compile
+# async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
+# let app = djangors_core::Djangors::new(djangors_core::DjangorsSettings::default(), djangors_core::Router::new());
 app.run_with_shutdown(async {
     tokio::signal::ctrl_c().await.ok();
 }).await?;
+# Ok(())
+# }
 ```
 
 ### Shutdown Sequence

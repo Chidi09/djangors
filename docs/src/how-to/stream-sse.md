@@ -8,7 +8,7 @@ Create a streaming response using `StreamingResponse::sse(stream)` or register a
 
 ## Code Example
 
-```rust
+```rust,compile
 use async_stream::stream;
 use tokio_stream::StreamExt;
 use djangors_core::{Request, PathParams, DjangorsError, Router, DjangorsSettings, Djangors};

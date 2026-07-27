@@ -8,7 +8,11 @@ Define an `AdminAction` struct specifying the action name, user-facing label, co
 
 ## Code Example
 
-```rust
+```rust,compile
+# use djangors_orm::Model;
+# #[derive(djangors_macros::Model, Debug, Clone, serde::Serialize, serde::Deserialize)]
+# #[djangors(app = "library", table_name = "library_article")]
+# struct Article { #[djangors(primary_key, auto)] id: i64 }
 use djangors_admin::{AdminAction, AdminSite, ModelAdminConfig};
 use djangors_db::Database;
 use djangors_core::DjangorsError;
@@ -20,7 +24,7 @@ fn publish_articles_handler<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), DjangorsError>> + Send + 'a>> {
     Box::pin(async move {
         for &pk in pks {
-            sqlx::query("UPDATE library_article SET is_published = TRUE WHERE id = $1")
+            djangors_orm::sqlx::query("UPDATE library_article SET is_published = TRUE WHERE id = $1")
                 .bind(pk)
                 .execute(db.pool())
                 .await

@@ -6,7 +6,8 @@
 
 Models are Rust structs decorated with `#[derive(Model)]` from `djangors-macros`.
 
-```rust
+```rust,compile
+# use djangors_orm::Model;
 use djangors_macros::Model;
 use djangors_orm::ForeignKey;
 use chrono::{DateTime, Utc};
@@ -17,8 +18,7 @@ pub struct Question {
     #[djangors(primary_key, auto)]
     pub id: i64,
 
-    #[djangors(max_length = 200)]
-    pub question_text: String,
+    #[djangors(max_length = 200)] pub question_text: String,
 
     pub pub_date: DateTime<Utc>,
 }
@@ -29,6 +29,7 @@ pub struct Choice {
     #[djangors(primary_key, auto)]
     pub id: i64,
 
+    #[djangors(foreign_key(on_delete = "cascade", related_name = "choices"))]
     pub question: ForeignKey<Question>,
 
     #[djangors(max_length = 200)]
@@ -100,13 +101,21 @@ Access querysets using `Model::objects()` (or `QuerySet::<T>::new()`).
 
 ### `q!` Macro
 Constructs lookup filter expressions:
-```rust
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::{q, Model};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 let qs = Question::objects().filter(q!(question_text = "What is your name?"))?;
+# Ok(())
+# }
 ```
 
 ### `set!` Macro & `F` Expressions
 Constructs update assignment lists, supporting `F` expressions for in-database atomic updates:
-```rust
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::{q, Model};
+# async fn run_update(db: &djangors_db::Database, choice_id: i64) -> Result<(), Box<dyn std::error::Error>> {
 use djangors_orm::{set, F};
 
 // Increment votes by 1 atomically in SQL: UPDATE polls_choice SET votes = votes + 1 WHERE ...
@@ -114,6 +123,8 @@ Choice::objects()
     .filter(q!(id = choice_id))?
     .update(db, set!(votes = F("votes") + 1))
     .await?;
+# Ok(())
+# }
 ```
 
 ---
@@ -129,7 +140,7 @@ Models derived with `#[derive(Model)]` implement instance CRUD operations:
 
 ## Relationships & Many-to-Many
 
-Foreign keys are stored in `ForeignKey<T>` wrapper fields (e.g. `pub question: ForeignKey<Question>`). Foreign keys access `.id` directly.
+Foreign keys are stored in `ForeignKey<T>` wrapper fields (e.g. `#[djangors(foreign_key(on_delete = "cascade", related_name = "choices"))] pub question: ForeignKey<Question>`). Foreign keys access `.id` directly.
 
 > [!NOTE]
 > Direct many-to-many relationship querying via implicit junction table abstraction is not implemented in `djangors-orm`. Explicit join models (such as `UserGroup`, `GroupPermission`, and `UserPermission` in `djangors-auth`) are defined and queried directly as models with foreign keys.

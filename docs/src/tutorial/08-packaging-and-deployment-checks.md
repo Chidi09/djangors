@@ -13,7 +13,7 @@ A well-structured Djangors project splits application logic into a library crate
 
 ### `src/lib.rs`
 
-```rust
+```rust,illustrative
 pub mod admin;
 pub mod models;
 pub mod urls;

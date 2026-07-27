@@ -11,7 +11,10 @@ In Part 6, we examine Djangors' middleware architecture (`security_headers_layer
 
 In Djangors, middleware is built using standard Rust Tower layers in `src/main.rs`:
 
-```rust
+```rust,compile
+# fn main() {
+# let settings = djangors_core::DjangorsSettings::default();
+# let router_service = djangors_core::router::RouterService::new(djangors_core::Router::new(), settings.debug);
 let secret_key = if settings.secret_key.is_empty() {
     "dev-only-secret-key-at-least-32-bytes-long-for-signing-cookies".to_string()
 } else {
@@ -25,6 +28,7 @@ let service = tower::ServiceBuilder::new()
     ))
     .layer(djangors_core::middleware::csrf_layer())
     .service(router_service);
+# }
 ```
 
 ### Layer Breakdown
@@ -38,9 +42,21 @@ let service = tower::ServiceBuilder::new()
 
 In `src/urls.rs`, `djangors_admin::favicon_routes` wraps the main application router to automatically handle `favicon.ico` requests:
 
-```rust
+```rust,compile
+# mod views {
+#     use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
+#     pub async fn index(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn detail(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn results(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn vote(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn login_view(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn logout_view(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+# }
+# mod admin {
+#     use djangors_admin::AdminSite;
+#     pub fn admin_site() -> AdminSite { AdminSite::new() }
+# }
 use djangors_core::Router;
-use crate::views;
 
 pub fn urls() -> Router {
     djangors_admin::favicon_routes(
@@ -51,7 +67,7 @@ pub fn urls() -> Router {
             .post("/{question_id:i64}/vote/", views::vote)
             .post("/accounts/login/", views::login_view)
             .post("/accounts/logout/", views::logout_view)
-            .mount("/admin", crate::admin::admin_site().urls()),
+            .mount("/admin", self::admin::admin_site().urls()),
     )
 }
 ```

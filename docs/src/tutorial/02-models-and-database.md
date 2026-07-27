@@ -13,7 +13,7 @@ In Djangors, models are plain Rust `struct`s decorated with `#[derive(Model)]` a
 
 Create `src/models.rs` and add the `Question` and `Choice` models:
 
-```rust
+```rust,compile
 use chrono::{DateTime, Utc};
 use djangors_macros::Model;
 use djangors_orm::ForeignKey;
@@ -24,8 +24,7 @@ pub struct Question {
     #[djangors(primary_key, auto)]
     pub id: i64,
 
-    #[djangors(max_length = 200)]
-    pub question_text: String,
+    #[djangors(max_length = 200)] pub question_text: String,
 
     #[djangors(verbose_name = "date published", db_index)]
     pub pub_date: DateTime<Utc>,
@@ -133,7 +132,7 @@ dj shell
 ```
 
 Inside the REPL, you can load your project crate directly:
-```rust
+```rust,illustrative
 :dep my_app = { path = "." }
 use my_app::models::*;
 ```

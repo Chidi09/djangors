@@ -13,8 +13,8 @@ In Djangors, the admin site is configured in `src/admin.rs` using [`AdminSite`](
 
 Create `src/admin.rs` and register the models:
 
-```rust
-use crate::models::{Choice, Question};
+```rust,compile
+# use polls::models::{Question, Choice};
 use djangors_admin::{AdminSite, ModelAdminConfig};
 
 pub fn admin_site() -> AdminSite {
@@ -47,9 +47,21 @@ pub fn admin_site() -> AdminSite {
 
 Mount the admin site onto your main router in `src/urls.rs`:
 
-```rust
+```rust,compile
+# mod views {
+#     use djangors_core::{DjangorsError, PathParams, Request, Response, StatusCode};
+#     pub async fn index(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn detail(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn results(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn vote(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn login_view(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+#     pub async fn logout_view(_: Request, _: PathParams) -> Result<Response, DjangorsError> { Ok(Response::html(StatusCode::OK, "")) }
+# }
+# mod admin {
+#     use djangors_admin::AdminSite;
+#     pub fn admin_site() -> AdminSite { AdminSite::new() }
+# }
 use djangors_core::Router;
-use crate::views;
 
 pub fn urls() -> Router {
     djangors_admin::favicon_routes(
@@ -60,7 +72,7 @@ pub fn urls() -> Router {
             .post("/{question_id:i64}/vote/", views::vote)
             .post("/accounts/login/", views::login_view)
             .post("/accounts/logout/", views::logout_view)
-            .mount("/admin", crate::admin::admin_site().urls()),
+            .mount("/admin", self::admin::admin_site().urls()),
     )
 }
 ```
