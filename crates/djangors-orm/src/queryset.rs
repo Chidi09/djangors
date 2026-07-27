@@ -321,6 +321,7 @@ impl<T: Model + FromRow> QuerySet<T> {
                 Value::Null => query.bind(None::<i64>),
             };
         }
+        db.record_query();
         let rows = query.fetch_all(db.pool()).await?;
         let mut results = Vec::new();
         for row in rows {
@@ -372,6 +373,7 @@ impl<T: Model + FromRow> QuerySet<T> {
                 Value::Null => query.bind(None::<i64>),
             };
         }
+        db.record_query();
         let row_opt = query.fetch_optional(db.pool()).await?;
         Ok(row_opt.is_some())
     }
@@ -390,6 +392,7 @@ impl<T: Model + FromRow> QuerySet<T> {
                 Value::Null => query.bind(None::<i64>),
             };
         }
+        db.record_query();
         let row = query.fetch_one(db.pool()).await?;
         use sqlx::Row;
         let count: i64 = row.try_get(0)?;
@@ -496,6 +499,7 @@ impl<T: Model + FromRow> QuerySet<T> {
             };
         }
 
+        db.record_query();
         let row = query.fetch_one(db.pool()).await?;
         use sqlx::Row;
 
@@ -634,6 +638,7 @@ impl<T: Model + FromRow> QuerySet<T> {
             };
         }
 
+        db.record_query();
         let res = query.execute(db.pool()).await?;
         Ok(res.rows_affected())
     }
@@ -713,6 +718,7 @@ impl<T: Model + FromRow> QuerySet<T> {
         }
 
         use sqlx::Row;
+        db.record_query();
         let row = query.fetch_one(db.pool()).await?;
         let pk: i64 = row.try_get(0)?;
         Ok(pk)
@@ -731,6 +737,7 @@ impl<T: Model + FromRow> QuerySet<T> {
             "DELETE FROM {} WHERE {} = $1",
             meta.table_name, pk_field.column_name
         );
+        db.record_query();
         let res = sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(pk)
             .execute(db.pool())
@@ -787,6 +794,7 @@ impl<T: Model + FromRow> QuerySet<T> {
                 Value::Null => query.bind(None::<i64>),
             };
         }
+        db.record_query();
         let rows = query.fetch_all(db.pool()).await?;
 
         // 4. Collect distinct non-null ids and map T records
@@ -827,6 +835,7 @@ impl<T: Model + FromRow> QuerySet<T> {
         let mut r_query = sqlx::query(sqlx::AssertSqlSafe(r_sql));
         r_query = r_query.bind(relation_ids_vec);
 
+        db.record_query();
         let r_rows = r_query.fetch_all(db.pool()).await?;
 
         let mut r_map = std::collections::HashMap::new();
@@ -849,6 +858,82 @@ impl<T: Model + FromRow> QuerySet<T> {
 
         Ok(final_results)
     }
+}
+
+/// Batch-loads the reverse side of a foreign-key relation for already-fetched
+/// parents. The returned map omits parents with no matching children.
+pub async fn prefetch_related<T, R>(
+    db: &djangors_db::Database,
+    parents: &[T],
+    related_name: &str,
+) -> Result<std::collections::HashMap<i64, Vec<R>>, OrmError>
+where
+    T: Model,
+    R: Model + FromRow + Clone,
+{
+    let parent_meta = T::meta();
+    let child_meta = R::meta();
+    let relation = child_meta
+        .relations
+        .iter()
+        .find(|relation| {
+            relation.related_name == Some(related_name)
+                && (relation.target)().struct_name == parent_meta.struct_name
+        })
+        .ok_or_else(|| OrmError::FieldNotFound {
+            field: format!("reverse relation '{}'", related_name),
+            model: child_meta.struct_name,
+        })?;
+    let pk_field = parent_meta
+        .fields
+        .iter()
+        .find(|field| field.primary_key)
+        .ok_or_else(|| OrmError::FieldNotFound {
+            field: "primary_key".to_string(),
+            model: parent_meta.struct_name,
+        })?;
+    let parent_ids: Vec<i64> = parents
+        .iter()
+        .filter_map(|parent| {
+            parent
+                .field_values()
+                .into_iter()
+                .find(|(name, _)| *name == pk_field.name)
+                .and_then(|(_, value)| match value {
+                    Value::I64(id) => Some(id),
+                    _ => None,
+                })
+        })
+        .collect();
+
+    let sql = format!(
+        "SELECT * FROM {} WHERE {} = ANY($1)",
+        child_meta.table_name, relation.field_name
+    );
+    let query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(parent_ids);
+    db.record_query();
+    let rows = query.fetch_all(db.pool()).await?;
+    let mut grouped = std::collections::HashMap::new();
+    for row in rows {
+        let child = R::from_row(&row)?;
+        let parent_id = child
+            .field_values()
+            .into_iter()
+            .find(|(name, _)| *name == relation.field_name)
+            .and_then(|(_, value)| match value {
+                Value::I64(id) => Some(id),
+                _ => None,
+            })
+            .ok_or_else(|| OrmError::FieldNotFound {
+                field: relation.field_name.to_string(),
+                model: child_meta.struct_name,
+            })?;
+        grouped
+            .entry(parent_id)
+            .or_insert_with(Vec::new)
+            .push(child);
+    }
+    Ok(grouped)
 }
 
 fn split_field_lookup(s: &'static str) -> (&'static str, &'static str) {

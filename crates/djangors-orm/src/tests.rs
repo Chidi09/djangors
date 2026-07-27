@@ -898,6 +898,118 @@ async fn test_queryset_select_related() {
         .unwrap();
 }
 
+// Dedicated models/tables for the prefetch test below, kept separate from
+// `SelectRelatedParent`/`SelectRelatedChild` above: reusing those tables led to a real race,
+// since Rust tests in this file run concurrently against the same live database, and
+// `test_queryset_select_related` drops its own tables partway through the run.
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_prefetch_parent")]
+pub struct PrefetchParent {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_prefetch_child")]
+pub struct PrefetchChild {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    #[djangors(foreign_key(on_delete = "cascade", related_name = "children"))]
+    pub parent: ForeignKey<PrefetchParent>,
+}
+
+#[tokio::test]
+async fn test_prefetch_related_is_constant_query_count() {
+    let config = djangors_db::config::DatabaseConfig::new(
+        "postgres://postgres:postgres@localhost/djangors_test",
+    );
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query("DROP TABLE IF EXISTS test_prefetch_child")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE IF EXISTS test_prefetch_parent")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    sqlx::query(
+        "CREATE TABLE test_prefetch_parent (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "CREATE TABLE test_prefetch_child (
+            id BIGSERIAL PRIMARY KEY,
+            parent BIGINT NOT NULL REFERENCES test_prefetch_parent(id) ON DELETE CASCADE
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let seed_parents: Vec<_> = (0..5)
+        .map(|i| PrefetchParent {
+            id: 0,
+            name: format!("Prefetch {i}"),
+        })
+        .collect();
+    for parent in &seed_parents {
+        parent.clone().save(&db).await.unwrap();
+    }
+    let parents = PrefetchParent::objects().all(&db).await.unwrap();
+    for parent in &parents {
+        for _ in 0..2 {
+            PrefetchChild {
+                id: 0,
+                parent: ForeignKey::new(parent.id),
+            }
+            .save(&db)
+            .await
+            .unwrap();
+        }
+    }
+
+    db.reset_query_count();
+    let parents = PrefetchParent::objects().all(&db).await.unwrap();
+    let grouped =
+        crate::prefetch_related::<PrefetchParent, PrefetchChild>(&db, &parents, "children")
+            .await
+            .unwrap();
+    assert_eq!(db.query_count(), 2);
+    assert_eq!(grouped.len(), 5);
+    assert!(parents
+        .iter()
+        .all(|p| grouped[&p.id].len() == 2 && grouped[&p.id].iter().all(|c| c.parent.id == p.id)));
+
+    db.reset_query_count();
+    for parent in &parents {
+        PrefetchChild::objects()
+            .filter(q!(parent = parent.id))
+            .unwrap()
+            .all(&db)
+            .await
+            .unwrap();
+    }
+    assert_eq!(db.query_count(), 5);
+
+    sqlx::query("DROP TABLE test_prefetch_child")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query("DROP TABLE test_prefetch_parent")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "test_app", table_name = "test_field_values_parent")]
 pub struct FieldValuesParent {

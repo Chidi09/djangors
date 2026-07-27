@@ -2,6 +2,8 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::{Executor, PgConnection, PgPool};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::DatabaseConfig;
@@ -18,6 +20,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[derive(Debug, Clone)]
 pub struct Database {
     pool: PgPool,
+    query_count: Arc<AtomicUsize>,
 }
 
 /// Supported isolation levels for database transactions.
@@ -60,7 +63,10 @@ impl Database {
             }
         })?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            query_count: Arc::new(AtomicUsize::new(0)),
+        })
     }
 
     /// Access the underlying SQLx connection pool directly.
@@ -69,6 +75,21 @@ impl Database {
     /// framework components like the Djangors ORM.
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Records one SQL query for test observability.
+    pub fn record_query(&self) {
+        self.query_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Returns the number of SQL queries recorded by this database handle.
+    pub fn query_count(&self) -> usize {
+        self.query_count.load(Ordering::Relaxed)
+    }
+
+    /// Resets the recorded SQL query count to zero.
+    pub fn reset_query_count(&self) {
+        self.query_count.store(0, Ordering::Relaxed);
     }
 
     /// Run `f` inside a database transaction.

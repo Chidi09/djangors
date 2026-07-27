@@ -31,7 +31,7 @@ pub use error::{FromRow, OrmError};
 pub use expr::{
     ArithOp, CompareOp, Expr, IntoSetExpr, SetExpr, UnresolvedCompare, UnresolvedExpr, Value, F,
 };
-pub use queryset::QuerySet;
+pub use queryset::{prefetch_related, QuerySet};
 
 #[cfg(test)]
 #[allow(unused_extern_crates)]

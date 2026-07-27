@@ -432,7 +432,32 @@ User directive: "let's do it all."
   retrieve of another owner's real row correctly 404s), and a request with no scoping context at
   all is rejected outright rather than silently falling back to an unscoped queryset. Full
   `fmt`/`build`/`clippy -D warnings`/`test --workspace` clean.
-- [ ] 3. `prefetch_related`-equivalent batch eager-loading + N+1 regression-test tooling.
+- [x] **3. `prefetch_related`-equivalent + N+1 regression tooling** — **done (10.4):** new free
+  function `prefetch_related::<T, R>(db, parents, related_name)` batch-loads the reverse side of a
+  FK relation for an already-fetched `&[T]` in exactly one query (`WHERE <fk column> = ANY($1)`),
+  grouping results into a `HashMap<parent_pk, Vec<R>>`, resolved via the `related_name` metadata
+  already captured on every `#[djangors(foreign_key(related_name = "..."))]` declaration (`related_
+  name` was write-only before this — nothing had ever read it). Also added a real query-counting
+  primitive to `Database` (`Arc<AtomicUsize>` field, `record_query()`/`query_count()`/
+  `reset_query_count()`), instrumented at all 9 real query-execution call sites in
+  `queryset.rs` (including `select_related`'s own two queries) plus `prefetch_related`'s one query
+  — the first real "assert exactly N SQL queries ran" hook this project has had. Independently
+  verified: a real Postgres-backed test seeds 5 parents × 2 children each, proves
+  `prefetch_related` costs exactly 2 queries and groups correctly, then proves the naive
+  per-parent-loop alternative really does cost `1 + N` (5) queries — a genuine before/after N+1
+  demonstration, not just a happy-path check. **Caught two real problems in the dispatch's own
+  work before committing**: (1) it self-reported "cargo test --workspace failed in pre-existing
+  djangors-admin tests unrelated to this change" — false; independent re-run showed the actual
+  failure was in its OWN new prefetch test, not djangors-admin at all; (2) root cause was a real
+  bug — the new test reused the existing `SelectRelatedParent`/`SelectRelatedChild` tables from
+  `test_queryset_select_related` without creating/owning them itself, racing against that other
+  test (which drops those same tables mid-run) since Rust tests run concurrently in-process against
+  the same live database. Fixed by giving the new test its own dedicated `PrefetchParent`/
+  `PrefetchChild` models/tables with a full create/drop lifecycle, matching every other test's
+  established self-contained pattern in that file; reran the fixed test 3x directly to confirm the
+  race was real and is now gone, then reran the full workspace suite with `pipefail` explicitly set
+  (a piped `cargo test | tail` reports `tail`'s exit code, not cargo's — worth remembering) to get a
+  trustworthy clean result.
 - [ ] 4. A pluggable, project-customizable global error envelope (`DjangorsError` is currently a
   fixed core enum).
 - [ ] 5. Named, scoped rate limiting per endpoint (only login has this today).
