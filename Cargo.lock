@@ -1070,6 +1070,7 @@ dependencies = [
 name = "djangors-staticfiles"
 version = "0.0.1"
 dependencies = [
+ "async-trait",
  "bytes",
  "djangors-core",
  "hyper",

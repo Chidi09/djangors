@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use djangors_core::{DjangorsError, PathParams, Request, Router};
-use djangors_staticfiles::{Manifest, StaticFiles};
+use djangors_staticfiles::{LocalDiskStorage, Manifest, StaticFiles, Storage};
 use hyper::http::{HeaderMap, Method, Uri};
 use hyper::StatusCode;
 use std::fs;
@@ -148,4 +148,30 @@ async fn test_collectstatic_behavior() {
     let manifest3 = sf.collect(dest.path()).unwrap();
     let hashed_a_new = manifest3.mapping.get("a.css").unwrap();
     assert_ne!(hashed_a, hashed_a_new);
+}
+
+#[tokio::test]
+async fn test_local_storage_rejects_traversal() {
+    let root = TempDir::new().unwrap();
+    let outside = root.path().join("secret.txt");
+    fs::write(&outside, b"secret").unwrap();
+    let storage = LocalDiskStorage::new(root.path().join("source"), "");
+    fs::create_dir_all(root.path().join("source")).unwrap();
+
+    assert!(!storage.exists("../secret.txt").await.unwrap());
+    assert!(storage.open("../secret.txt").await.is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_local_storage_rejects_escaping_symlink() {
+    use std::os::unix::fs::symlink;
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("source");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(root.path().join("secret.txt"), b"secret").unwrap();
+    symlink(root.path().join("secret.txt"), source.join("link.txt")).unwrap();
+    let storage = LocalDiskStorage::new(source, "");
+    assert!(!storage.exists("link.txt").await.unwrap());
+    assert!(storage.open("link.txt").await.is_err());
 }

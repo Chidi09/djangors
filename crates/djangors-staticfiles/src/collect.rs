@@ -1,5 +1,6 @@
 use crate::error::StaticFilesError;
 use crate::serve::StaticFiles;
+use crate::storage::{LocalDiskStorage, Storage};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -58,10 +59,8 @@ fn get_hashed_relative_path(rel_path: &str, hash: &str) -> String {
 }
 
 impl StaticFiles {
-    /// Collects static files from source directories into `output_dir` with content hashes and writes `manifest.json`.
-    pub fn collect(&self, output_dir: &Path) -> Result<Manifest, StaticFilesError> {
-        fs::create_dir_all(output_dir)?;
-
+    /// Collects static files through an injected storage backend.
+    pub async fn collect_to(&self, storage: &dyn Storage) -> Result<Manifest, StaticFilesError> {
         let mut collected_files: std::collections::HashMap<String, PathBuf> =
             std::collections::HashMap::new();
 
@@ -79,37 +78,44 @@ impl StaticFiles {
         }
 
         let mut mapping = std::collections::HashMap::new();
-
         for (rel_path, abs_path) in collected_files {
             let content = fs::read(&abs_path)?;
-
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
             hasher.update(&content);
-            let result = hasher.finalize();
-            let hash_hex = format!("{:x}", result);
+            let hash_hex = format!("{:x}", hasher.finalize());
             let hash_prefix = if hash_hex.len() >= 8 {
                 &hash_hex[..8]
             } else {
                 &hash_hex
             };
-
             let hashed_rel_path = get_hashed_relative_path(&rel_path, hash_prefix);
-
-            let dest_path = output_dir.join(&hashed_rel_path);
-            if let Some(parent) = dest_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(&dest_path, &content)?;
-
+            storage.save(&hashed_rel_path, content).await?;
             mapping.insert(rel_path, hashed_rel_path);
         }
 
         let manifest = Manifest { mapping };
-        let manifest_path = output_dir.join("manifest.json");
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
-        fs::write(manifest_path, manifest_json)?;
-
+        storage
+            .save("manifest.json", manifest_json.into_bytes())
+            .await?;
         Ok(manifest)
+    }
+
+    /// Collects static files from source directories into `output_dir` with content hashes and writes `manifest.json`.
+    pub fn collect(&self, output_dir: &Path) -> Result<Manifest, StaticFilesError> {
+        let storage = LocalDiskStorage::new(output_dir, "");
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| StaticFilesError::Io(std::io::Error::other(e.to_string())))?
+                    .block_on(self.collect_to(&storage))
+            });
+            handle.join().map_err(|_| {
+                StaticFilesError::Io(std::io::Error::other("collection thread panicked"))
+            })?
+        })
     }
 }

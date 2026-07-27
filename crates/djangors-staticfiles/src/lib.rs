@@ -7,7 +7,10 @@ pub mod collect;
 pub mod error;
 /// Static file serving handler logic.
 pub mod serve;
+/// Pluggable static-file storage backends.
+pub mod storage;
 
 pub use collect::Manifest;
 pub use error::StaticFilesError;
 pub use serve::{StaticFiles, StaticFilesHandler};
+pub use storage::{LocalDiskStorage, Storage};

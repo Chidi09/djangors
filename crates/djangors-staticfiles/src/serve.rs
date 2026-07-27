@@ -1,17 +1,25 @@
+use crate::storage::{LocalDiskStorage, Storage};
 use djangors_core::{DjangorsError, PathParams, Request, Response};
 use hyper::StatusCode;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Serves static files from configured source directories.
 pub struct StaticFiles {
     pub(crate) source_dirs: Vec<PathBuf>,
+    pub(crate) backends: Vec<LocalDiskStorage>,
 }
 
 impl StaticFiles {
     /// Creates a new `StaticFiles` instance with the given search directories.
     pub fn new(source_dirs: Vec<PathBuf>) -> Self {
-        StaticFiles { source_dirs }
+        let backends = source_dirs
+            .iter()
+            .map(|dir| LocalDiskStorage::new(dir.clone(), ""))
+            .collect();
+        StaticFiles {
+            source_dirs,
+            backends,
+        }
     }
 
     /// Serve a single file, resolved against `source_dirs` in order.
@@ -27,17 +35,28 @@ impl StaticFiles {
             }
         };
 
-        let resolved = self.resolve_path(rel_path)?;
-
-        let content = fs::read(&resolved).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                DjangorsError::NotFound
-            } else {
-                DjangorsError::Internal(e.to_string())
+        let mut content = None;
+        for backend in &self.backends {
+            if backend
+                .exists(rel_path)
+                .await
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?
+            {
+                content = Some(
+                    backend
+                        .open(rel_path)
+                        .await
+                        .map_err(|e| DjangorsError::Internal(e.to_string()))?,
+                );
+                break;
             }
-        })?;
+        }
+        let content = content.ok_or(DjangorsError::NotFound)?;
 
-        let ext = resolved.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let ext = std::path::Path::new(rel_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
 
         let content_type = match ext.to_lowercase().as_str() {
             "css" => "text/css; charset=utf-8",
@@ -52,40 +71,6 @@ impl StaticFiles {
         };
 
         Ok(Response::bytes(StatusCode::OK, content_type, content))
-    }
-
-    fn resolve_path(&self, rel_path: &str) -> Result<PathBuf, DjangorsError> {
-        if rel_path.is_empty() {
-            return Err(DjangorsError::NotFound);
-        }
-
-        let path_obj = Path::new(rel_path);
-
-        for dir in &self.source_dirs {
-            let target = dir.join(path_obj);
-
-            if !target.exists() {
-                continue;
-            }
-
-            let canonical_target = match fs::canonicalize(&target) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-
-            let canonical_dir = match fs::canonicalize(dir) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-
-            if canonical_target.starts_with(&canonical_dir) {
-                return Ok(canonical_target);
-            } else {
-                return Err(DjangorsError::NotFound);
-            }
-        }
-
-        Err(DjangorsError::NotFound)
     }
 
     /// Returns a Handler-compatible type capturing the configuration.

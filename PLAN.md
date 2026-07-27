@@ -523,7 +523,30 @@ User directive: "let's do it all."
   invalid-cron-expression-rejected-at-registration test, and a full E2E test proving the recurring
   and one-shot systems compose. All pass, plus all 7 pre-existing `djangors-tasks` tests
   unaffected; full `fmt`/`build`/`clippy -D warnings`/`test --workspace` clean.
-- [ ] 7. Pluggable file storage / S3 backend (`djangors-staticfiles` is local-disk-only).
+- [ ] **7. Pluggable file storage / S3 backend** — **item 7a done (10.9), 7b (S3Storage +
+  FileField) remains:** new `Storage` trait (`save`/`open`/`exists`/`delete`/`url`) +
+  `LocalDiskStorage` in `crates/djangors-staticfiles/src/storage.rs`. `StaticFiles::serve` now
+  holds one `LocalDiskStorage` per configured source dir (preserving the pre-existing "multiple
+  source dirs, first match wins" search order exactly) and calls through the trait instead of raw
+  `fs::` calls; `collect()`'s write side goes through an injected `&dyn Storage` via a new
+  `collect_to()` (its read side — walking a project's own local source tree — stays plain `fs::`,
+  a deliberate scope decision since that's inherently local regardless of where the *output*
+  eventually lives). `collect()`'s existing sync signature/behavior is fully preserved via a
+  `std::thread::scope` + fresh single-threaded Tokio runtime bridge (safe specifically because it
+  runs on a genuinely separate OS thread from the CLI's own `#[tokio::main]` runtime — nesting
+  `block_on` on the SAME thread would panic, this doesn't). The path-traversal-safety logic from
+  the old private `resolve_path` was moved into `LocalDiskStorage` verbatim, not rewritten — the
+  concern (weakening an existing security guarantee during the refactor) didn't materialize:
+  independently verified via all 3 pre-existing tests (`test_path_traversal_protection`,
+  `test_directory_precedence`, `test_collectstatic_behavior`) still passing unmodified, plus 2 new
+  ones the dispatch itself added (`test_local_storage_rejects_traversal`,
+  `test_local_storage_rejects_escaping_symlink`, the latter covering a symlink-escape case the
+  original code's own test suite hadn't explicitly named before). **Notably, this dispatch (codex,
+  after a re-confirmed agy quota wall — now checked 4 times, holding steady around 36-38h each
+  time) was the first one this whole roadmap to actually deliver its own required tests without
+  needing a follow-up** — independently re-verified all 8 `djangors-staticfiles` tests plus the
+  full workspace suite clean regardless. Item 7b (S3Storage + FileField, needs a real
+  S3-compatible endpoint like MinIO for honest verification) is next.
 - [x] **8. Cursor pagination** — **done (10.6/10.6b):** new `QuerySet::after(order_field,
   order_value, pk_field, cursor_pk, descending)` builds a real keyset predicate
   (`order_field > val OR (order_field = val AND pk_field > cursor_pk)`, mirroring the existing
