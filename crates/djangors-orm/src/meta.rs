@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 /// Represents the database field type.
 ///
 /// Analogous to the various field classes in Django (e.g., `CharField`, `IntegerField`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FieldKind {
     /// Text field with a maximum length. Django's `CharField`.
     Char,
@@ -52,7 +52,7 @@ pub enum FieldKind {
 /// Represents the default value of a model field.
 ///
 /// Analogous to the `default` argument in Django model fields.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DefaultValue {
     /// Integer default value.
     I64(i64),
@@ -103,7 +103,7 @@ pub struct FieldMeta {
 /// The kind of relation between models.
 ///
 /// Matches Django's relational field types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RelationKind {
     /// Many-to-one relation. Django's `ForeignKey`.
     ForeignKey,
@@ -116,7 +116,7 @@ pub enum RelationKind {
 /// Action to take when a referenced object is deleted.
 ///
 /// Analogous to Django's `on_delete` behaviors.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OnDelete {
     /// Cascade deletes. Django's `CASCADE`.
     Cascade,
@@ -230,6 +230,105 @@ inventory::collect!(ModelRegistration);
 /// Can be used by downstream tools like migrations to discover all models.
 pub fn all_registered_models() -> impl Iterator<Item = &'static ModelMeta> {
     inventory::iter::<ModelRegistration>().map(|r| (r.meta_fn)())
+}
+
+/// Serializable model metadata used by the external `dj` process.
+#[allow(missing_docs)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct ModelSnapshot {
+    pub struct_name: String,
+    pub app_label: String,
+    pub table_name: String,
+    pub fields: Vec<FieldSnapshot>,
+    pub relations: Vec<RelationSnapshot>,
+    pub unique_together: Vec<Vec<String>>,
+    pub ordering: Vec<String>,
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct FieldSnapshot {
+    pub name: String,
+    pub column_name: String,
+    pub kind: FieldKind,
+    pub nullable: bool,
+    pub primary_key: bool,
+    pub auto: bool,
+    pub unique: bool,
+    pub db_index: bool,
+    pub default: SnapshotDefault,
+    pub max_length: Option<u32>,
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[serde(tag = "kind", content = "value")]
+pub enum SnapshotDefault {
+    I64(i64),
+    F64(f64),
+    Text(String),
+    Bool(bool),
+    None,
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct RelationSnapshot {
+    pub field_name: String,
+    pub kind: RelationKind,
+    pub target_struct: String,
+    pub on_delete: OnDelete,
+    pub related_name: Option<String>,
+}
+
+/// Returns the complete registry in a process-boundary-safe representation.
+pub fn registered_models_snapshot() -> Vec<ModelSnapshot> {
+    all_registered_models()
+        .map(|m| ModelSnapshot {
+            struct_name: m.struct_name.into(),
+            app_label: m.app_label.into(),
+            table_name: m.table_name.into(),
+            fields: m
+                .fields
+                .iter()
+                .map(|f| FieldSnapshot {
+                    name: f.name.into(),
+                    column_name: f.column_name.into(),
+                    kind: f.kind,
+                    nullable: f.nullable,
+                    primary_key: f.primary_key,
+                    auto: f.auto,
+                    unique: f.unique,
+                    db_index: f.db_index,
+                    default: match f.default {
+                        DefaultValue::I64(v) => SnapshotDefault::I64(v),
+                        DefaultValue::F64(v) => SnapshotDefault::F64(v),
+                        DefaultValue::Text(v) => SnapshotDefault::Text(v.into()),
+                        DefaultValue::Bool(v) => SnapshotDefault::Bool(v),
+                        DefaultValue::None => SnapshotDefault::None,
+                    },
+                    max_length: f.max_length,
+                })
+                .collect(),
+            relations: m
+                .relations
+                .iter()
+                .map(|r| RelationSnapshot {
+                    field_name: r.field_name.into(),
+                    kind: r.kind,
+                    target_struct: (r.target)().struct_name.into(),
+                    on_delete: r.on_delete,
+                    related_name: r.related_name.map(Into::into),
+                })
+                .collect(),
+            unique_together: m
+                .unique_together
+                .iter()
+                .map(|x| x.iter().map(|s| (*s).into()).collect())
+                .collect(),
+            ordering: m.ordering.iter().map(|s| (*s).into()).collect(),
+        })
+        .collect()
 }
 
 /// A wrapper representing a foreign key relationship to another model.

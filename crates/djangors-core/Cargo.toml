@@ -43,6 +43,7 @@ toml = "0.8.20"
 async-trait = "0.1.86"
 serde_urlencoded = "0.7.1"
 rand = "0.8.7"
+djangors-orm = { path = "../djangors-orm" }
 
 [dev-dependencies]
 djangors-db = { path = "../djangors-db" }

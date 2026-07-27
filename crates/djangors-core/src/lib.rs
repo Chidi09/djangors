@@ -87,6 +87,18 @@ pub fn html_escape(input: &str) -> String {
     escaped
 }
 
+/// If enabled, print this binary's compiled model registry and terminate.
+pub fn introspect_models_if_requested() {
+    if std::env::var("DJANGORS_INTROSPECT_MODELS").ok().as_deref() == Some("1") {
+        println!(
+            "{}",
+            serde_json::to_string(&djangors_orm::meta::registered_models_snapshot())
+                .expect("model metadata is serializable")
+        );
+        std::process::exit(0);
+    }
+}
+
 #[cfg(test)]
 mod integration_tests {
     use std::str::FromStr;

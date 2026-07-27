@@ -13,6 +13,7 @@ pub mod type_mapping;
 pub use error::MigrationError;
 pub use operation::{ColumnDef, ForeignKeyRef, Operation};
 pub use plan::build_create_all_plan;
+pub use plan::build_create_plan_from_snapshots;
 
 /// Applies initial database schema migrations if not already applied.
 pub async fn migrate(db: &djangors_db::Database) -> Result<(), MigrationError> {

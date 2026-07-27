@@ -102,6 +102,104 @@ pub fn build_create_all_plan() -> Result<Vec<Operation>, MigrationError> {
     Ok(operations)
 }
 
+/// Builds the initial plan from metadata emitted by a project's binary.
+pub fn build_create_plan_from_snapshots(
+    models: &[djangors_orm::ModelSnapshot],
+) -> Result<Vec<Operation>, MigrationError> {
+    let mut ordered = Vec::new();
+    let mut visited = HashSet::new();
+    let by_name: HashMap<&str, &djangors_orm::ModelSnapshot> =
+        models.iter().map(|m| (m.struct_name.as_str(), m)).collect();
+    fn visit<'a>(
+        m: &'a djangors_orm::ModelSnapshot,
+        by: &HashMap<&str, &'a djangors_orm::ModelSnapshot>,
+        seen: &mut HashSet<String>,
+        out: &mut Vec<&'a djangors_orm::ModelSnapshot>,
+    ) {
+        if !seen.insert(m.struct_name.clone()) {
+            return;
+        }
+        for r in &m.relations {
+            if let Some(t) = by.get(r.target_struct.as_str()) {
+                visit(t, by, seen, out);
+            }
+        }
+        out.push(m);
+    }
+    for m in models {
+        visit(m, &by_name, &mut visited, &mut ordered);
+    }
+    ordered
+        .into_iter()
+        .map(|m| {
+            let mut columns = Vec::new();
+            for f in &m.fields {
+                columns.push(ColumnDef {
+                    name: f.column_name.clone(),
+                    sql_type: crate::type_mapping::sql_type_for(
+                        &f.kind,
+                        f.max_length,
+                        f.auto,
+                        &f.name,
+                    )?,
+                    nullable: f.nullable,
+                    primary_key: f.primary_key,
+                    unique: f.unique,
+                    default_sql: None,
+                    references: None,
+                });
+            }
+            for r in &m.relations {
+                let target = by_name.get(r.target_struct.as_str()).ok_or_else(|| {
+                    MigrationError::Database(djangors_db::DbError::ConnectionFailed(format!(
+                        "unknown relation target {}",
+                        r.target_struct
+                    )))
+                })?;
+                let pk = target
+                    .fields
+                    .iter()
+                    .find(|f| f.primary_key)
+                    .ok_or_else(|| {
+                        MigrationError::Database(djangors_db::DbError::ConnectionFailed(
+                            "relation target has no primary key".into(),
+                        ))
+                    })?;
+                let mut fk = pk.clone();
+                fk.auto = false;
+                let on_delete = match r.on_delete {
+                    djangors_orm::OnDelete::Cascade => "CASCADE",
+                    djangors_orm::OnDelete::SetNull => "SET NULL",
+                    djangors_orm::OnDelete::DoNothing => "NO ACTION",
+                    _ => "RESTRICT",
+                };
+                columns.push(ColumnDef {
+                    name: r.field_name.clone(),
+                    sql_type: crate::type_mapping::sql_type_for(
+                        &fk.kind,
+                        fk.max_length,
+                        fk.auto,
+                        &fk.name,
+                    )?,
+                    nullable: matches!(r.on_delete, djangors_orm::OnDelete::SetNull),
+                    primary_key: false,
+                    unique: false,
+                    default_sql: None,
+                    references: Some(ForeignKeyRef {
+                        table: target.table_name.clone(),
+                        column: pk.column_name.clone(),
+                        on_delete: on_delete.into(),
+                    }),
+                });
+            }
+            Ok(Operation::CreateTable {
+                table_name: m.table_name.clone(),
+                columns,
+            })
+        })
+        .collect()
+}
+
 fn dfs(
     meta: &'static ModelMeta,
     models_by_struct: &HashMap<&str, &'static ModelMeta>,

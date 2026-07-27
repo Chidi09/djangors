@@ -3,26 +3,41 @@ use djangors_orm::{FieldKind, FieldMeta};
 
 /// Maps an ORM [`FieldMeta`] definition to its corresponding PostgreSQL SQL type string.
 pub fn field_meta_to_sql_type(field: &FieldMeta) -> Result<String, MigrationError> {
-    match &field.kind {
+    sql_type_for(&field.kind, field.max_length, field.auto, field.name)
+}
+
+/// Maps a field's kind/max_length/auto to its corresponding PostgreSQL SQL type string.
+///
+/// This is the single source of truth for ORM-field-kind-to-SQL-type mapping, shared by both
+/// full-table creation ([`field_meta_to_sql_type`]) and incremental `ALTER TABLE ADD COLUMN`
+/// generation (`dj makemigrations`), so every [`FieldKind`] variant is mapped correctly in both
+/// paths rather than one of them silently falling back to a wrong default.
+pub fn sql_type_for(
+    kind: &FieldKind,
+    max_length: Option<u32>,
+    auto: bool,
+    field_name: &str,
+) -> Result<String, MigrationError> {
+    match kind {
         FieldKind::Char | FieldKind::Email | FieldKind::Url | FieldKind::Slug => {
-            if let Some(n) = field.max_length {
+            if let Some(n) = max_length {
                 Ok(format!("VARCHAR({})", n))
             } else {
                 Err(MigrationError::MissingMaxLength {
-                    field: field.name.to_string(),
+                    field: field_name.to_string(),
                 })
             }
         }
         FieldKind::Text => Ok("TEXT".to_string()),
         FieldKind::Integer => {
-            if field.auto {
+            if auto {
                 Ok("SERIAL".to_string())
             } else {
                 Ok("INTEGER".to_string())
             }
         }
         FieldKind::BigInt => {
-            if field.auto {
+            if auto {
                 Ok("BIGSERIAL".to_string())
             } else {
                 Ok("BIGINT".to_string())

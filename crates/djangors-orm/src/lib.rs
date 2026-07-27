@@ -21,8 +21,9 @@ pub use inventory;
 pub use sqlx;
 
 pub use meta::{
-    all_registered_models, DefaultValue, FieldKind, FieldMeta, ForeignKey, IndexMeta, Model,
-    ModelMeta, ModelRegistration, OnDelete, RelationKind, RelationMeta,
+    all_registered_models, DefaultValue, FieldKind, FieldMeta, FieldSnapshot, ForeignKey,
+    IndexMeta, Model, ModelMeta, ModelRegistration, ModelSnapshot, OnDelete, RelationKind,
+    RelationMeta, RelationSnapshot, SnapshotDefault,
 };
 
 pub use aggregate::{AggExpr, AggResult};

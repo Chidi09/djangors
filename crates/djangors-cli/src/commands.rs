@@ -84,6 +84,7 @@ mod views;
 
 #[tokio::main]
 async fn main() -> Result<(), DjangorsError> {
+    djangors_core::introspect_models_if_requested();
     djangors_core::logging::init_dev_logging();
 
     let (settings, warnings) = DjangorsSettings::load()?;
@@ -479,7 +480,15 @@ pub async fn migrate() {
         }
     };
 
-    match djangors_migrations::migrate(&db).await {
+    let models = match introspect_models() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[dj migrate] introspection failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let result = migrate_with_plan(&db, &models).await;
+    match result {
         Ok(()) => println!("[dj migrate] migrations applied successfully"),
         Err(e) => {
             eprintln!("[dj migrate] migration failed: {e}");
@@ -491,7 +500,124 @@ pub async fn migrate() {
 /// Generate new migrations.
 pub fn makemigrations(_check: bool) -> Result<(), String> {
     require_project_root()?;
-    Err("dj makemigrations cannot introspect model registrations across binary boundaries (project models are registered at compile-time in the project binary, not dj)".into())
+    let check = _check;
+    let current = introspect_models()?;
+    let path = Path::new("migrations/.schema_snapshot.json");
+    let previous: Vec<djangors_orm::ModelSnapshot> = if path.exists() {
+        serde_json::from_str(&std::fs::read_to_string(path).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("invalid schema snapshot: {e}"))?
+    } else {
+        Vec::new()
+    };
+    let mut sql = Vec::new();
+    for model in &current {
+        let old = previous.iter().find(|m| m.table_name == model.table_name);
+        if old.is_none() {
+            sql.push(format!(
+                "{};",
+                djangors_migrations::build_create_plan_from_snapshots(std::slice::from_ref(model))
+                    .map_err(|e| e.to_string())?
+                    .first()
+                    .unwrap()
+                    .to_sql()
+            ));
+        } else if let Some(old) = old {
+            for field in &model.fields {
+                if !old
+                    .fields
+                    .iter()
+                    .any(|f| f.column_name == field.column_name)
+                {
+                    let sql_type = djangors_migrations::type_mapping::sql_type_for(
+                        &field.kind,
+                        field.max_length,
+                        field.auto,
+                        &field.name,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    sql.push(format!(
+                        "ALTER TABLE {} ADD COLUMN {} {};",
+                        model.table_name, field.column_name, sql_type
+                    ));
+                }
+            }
+        }
+    }
+    if sql.is_empty() {
+        if check {
+            return Ok(());
+        }
+        println!("[dj makemigrations] no changes detected");
+        return Ok(());
+    }
+    if check {
+        return Err("model changes detected".into());
+    }
+    std::fs::create_dir_all("migrations").map_err(|e| e.to_string())?;
+    let n = std::fs::read_dir("migrations")
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()
+                .and_then(|s| s.get(..4))
+                .and_then(|n| n.parse::<u32>().ok())
+        })
+        .max()
+        .unwrap_or(0)
+        + 1;
+    std::fs::write(format!("migrations/{n:04}_auto.sql"), sql.join("\n"))
+        .map_err(|e| e.to_string())?;
+    std::fs::write(path, serde_json::to_string_pretty(&current).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("[dj makemigrations] generated {n:04}_auto.sql");
+    Ok(())
+}
+
+fn introspect_models() -> Result<Vec<djangors_orm::ModelSnapshot>, String> {
+    let out = std::process::Command::new("cargo")
+        .args(["run", "--quiet"])
+        .env("DJANGORS_INTROSPECT_MODELS", "1")
+        .current_dir(".")
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("invalid model metadata: {e}"))
+}
+
+async fn migrate_with_plan(
+    db: &djangors_db::Database,
+    models: &[djangors_orm::ModelSnapshot],
+) -> Result<(), djangors_migrations::MigrationError> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS djangors_migrations (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())").execute(db.pool()).await?;
+    if sqlx::query("SELECT 1 FROM djangors_migrations WHERE name = '0001_initial'")
+        .fetch_optional(db.pool())
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let sqls: Vec<String> = djangors_migrations::build_create_plan_from_snapshots(models)?
+        .iter()
+        .map(|o| o.to_sql())
+        .collect();
+    db.transaction(|conn| {
+        Box::pin(async move {
+            for sql in sqls {
+                sqlx::query(sqlx::AssertSqlSafe(sql))
+                    .execute(&mut *conn)
+                    .await?;
+            }
+            sqlx::query("INSERT INTO djangors_migrations (name) VALUES ('0001_initial')")
+                .execute(&mut *conn)
+                .await?;
+            Ok::<(), djangors_db::DbError>(())
+        })
+    })
+    .await
+    .map_err(djangors_migrations::MigrationError::Database)
 }
 
 /// Create a superuser in the database.
@@ -1007,7 +1133,7 @@ allowed_hosts = ["example.com"]
     }
 
     #[test]
-    fn test_makemigrations_structurally_blocked() {
+    fn test_makemigrations_generated_project_introspects() {
         let _guard = FS_MUTEX.lock().unwrap();
         let root =
             std::env::temp_dir().join(format!("dj_test_makemigrations_{}", std::process::id()));
@@ -1019,12 +1145,7 @@ allowed_hosts = ["example.com"]
         std::env::set_current_dir(&project).unwrap();
 
         let res1 = makemigrations(false);
-        assert!(res1.is_err());
-        assert!(res1.unwrap_err().contains("across binary boundaries"));
-
-        let res2 = makemigrations(true);
-        assert!(res2.is_err());
-        assert!(res2.unwrap_err().contains("across binary boundaries"));
+        assert!(res1.is_ok(), "makemigrations failed: {res1:?}");
 
         std::env::set_current_dir(old).unwrap();
         let _ = std::fs::remove_dir_all(root);

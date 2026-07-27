@@ -3,6 +3,7 @@ use polls::urls;
 
 #[tokio::main]
 async fn main() -> Result<(), DjangorsError> {
+    djangors_core::introspect_models_if_requested();
     djangors_core::logging::init_dev_logging();
 
     let (settings, warnings) = DjangorsSettings::load()?;

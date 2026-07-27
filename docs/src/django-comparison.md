@@ -161,17 +161,14 @@ Django uses `python manage.py <command>`. Djangors provides the `dj` command-lin
 | :--- | :--- | :--- |
 | `python manage.py runserver` | `dj run` | Starts dev server with live-reloading file watch loop |
 | `python manage.py migrate` | `dj migrate` | Applies pending database migrations |
-| `python manage.py makemigrations` | `dj makemigrations` | *(Blocked — see note below)* |
+| `python manage.py makemigrations` | `dj makemigrations` | Introspects the project binary; v1 detects new models and new fields |
 | `python manage.py createsuperuser` | `dj createsuperuser` | Prompts for superuser credentials and creates User |
 | `python manage.py test` | `dj test` | Runs workspace unit and integration test suite (`cargo test`) |
 | `python manage.py shell` | `dj shell` | Launches interactive Rust REPL via `evcxr` |
 | `python manage.py dbshell` | `dj dbshell` | Connects directly to configured database CLI |
 
-### ⚠️ Structural Limitation of `dj makemigrations`
-In Django, `makemigrations` uses Python's runtime reflection (`sys.modules` and subclass inspection) to inspect model classes in memory and auto-generate schema diffs.
-
-In Djangors, model structs are compiled directly into the application binary at Rust compile-time. The standalone CLI binary (`dj`) cannot inspect struct definitions across process boundaries. Running `dj makemigrations` returns an explicit message explaining this architectural boundary:
-> `dj makemigrations cannot introspect model registrations across binary boundaries (project models are registered at compile-time in the project binary, not dj)`
+### `dj makemigrations` scope
+`dj` runs the project's own binary in a hidden model-introspection mode, so registrations from application crates are visible. It stores the last model state in `migrations/.schema_snapshot.json` and generates numbered SQL migrations. v1 covers new models and new fields; field-type changes, removals, renames, indexes, and relation alterations are deferred.
 
 Database migrations in Djangors are authored as raw SQL files or generated via programmatic schema utilities.
 
