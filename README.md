@@ -58,25 +58,26 @@ of composable pieces:
 
 | Crate | What it does |
 |---|---|
-| `djangors-core` | The HTTP kernel: `Request`/`Response`, the `Router`, middleware (CSRF, security headers, HSTS, host validation), sessions-adjacent state, SSE streaming, signals, graceful shutdown |
-| `djangors-orm` | The ORM: `QuerySet`, filter/order/aggregate expressions, model metadata |
-| `djangors-macros` | `#[derive(Model)]` and the `#[task]` attribute macro |
+| `djangors-core` | The HTTP kernel: `Request`/`Response`, the `Router`, middleware (CSRF, security headers, HSTS, host validation), sessions-adjacent state, SSE streaming, signals (framework + model lifecycle), real `multipart/form-data` file upload parsing, graceful shutdown |
+| `djangors-orm` | The ORM: `QuerySet`, filter/order/aggregate expressions, model metadata, `bulk_create` |
+| `djangors-macros` | `#[derive(Model)]` (also generates a `ModelForm` equivalent), `#[task]`, and `#[management_command]` attribute macros |
 | `djangors-db` | Connection pooling and config-driven database setup (Postgres) |
-| `djangors-migrations` | Schema migration primitives |
+| `djangors-migrations` | Schema migrations with real per-file history and rollback (`dj migrate --rollback`) |
 | `djangors-auth` | Users, groups, permissions, session-backed auth, password hashing, rate-limited login |
 | `djangors-sessions` | Signed-cookie session engine |
 | `djangors-admin` | The auto-generated admin site — changelist, filters, search, bulk actions, inline editing, CSV export, audit log, object history |
-| `djangors-forms` | Form field types and validation |
+| `djangors-forms` | Form field types and validation, plus the `ModelForm` equivalent auto-derived from `#[derive(Model)]` |
+| `djangors-views` | Server-rendered generic class-based views — `ListView`/`DetailView`/`CreateView`/`UpdateView`/`DeleteView` |
 | `djangors-template` | A Django-template-flavored engine (minijinja-backed) with Django-style filters |
-| `djangors-rest` | A DRF-equivalent: generic serialization, `ViewSet`s, token/JWT auth, permission classes, OpenAPI 3.1 generation |
+| `djangors-rest` | A DRF-equivalent: generic serialization, `ViewSet`s, token/JWT auth, permission classes, cursor pagination, rate limiting, OpenAPI 3.1 generation |
 | `djangors-cache` | Cache trait + in-memory/database/Redis backends |
 | `djangors-mail` | Email messages with SMTP/file/in-memory backends |
-| `djangors-tasks` | A background task queue (`#[task]`, Postgres `SELECT ... FOR UPDATE SKIP LOCKED`, a worker loop) |
+| `djangors-tasks` | A background task queue (`#[task]`, Postgres `SELECT ... FOR UPDATE SKIP LOCKED`, cron-style recurring jobs, a worker loop) |
 | `djangors-i18n` | Runtime internationalization (Fluent-backed catalogs, locale fallback chain) |
-| `djangors-staticfiles` | Static file collection and serving |
-| `djangors-test` | In-process test client and test database helpers |
-| `djangors-cli` (`dj`) | The `manage.py` equivalent — `new`, `run`, `migrate`, `createsuperuser`, `shell` (a real `evcxr` Rust REPL), `dbshell`, `test`, `check --deploy`, and more |
-| `djangors-contrib-*` | Sitemaps, RSS/Atom syndication, flat pages, redirects, flash messages, object-level permissions (guardian-style), TOTP/2FA |
+| `djangors-staticfiles` | Static file collection and serving, a pluggable `Storage` trait (local disk, S3) |
+| `djangors-test` | In-process test client, real per-test database isolation, and a JSON fixtures loader |
+| `djangors-cli` (`dj`) | The `manage.py` equivalent — `new`, `run`, `migrate` (with rollback), `createsuperuser`, `shell` (a real `evcxr` Rust REPL), `dbshell`, `test`, `check --deploy`, and a plugin mechanism for a project's own `dj <custom-command>` |
+| `djangors-contrib-*` | Sitemaps, RSS/Atom syndication, flat pages, redirects, flash messages, object-level permissions (guardian-style), TOTP/2FA, content types / generic foreign keys |
 
 Two full example apps exercise the framework end-to-end: `examples/polls` (the tutorial app, mirrors
 Django's own polls tutorial) and `examples/school` (an admin-heavy example proving the generic admin

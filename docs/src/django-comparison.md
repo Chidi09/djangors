@@ -151,6 +151,22 @@ pub async fn article_detail(req: Request, params: PathParams) -> Result<Response
 - **Async by Default**: All Djangors view handlers are non-blocking `async fn` operations executing on the Tokio runtime.
 - **Explicit Database State**: Request state (like `Database` connection pools) is explicitly retrieved via `req.state::<Database>()`.
 
+### Generic Class-Based Views
+
+For the common list/detail/create/update/delete shape, `djangors-views` mirrors Django's
+`django.views.generic` — the hand-written `article_detail` above could instead be:
+
+```rust,ignore
+use djangors_views::{DetailView, ViewSetConfig};
+
+let config = ViewSetConfig { engine: &TEMPLATES, template_name: "articles/detail.html", success_url: "/articles/" };
+DetailView::<Article>::detail(req, params, &config).await
+```
+
+`ListView`/`CreateView`/`UpdateView`/`DeleteView` follow the same shape, generic over any
+`#[derive(Model)]` type (`CreateView`/`UpdateView` additionally need the model's own generated
+`ModelForm` methods, see [§8](#8-form-handling--extraction)).
+
 ---
 
 ## 4. Command-Line Interface (`manage.py` vs `dj`)
@@ -341,8 +357,42 @@ pub async fn contact_view(req: Request, _params: PathParams) -> Result<Response,
 }
 ```
 
-### ⚠️ Note on `ModelForm` Parity
-Djangors does **not** feature automatic `ModelForm` generation from ORM models. Form payload structures are explicitly defined using Rust `struct`s with Serde deserialization and optional `djangors-forms` validation attributes.
+### `ModelForm` Parity
+
+`#[derive(Model)]` also generates a `ModelForm` equivalent directly on the model itself — no
+second, hand-written form struct required:
+
+```rust,compile
+# use djangors_macros::Model;
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "myapp", table_name = "contact")]
+pub struct Contact {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    #[djangors(max_length = 100)]
+    pub name: String,
+    pub email: String,
+}
+
+async fn handle_submission(data: &std::collections::HashMap<String, String>) {
+    match Contact::validate_form(data) {
+        Ok(cleaned) => {
+            let contact = Contact::from_cleaned_form(cleaned);
+            // contact.save(&db).await
+        }
+        Err(errors) => {
+            // errors.fields is a per-field HashMap<String, FieldError>, same shape
+            // `djangors-forms`' own Form<T> extractor already uses
+        }
+    }
+}
+```
+
+Auto/primary-key fields and `FileField`-kind fields are excluded from the generated form (the
+same way `save()`'s own `INSERT` already skips auto fields). `apply_cleaned_form` applies a
+validated submission onto an *existing* instance for the update path, leaving the primary key
+untouched. HTML widget rendering is not part of this — pair it with `djangors-views`' generic
+`CreateView`/`UpdateView` (see below) or build your own template.
 
 ---
 
