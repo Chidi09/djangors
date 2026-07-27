@@ -772,6 +772,102 @@ impl<T: Model + FromRow> QuerySet<T> {
         Ok(pk)
     }
 
+    /// Inserts every item in `items` in a single multi-row `INSERT` statement, returning the
+    /// generated primary key for each row in the same order as `items`. Auto (e.g.
+    /// `#[djangors(auto)]`) fields are skipped on every row, same as [`Self::insert_raw`].
+    /// Empty input is a no-op returning an empty `Vec` (no query is issued).
+    pub async fn bulk_create(db: &djangors_db::Database, items: &[T]) -> Result<Vec<i64>, OrmError>
+    where
+        T: Model,
+    {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let meta = T::meta();
+        let pk_field = meta
+            .fields
+            .iter()
+            .find(|f| f.primary_key)
+            .expect("Primary key field not found");
+        let pk_column = pk_field.column_name;
+
+        // Column order is taken from the first row and every subsequent row is bound in that
+        // same order - safe because every item is the same `T`, so `field_values()` always
+        // returns the same field set in the same declaration order for every row.
+        let is_insertable = |field_name: &str| -> bool {
+            match meta.fields.iter().find(|f| f.name == field_name) {
+                Some(f) => !f.auto,
+                None => meta.relations.iter().any(|r| r.field_name == field_name),
+            }
+        };
+
+        let mut cols: Vec<String> = Vec::new();
+        let mut col_order: Vec<&'static str> = Vec::new();
+        for (field_name, _) in items[0].field_values() {
+            if is_insertable(field_name) {
+                let col_name = match meta.fields.iter().find(|f| f.name == field_name) {
+                    Some(f) => f.column_name,
+                    None => field_name,
+                };
+                cols.push(format!("\"{col_name}\""));
+                col_order.push(field_name);
+            }
+        }
+
+        let mut placeholder_groups = Vec::new();
+        let mut params = Vec::new();
+        let mut null_kinds = Vec::new();
+        let mut param_idx = 1;
+        for item in items {
+            let values = item.field_values();
+            let mut row_placeholders = Vec::new();
+            for field_name in &col_order {
+                let val = values
+                    .iter()
+                    .find(|(name, _)| name == field_name)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or(Value::Null);
+                row_placeholders.push(format!("${param_idx}"));
+                null_kinds.push(null_bind_kind_for(field_name, meta));
+                params.push(val);
+                param_idx += 1;
+            }
+            placeholder_groups.push(format!("({})", row_placeholders.join(", ")));
+        }
+
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES {} RETURNING {}",
+            meta.table_name,
+            cols.join(", "),
+            placeholder_groups.join(", "),
+            pk_column
+        );
+
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+        for (i, val) in params.iter().enumerate() {
+            query = match val {
+                Value::I64(v) => query.bind(*v),
+                Value::F64(v) => query.bind(*v),
+                Value::Text(v) => query.bind(v.clone()),
+                Value::Bool(v) => query.bind(*v),
+                Value::DateTime(v) => query.bind(*v),
+                Value::Null => match null_kinds[i] {
+                    NullBindKind::I64 => query.bind(None::<i64>),
+                    NullBindKind::F64 => query.bind(None::<f64>),
+                    NullBindKind::Text => query.bind(None::<String>),
+                    NullBindKind::Bool => query.bind(None::<bool>),
+                    NullBindKind::DateTime => query.bind(None::<chrono::DateTime<chrono::Utc>>),
+                },
+            };
+        }
+
+        use sqlx::Row;
+        db.record_query();
+        let rows = query.fetch_all(db.pool()).await?;
+        rows.iter().map(|row| Ok(row.try_get(0)?)).collect()
+    }
+
     /// Deletes a record from table `T` by primary key `pk`.
     pub async fn delete_by_pk(db: &djangors_db::Database, pk: i64) -> Result<u64, OrmError> {
         let meta = T::meta();

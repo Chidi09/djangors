@@ -1234,6 +1234,99 @@ async fn test_queryset_insert_raw() {
         .unwrap();
 }
 
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_bulk_create_model")]
+#[allow(dead_code)]
+pub struct BulkCreateTestModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+    pub age: i64,
+}
+
+#[tokio::test]
+async fn test_queryset_bulk_create() {
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query("DROP TABLE IF EXISTS test_bulk_create_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE test_bulk_create_model (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            age BIGINT NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // Empty input is a no-op, not an error, and issues no query.
+    let empty: Vec<BulkCreateTestModel> = Vec::new();
+    let pks = crate::queryset::QuerySet::<BulkCreateTestModel>::bulk_create(&db, &empty)
+        .await
+        .unwrap();
+    assert!(pks.is_empty());
+
+    // A real multi-row insert in one statement.
+    let items = vec![
+        BulkCreateTestModel {
+            id: 0,
+            name: "Alice".to_string(),
+            age: 30,
+        },
+        BulkCreateTestModel {
+            id: 0,
+            name: "Bob".to_string(),
+            age: 25,
+        },
+        BulkCreateTestModel {
+            id: 0,
+            name: "Carol".to_string(),
+            age: 40,
+        },
+    ];
+    let pks = crate::queryset::QuerySet::<BulkCreateTestModel>::bulk_create(&db, &items)
+        .await
+        .unwrap();
+    assert_eq!(pks.len(), 3);
+    // Every generated pk must be distinct - a real 3-row insert, not the same row 3 times.
+    let mut sorted_pks = pks.clone();
+    sorted_pks.sort_unstable();
+    sorted_pks.dedup();
+    assert_eq!(sorted_pks.len(), 3);
+
+    // Every row must genuinely exist with the right data, in the same order as the input.
+    for (pk, expected) in pks.iter().zip(items.iter()) {
+        let row = crate::queryset::QuerySet::<BulkCreateTestModel>::new()
+            .filter(q!(id = *pk))
+            .unwrap()
+            .get(&db)
+            .await
+            .unwrap();
+        assert_eq!(row.name, expected.name);
+        assert_eq!(row.age, expected.age);
+    }
+
+    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_bulk_create_model")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        total, 3,
+        "bulk_create must not insert more or fewer rows than given"
+    );
+
+    sqlx::query("DROP TABLE test_bulk_create_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
 #[derive(Model, Debug)]
 #[djangors(app = "test_app", table_name = "test_nullable_bind_model")]
 #[allow(dead_code)]
