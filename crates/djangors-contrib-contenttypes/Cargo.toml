@@ -1,0 +1,17 @@
+[package]
+name = "djangors-contrib-contenttypes"
+description = "Content types and generic foreign keys for Djangors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+djangors-db = { path = "../djangors-db", version = "0.1.0" }
+djangors-macros = { path = "../djangors-macros", version = "0.1.0" }
+djangors-orm = { path = "../djangors-orm", version = "0.1.0" }
+thiserror = "2.0.18"
+
+[dev-dependencies]
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros"] }
+

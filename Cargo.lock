@@ -842,6 +842,7 @@ dependencies = [
  "chrono",
  "clap",
  "djangors-auth",
+ "djangors-contrib-contenttypes",
  "djangors-core",
  "djangors-db",
  "djangors-migrations",
@@ -852,6 +853,17 @@ dependencies = [
  "sqlx",
  "tokio",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "djangors-contrib-contenttypes"
+version = "0.1.0"
+dependencies = [
+ "djangors-db",
+ "djangors-macros",
+ "djangors-orm",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

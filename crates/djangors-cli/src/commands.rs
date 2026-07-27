@@ -779,7 +779,16 @@ pub async fn createpermissions() {
         }
     };
     match djangors_auth::sync_permissions(&db).await {
-        Ok(count) => println!("[dj createpermissions] synced {} permission(s)", count),
+        Ok(count) => match djangors_contrib_contenttypes::sync_content_types(&db).await {
+            Ok(content_types) => println!(
+                "[dj createpermissions] synced {} permission(s) and {} content type(s)",
+                count, content_types
+            ),
+            Err(e) => {
+                eprintln!("[dj createpermissions] failed: {e}");
+                std::process::exit(1);
+            }
+        },
         Err(e) => {
             eprintln!("[dj createpermissions] failed: {e}");
             std::process::exit(1);
