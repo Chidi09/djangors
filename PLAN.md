@@ -896,9 +896,15 @@ Sequenced easiest → hardest; tracked as tasks #62–71.
   `djangors_core::settings::...` paths, which don't resolve from within `djangors-core`'s own test
   suite without it. 4 real runtime tests (missing-required error, defaults applied, every
   supported type parses from a real env var, invalid-value vs missing-required distinguished).
-- [ ] **CSP builder middleware** — `django-csp` equivalent; djangors-core has HSTS/
-  X-Content-Type-Options/Referrer-Policy but no dedicated Content-Security-Policy builder, despite
-  being a stated Phase 4 goal.
+- [x] **CSP builder middleware** — **done.** `django-csp` equivalent: a `CspBuilder` in
+  `djangors-core::middleware` matching `HstsLayer`'s existing style (builder methods per directive
+  — `default_src`/`script_src`/`style_src`/`img_src`/`connect_src`/`font_src`/`frame_ancestors`/
+  `form_action`/`object_src`, plus a bare `upgrade_insecure_requests()` flag and `.report_only(bool)`
+  to send `Content-Security-Policy-Report-Only` instead of enforcing), `.build()` into a `CspLayer`
+  tower `Layer`. Directive values pass through verbatim (no source-keyword validation), matching
+  `HstsLayer`'s deliberately minimal scope. 4 real tests (directive assembly order, the bare
+  `upgrade-insecure-requests` flag, report-only header-name switching, and a real tower-service
+  request round-trip asserting the actual response header).
 - [ ] **Sentry/observability integration** — no error-tracking hook exists anywhere in the
   framework; wire the official `sentry` crate into the existing `tracing`-based logging setup.
 - [ ] **django-axes-style persistent account lockout** — builds on the existing rate-limited login

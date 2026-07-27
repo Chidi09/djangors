@@ -111,6 +111,146 @@ pub fn hsts_layer(max_age_seconds: u64) -> HstsLayer {
     HstsLayer::new(max_age_seconds)
 }
 
+/// Builds a `Content-Security-Policy` (or `Content-Security-Policy-Report-Only`) header,
+/// mirroring `django-csp`.
+///
+/// Directive values are passed through verbatim, so CSP keyword sources must be quoted
+/// exactly as the spec requires (e.g. `"'self'"`, `"'unsafe-inline'"`, `"'nonce-abc123'"`) —
+/// this builder only handles directive assembly and header formatting, not source-keyword
+/// validation, matching `HstsLayer`'s minimal scope.
+///
+/// ```ignore
+/// let csp = CspBuilder::new()
+///     .default_src(&["'self'"])
+///     .script_src(&["'self'", "https://cdn.example.com"])
+///     .img_src(&["'self'", "data:"])
+///     .build();
+/// ```
+#[derive(Clone, Default)]
+pub struct CspBuilder {
+    directives: Vec<(&'static str, Vec<String>)>,
+    upgrade_insecure_requests: bool,
+    report_only: bool,
+}
+
+impl CspBuilder {
+    /// Creates an empty builder with no directives set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn directive(mut self, name: &'static str, sources: &[&str]) -> Self {
+        self.directives
+            .push((name, sources.iter().map(|s| s.to_string()).collect()));
+        self
+    }
+
+    /// Sets the `default-src` directive (the fallback for any directive not set explicitly).
+    pub fn default_src(self, sources: &[&str]) -> Self {
+        self.directive("default-src", sources)
+    }
+
+    /// Sets the `script-src` directive.
+    pub fn script_src(self, sources: &[&str]) -> Self {
+        self.directive("script-src", sources)
+    }
+
+    /// Sets the `style-src` directive.
+    pub fn style_src(self, sources: &[&str]) -> Self {
+        self.directive("style-src", sources)
+    }
+
+    /// Sets the `img-src` directive.
+    pub fn img_src(self, sources: &[&str]) -> Self {
+        self.directive("img-src", sources)
+    }
+
+    /// Sets the `connect-src` directive.
+    pub fn connect_src(self, sources: &[&str]) -> Self {
+        self.directive("connect-src", sources)
+    }
+
+    /// Sets the `font-src` directive.
+    pub fn font_src(self, sources: &[&str]) -> Self {
+        self.directive("font-src", sources)
+    }
+
+    /// Sets the `frame-ancestors` directive (controls who may embed this site in a frame).
+    pub fn frame_ancestors(self, sources: &[&str]) -> Self {
+        self.directive("frame-ancestors", sources)
+    }
+
+    /// Sets the `form-action` directive (restricts where `<form>` submissions may target).
+    pub fn form_action(self, sources: &[&str]) -> Self {
+        self.directive("form-action", sources)
+    }
+
+    /// Sets the `object-src` directive (controls `<object>`/`<embed>`/`<applet>`).
+    pub fn object_src(self, sources: &[&str]) -> Self {
+        self.directive("object-src", sources)
+    }
+
+    /// Adds the `upgrade-insecure-requests` directive (no source list — it's a bare flag).
+    pub fn upgrade_insecure_requests(mut self) -> Self {
+        self.upgrade_insecure_requests = true;
+        self
+    }
+
+    /// Sends the policy as `Content-Security-Policy-Report-Only` instead of enforcing it —
+    /// useful for testing a policy's real-world impact before switching it on.
+    pub fn report_only(mut self, yes: bool) -> Self {
+        self.report_only = yes;
+        self
+    }
+
+    fn header_value(&self) -> String {
+        let mut parts: Vec<String> = self
+            .directives
+            .iter()
+            .map(|(name, sources)| format!("{} {}", name, sources.join(" ")))
+            .collect();
+        if self.upgrade_insecure_requests {
+            parts.push("upgrade-insecure-requests".to_string());
+        }
+        parts.join("; ")
+    }
+
+    /// Finalizes the builder into a [`CspLayer`].
+    pub fn build(self) -> CspLayer {
+        let header_name = if self.report_only {
+            "content-security-policy-report-only"
+        } else {
+            "content-security-policy"
+        };
+        CspLayer {
+            header_name,
+            header_value: self.header_value(),
+        }
+    }
+}
+
+/// `Content-Security-Policy` header middleware. Built via [`CspBuilder`].
+#[derive(Clone)]
+pub struct CspLayer {
+    header_name: &'static str,
+    header_value: String,
+}
+
+impl<S> Layer<S> for CspLayer {
+    type Service = tower_http::set_header::SetResponseHeader<S, hyper::http::HeaderValue>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        let header_val = hyper::http::HeaderValue::from_str(&self.header_value)
+            .unwrap_or_else(|_| hyper::http::HeaderValue::from_static("default-src 'self'"));
+
+        tower_http::set_header::SetResponseHeaderLayer::overriding(
+            hyper::http::HeaderName::from_static(self.header_name),
+            header_val,
+        )
+        .layer(inner)
+    }
+}
+
 /// Normalizes request paths by trimming trailing slashes.
 /// Roughly equivalent to Django's `CommonMiddleware` trailing-slash behavior.
 pub fn normalize_path_layer() -> tower_http::normalize_path::NormalizePathLayer {
@@ -857,6 +997,68 @@ mod tests {
         assert_eq!(
             hsts_hdr2.to_str().unwrap(),
             "max-age=31536000; includeSubDomains"
+        );
+    }
+
+    #[test]
+    fn test_csp_builder_assembles_directives_in_call_order() {
+        let csp = CspBuilder::new()
+            .default_src(&["'self'"])
+            .script_src(&["'self'", "https://cdn.example.com"])
+            .img_src(&["'self'", "data:"])
+            .build();
+        assert_eq!(csp.header_name, "content-security-policy");
+        assert_eq!(
+            csp.header_value,
+            "default-src 'self'; script-src 'self' https://cdn.example.com; img-src 'self' data:"
+        );
+    }
+
+    #[test]
+    fn test_csp_builder_upgrade_insecure_requests_is_a_bare_directive() {
+        let csp = CspBuilder::new()
+            .default_src(&["'self'"])
+            .upgrade_insecure_requests()
+            .build();
+        assert_eq!(
+            csp.header_value,
+            "default-src 'self'; upgrade-insecure-requests"
+        );
+    }
+
+    #[test]
+    fn test_csp_builder_report_only_uses_the_report_only_header_name() {
+        let csp = CspBuilder::new()
+            .default_src(&["'self'"])
+            .report_only(true)
+            .build();
+        assert_eq!(csp.header_name, "content-security-policy-report-only");
+    }
+
+    #[tokio::test]
+    async fn test_csp_layer_sets_the_real_response_header() {
+        let inner_svc = service_fn(move |_req| {
+            let resp = hyper::Response::builder()
+                .status(200)
+                .body(Full::new(Bytes::from("ok")))
+                .unwrap();
+            async move { Ok::<_, Infallible>(resp) }
+        });
+
+        let mut svc = CspBuilder::new()
+            .default_src(&["'self'"])
+            .frame_ancestors(&["'none'"])
+            .build()
+            .layer(inner_svc);
+
+        let req = hyper::Request::builder()
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        let resp = svc.ready().await.unwrap().call(req).await.unwrap();
+        let csp_hdr = resp.headers().get("content-security-policy").unwrap();
+        assert_eq!(
+            csp_hdr.to_str().unwrap(),
+            "default-src 'self'; frame-ancestors 'none'"
         );
     }
 
