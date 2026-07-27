@@ -126,8 +126,14 @@ To check model definitions and schema integrity, run `dj check`:
 dj check
 ```
 
-You can also run the REPL shell to interact with your Rust environment:
+You can also run the interactive Rust REPL shell (requires `evcxr` via `cargo install evcxr_repl`):
 
 ```bash
 dj shell
+```
+
+Inside the REPL, you can load your project crate directly:
+```rust
+:dep my_app = { path = "." }
+use my_app::models::*;
 ```

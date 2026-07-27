@@ -149,7 +149,7 @@ Django uses `python manage.py <command>`. Djangors provides the `dj` command-lin
 | `python manage.py makemigrations` | `dj makemigrations` | *(Blocked — see note below)* |
 | `python manage.py createsuperuser` | `dj createsuperuser` | Prompts for superuser credentials and creates User |
 | `python manage.py test` | `dj test` | Runs workspace unit and integration test suite (`cargo test`) |
-| `python manage.py shell` | `dj shell` | *(No REPL yet — see note below)* |
+| `python manage.py shell` | `dj shell` | Launches interactive Rust REPL via `evcxr` |
 | `python manage.py dbshell` | `dj dbshell` | Connects directly to configured database CLI |
 
 ### ⚠️ Structural Limitation of `dj makemigrations`
@@ -160,10 +160,14 @@ In Djangors, model structs are compiled directly into the application binary at 
 
 Database migrations in Djangors are authored as raw SQL files or generated via programmatic schema utilities.
 
-### ⚠️ `dj shell` has no REPL yet
-Unlike Django's `manage.py shell` (an interactive Python interpreter with models pre-imported),
-`dj shell` currently just prints a note that an interactive Rust REPL isn't available yet (it would
-require integrating a crate like `evcxr`) — there is no working equivalent in v1.
+### ℹ️ `dj shell` (evcxr Rust REPL)
+`dj shell` launches an interactive Rust REPL via `evcxr` (installed via `cargo install evcxr_repl`).
+
+Because `dj` is a separate binary process from your application, target project models cannot be auto-imported across process boundaries automatically. To import your project's models into the REPL session, use `:dep` with a path dependency:
+```rust
+:dep my_app = { path = "." }
+use my_app::models::*;
+```
 
 ---
 

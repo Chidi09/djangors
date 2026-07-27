@@ -624,7 +624,7 @@ pub fn dbshell() -> Result<(), String> {
     Ok(())
 }
 
-/// Connect to DATABASE_URL and display shell guidance.
+/// Connect to DATABASE_URL and launch interactive Rust REPL via evcxr.
 pub async fn shell() -> Result<(), String> {
     require_project_root()?;
     let db_url = std::env::var("DATABASE_URL")
@@ -636,8 +636,27 @@ pub async fn shell() -> Result<(), String> {
         .map_err(|e| format!("failed to connect to database: {e}"))?;
 
     println!("[dj shell] Connected to database successfully.");
-    println!("[dj shell] Note: An interactive Rust REPL is not yet available (requires evcxr integration).");
-    println!("[dj shell] For interactive database access, use 'dj dbshell'.");
+
+    let pkg_name = std::fs::read_to_string("Cargo.toml")
+        .ok()
+        .and_then(|content| toml::from_str::<toml::Value>(&content).ok())
+        .and_then(|val| val.get("package")?.get("name")?.as_str().map(String::from))
+        .unwrap_or_else(|| "<project_name>".to_string());
+
+    println!("[dj shell] Launching interactive Rust REPL (evcxr)...");
+    println!("[dj shell] Note: Project models are not auto-imported across binary boundaries.");
+    println!("[dj shell] To load your project in the REPL, run:");
+    println!("[dj shell]   :dep {pkg_name} = {{ path = \".\" }}");
+    println!("[dj shell]   use {pkg_name}::models::*;");
+
+    let status = std::process::Command::new("evcxr")
+        .current_dir(".")
+        .status()
+        .map_err(|e| format!("failed to execute 'evcxr' (is evcxr installed via 'cargo install evcxr_repl' and on PATH?): {e}"))?;
+
+    if !status.success() {
+        return Err(format!("evcxr exited with status {status}"));
+    }
     Ok(())
 }
 
@@ -1070,7 +1089,7 @@ allowed_hosts = ["example.com"]
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
-    async fn test_dj_shell_success() {
+    async fn test_dj_shell_missing_evcxr() {
         let _guard = FS_MUTEX.lock().unwrap();
         let root = std::env::temp_dir().join(format!("dj_test_shell_{}", std::process::id()));
         let project = root.join("project");
@@ -1082,13 +1101,19 @@ allowed_hosts = ["example.com"]
 
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         std::env::set_var("DATABASE_URL", db_url);
+        let old_path = std::env::var("PATH").ok();
+        std::env::set_var("PATH", "/bin:/usr/bin");
 
         let res = shell().await;
 
+        if let Some(path) = old_path {
+            std::env::set_var("PATH", path);
+        }
         std::env::set_current_dir(old).unwrap();
         let _ = std::fs::remove_dir_all(root);
 
-        assert!(res.is_ok(), "shell() failed: {:?}", res);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("failed to execute 'evcxr'"));
     }
 
     #[tokio::test]
