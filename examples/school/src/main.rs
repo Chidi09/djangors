@@ -19,7 +19,13 @@ async fn main() -> Result<(), DjangorsError> {
         }
     };
 
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let mut config = djangors_db::config::DatabaseConfig::new(db_url);
+    if let Ok(raw) = std::env::var("DJANGORS_MAX_CONNECTIONS") {
+        let max = raw.parse().map_err(|_| {
+            DjangorsError::Internal("DJANGORS_MAX_CONNECTIONS must be an integer".to_string())
+        })?;
+        config = config.max_connections(max);
+    }
     let db = djangors_db::Database::connect(&config)
         .await
         .map_err(|e| DjangorsError::Internal(e.to_string()))?;

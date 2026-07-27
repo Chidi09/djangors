@@ -26,6 +26,7 @@
 - [Testing](guides/testing.md)
 - [Deployment](guides/deployment.md)
 - [Security](guides/security.md)
+- [Connection Pool Tuning](guides/pool-tuning.md)
 
 # How-To Guides
 

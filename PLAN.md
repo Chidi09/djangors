@@ -391,7 +391,25 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 
 ### Phase 10 — Hardening & 1.0 (~2–3 months)
 - [x] **Benchmarks** — **done (v1, 10.1, commit `dc3c6cb`):** `docs/src/benchmarks.md`, real `oha`-driven measurements vs Django/Gunicorn and a fair axum comparison target (`benchmarks/`, excluded from the main workspace), independently reproduced. Hello-path: Djangors 60,890 req/s vs axum 78,447 vs Django 831. Full-stack path (real Postgres query): Djangors 7,290 req/s vs axum 9,503 vs Django 26. Reports honestly that the axum full-stack comparison **missed** the "within 15-25%" target (23.3% lower throughput) rather than reframing it. **Remaining:** TechEmpower submission (a real external submission process — needs a human decision to actually submit, not attempted here).
-- [ ] Load testing the admin + ORM under concurrency; connection-pool tuning guide.
+- [x] **Load testing the admin + ORM under concurrency; connection-pool tuning guide** — **done
+  (10.11).** Real 60-point `oha` sweep (5 concurrency levels × 2 users [superuser + a staff user
+  on the real ~9-round-trip permission-check path] × 2 query types × 3 `max_connections` settings)
+  against `examples/school`'s real, running admin (5,000 seeded `Student` rows in `djangors_bench`,
+  real login flow, real session cookies) — raw output committed at
+  `benchmarks/results/admin-sweep-2026-07-27.txt`. New `docs/src/guides/pool-tuning.md`, tied to
+  the real `DatabaseConfig` fields and measured numbers. **The dispatch's draft claimed a specific
+  observed connection-failure error at the undersized-pool point; independent review found the
+  actual committed raw data shows 100% success at all 60 points, with no non-200 status code
+  anywhere** — re-tested the claim directly with fresh real login + `oha` runs at
+  `max_connections=1` and concurrency up to 1000 (far more extreme than anything in the committed
+  sweep) and still could not reproduce a genuine connection failure, only growing queueing
+  latency. Corrected the doc to state the real, verified finding instead: this workload's
+  contention manifests as latency growth, not outright failures, because sqlx's default
+  `acquire_timeout` (10s) is generous relative to how fast this admin path's queries actually
+  complete — and verified the doc's own replacement claim (that latency grows meaningfully as the
+  pool undersizes relative to concurrency) against the real numbers before leaving it in. Full
+  `fmt`/`build`/`clippy`/`test --workspace` clean on the main workspace, `benchmarks/`, and
+  `mdbook build docs`, independently re-verified.
 - [ ] Third-party **security audit** of auth/sessions/CSRF/admin (budget for it; publish results — enormous credibility with your banking audience).
 - [ ] API freeze review: go over every public item; `#[doc(hidden)]` or seal what you're unsure of. Deprecation policy + release cadence doc (time-based, like Django's).
 - [ ] 1.0 launch: blog post, HN/Reddit/This Week in Rust, conference talk submissions (RustConf, EuroRust, DjangoCon — yes, DjangoCon).
