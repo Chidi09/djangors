@@ -764,8 +764,20 @@ double-checked to exist and are *not* relisted here.
   shared-table test race (same fixed-table-name pattern seen in `djangors-tasks`, fixed the same
   way) and a minijinja template using `for k, v in errors` on a JSON object without the required
   `.items()` call.
-- [ ] **Custom management commands plugin mechanism** — `dj`'s CLI is a fixed `clap` `enum
-  Commands`; there's no registry letting a user's own app add `dj <mycommand>`.
+- [x] **Custom management commands plugin mechanism** — **done (11.8, commit `49e17c7`).** New
+  `#[management_command]` attribute macro (mirroring `#[task]`'s wrapper + `inventory::submit!`
+  structure) lets a project register `dj <name>`. Since `dj` is a separately-compiled binary that
+  can't see a registry populated inside a *different* compiled project, this mirrors the project's
+  own existing solution to the identical problem (model introspection): `dj` shells out via
+  `cargo run --quiet` with a `DJANGORS_RUN_COMMAND` env var when it sees an unrecognized,
+  non-flag subcommand, and the user project's own `main()` (already calling
+  `introspect_models_if_requested()`) now also calls `run_management_command_if_requested()`.
+  Found and fixed 2 real bugs in the dispatch's implementation: `dj --help`/`--version` were
+  being incorrectly intercepted as unknown commands (fixed by excluding flags from the check),
+  and the handler spun a second nested tokio runtime inside the already-running one, panicking on
+  every real invocation (fixed by making the function async instead). Wrote the required real
+  end-to-end test myself: a genuine registered command in `examples/polls`, exercised via the
+  actual `dj` binary as a subprocess, confirming an observable side effect.
 - [ ] **Contenttypes / `GenericForeignKey` framework** — no `ContentType` model or generic-relation
   abstraction; `object_id`-shaped fields exist only as bespoke, non-reusable fields inside
   `djangors-contrib-guardian` and `djangors-admin`.
