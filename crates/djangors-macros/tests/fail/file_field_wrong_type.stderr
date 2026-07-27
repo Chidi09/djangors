@@ -1,0 +1,5 @@
+error: file_field is only valid on String fields
+ --> tests/fail/file_field_wrong_type.rs:9:21
+  |
+9 |     pub attachment: i64,
+  |                     ^^^

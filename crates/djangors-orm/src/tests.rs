@@ -1341,3 +1341,84 @@ async fn test_null_bind_respects_field_type() {
         .await
         .unwrap();
 }
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_file_field_model")]
+pub struct FileFieldTestModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+    #[djangors(file_field)]
+    pub attachment: Option<String>,
+}
+
+#[test]
+fn test_file_field_kind_is_set_on_the_model() {
+    let meta = FileFieldTestModel::meta();
+    let field = meta.fields.iter().find(|f| f.name == "attachment").unwrap();
+    assert_eq!(field.kind, FieldKind::FileField);
+}
+
+#[tokio::test]
+async fn test_file_field_saves_and_reloads_a_real_path_string() {
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query("DROP TABLE IF EXISTS test_file_field_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE test_file_field_model (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            attachment TEXT
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let saved = FileFieldTestModel {
+        id: 0,
+        name: "invoice".to_string(),
+        attachment: Some("uploads/invoice-42.pdf".to_string()),
+    }
+    .save(&db)
+    .await
+    .unwrap();
+    assert_eq!(saved.attachment.as_deref(), Some("uploads/invoice-42.pdf"));
+
+    let reloaded = crate::queryset::QuerySet::<FileFieldTestModel>::new()
+        .filter(q!(id = saved.id))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        reloaded.attachment.as_deref(),
+        Some("uploads/invoice-42.pdf")
+    );
+
+    let no_attachment = FileFieldTestModel {
+        id: 0,
+        name: "no-file".to_string(),
+        attachment: None,
+    }
+    .save(&db)
+    .await
+    .unwrap();
+    let reloaded_none = crate::queryset::QuerySet::<FileFieldTestModel>::new()
+        .filter(q!(id = no_attachment.id))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(reloaded_none.attachment, None);
+
+    sqlx::query("DROP TABLE test_file_field_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}

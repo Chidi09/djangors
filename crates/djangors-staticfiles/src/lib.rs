@@ -13,4 +13,4 @@ pub mod storage;
 pub use collect::Manifest;
 pub use error::StaticFilesError;
 pub use serve::{StaticFiles, StaticFilesHandler};
-pub use storage::{LocalDiskStorage, Storage};
+pub use storage::{LocalDiskStorage, S3Storage, Storage};

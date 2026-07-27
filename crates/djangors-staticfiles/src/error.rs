@@ -14,4 +14,8 @@ pub enum StaticFilesError {
     /// A file hashing error occurred.
     #[error("Hashing error: {0}")]
     Hashing(String),
+
+    /// An S3-compatible storage operation failed.
+    #[error("S3 storage error: {0}")]
+    S3(String),
 }

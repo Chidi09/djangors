@@ -10,6 +10,8 @@ pub enum FieldKind {
     Char,
     /// Unbounded text field. Django's `TextField`.
     Text,
+    /// A path/key stored in a configured file storage backend. Django's `FileField`.
+    FileField,
     /// Standard 32-bit signed integer. Django's `IntegerField`.
     Integer,
     /// 64-bit signed integer. Django's `BigIntegerField`.

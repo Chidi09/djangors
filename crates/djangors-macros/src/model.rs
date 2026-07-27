@@ -208,6 +208,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         let mut primary_key = false;
         let mut auto = false;
         let mut max_length = None;
+        let mut file_field = false;
         let mut default = None;
         let mut unique = false;
         let mut db_index = false;
@@ -229,6 +230,8 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                     } else if meta.path.is_ident("max_length") {
                         let lit: LitInt = meta.value()?.parse()?;
                         max_length = Some(lit.base10_parse::<u32>()?);
+                    } else if meta.path.is_ident("file_field") {
+                        file_field = true;
                     } else if meta.path.is_ident("default") {
                         let expr: syn::Expr = meta.value()?.parse()?;
                         default = Some(expr);
@@ -347,6 +350,12 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                     "max_length is only valid on String fields",
                 ));
             }
+            if file_field && !is_string {
+                return Err(syn::Error::new_spanned(
+                    &field.ty,
+                    "file_field is only valid on String fields",
+                ));
+            }
 
             if last_ident.map(|id| id == "Decimal").unwrap_or(false) {
                 if max_digits.is_none() && decimal_places.is_none() {
@@ -384,7 +393,9 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
 
             let kind_token = match last_ident.map(|id| id.to_string()).as_deref() {
                 Some("String") => {
-                    if max_length.is_some() {
+                    if file_field {
+                        quote! { djangors_orm::FieldKind::FileField }
+                    } else if max_length.is_some() {
                         quote! { djangors_orm::FieldKind::Char }
                     } else {
                         quote! { djangors_orm::FieldKind::Text }

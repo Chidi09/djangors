@@ -523,30 +523,49 @@ User directive: "let's do it all."
   invalid-cron-expression-rejected-at-registration test, and a full E2E test proving the recurring
   and one-shot systems compose. All pass, plus all 7 pre-existing `djangors-tasks` tests
   unaffected; full `fmt`/`build`/`clippy -D warnings`/`test --workspace` clean.
-- [ ] **7. Pluggable file storage / S3 backend** — **item 7a done (10.9), 7b (S3Storage +
-  FileField) remains:** new `Storage` trait (`save`/`open`/`exists`/`delete`/`url`) +
-  `LocalDiskStorage` in `crates/djangors-staticfiles/src/storage.rs`. `StaticFiles::serve` now
-  holds one `LocalDiskStorage` per configured source dir (preserving the pre-existing "multiple
-  source dirs, first match wins" search order exactly) and calls through the trait instead of raw
-  `fs::` calls; `collect()`'s write side goes through an injected `&dyn Storage` via a new
-  `collect_to()` (its read side — walking a project's own local source tree — stays plain `fs::`,
-  a deliberate scope decision since that's inherently local regardless of where the *output*
-  eventually lives). `collect()`'s existing sync signature/behavior is fully preserved via a
-  `std::thread::scope` + fresh single-threaded Tokio runtime bridge (safe specifically because it
-  runs on a genuinely separate OS thread from the CLI's own `#[tokio::main]` runtime — nesting
-  `block_on` on the SAME thread would panic, this doesn't). The path-traversal-safety logic from
-  the old private `resolve_path` was moved into `LocalDiskStorage` verbatim, not rewritten — the
-  concern (weakening an existing security guarantee during the refactor) didn't materialize:
-  independently verified via all 3 pre-existing tests (`test_path_traversal_protection`,
-  `test_directory_precedence`, `test_collectstatic_behavior`) still passing unmodified, plus 2 new
-  ones the dispatch itself added (`test_local_storage_rejects_traversal`,
-  `test_local_storage_rejects_escaping_symlink`, the latter covering a symlink-escape case the
-  original code's own test suite hadn't explicitly named before). **Notably, this dispatch (codex,
-  after a re-confirmed agy quota wall — now checked 4 times, holding steady around 36-38h each
-  time) was the first one this whole roadmap to actually deliver its own required tests without
-  needing a follow-up** — independently re-verified all 8 `djangors-staticfiles` tests plus the
-  full workspace suite clean regardless. Item 7b (S3Storage + FileField, needs a real
-  S3-compatible endpoint like MinIO for honest verification) is next.
+- [x] **7. Pluggable file storage / S3 backend** — **done (10.9 + 10.10), the final item of the
+  8-item architecture-parity roadmap.** Item 7a (10.9): new `Storage` trait
+  (`save`/`open`/`exists`/`delete`/`url`) + `LocalDiskStorage` in
+  `crates/djangors-staticfiles/src/storage.rs`. `StaticFiles::serve` now holds one
+  `LocalDiskStorage` per configured source dir (preserving the pre-existing "multiple source
+  dirs, first match wins" search order exactly); `collect()`'s write side goes through an
+  injected `&dyn Storage` via a new `collect_to()` (its read side — walking a project's own local
+  source tree — stays plain `fs::`, deliberately, since that's inherently local regardless of
+  where the *output* ends up); `collect()`'s sync signature/behavior fully preserved via a
+  `std::thread::scope` + fresh single-threaded Tokio runtime bridge. The path-traversal-safety
+  logic from the old private `resolve_path` was moved verbatim, not rewritten — confirmed
+  unweakened via all 3 pre-existing tests plus 2 new ones the dispatch added
+  (`test_local_storage_rejects_traversal`, `test_local_storage_rejects_escaping_symlink`). This
+  was the first dispatch the whole roadmap to deliver its own required tests without a follow-up
+  round.
+
+  Item 7b (10.10): new `S3Storage` implementing the same `Storage` trait, verified against a real,
+  purpose-started local MinIO container (`http://localhost:19000`) rather than a mock — a genuine
+  `save`/`exists`/`open`/`delete` round trip over real S3 wire traffic, plus a shared-contract test
+  proving `LocalDiskStorage` and `S3Storage` are swappable behind the same trait with zero caller
+  changes. New `FieldKind::FileField` (ORM) + `#[djangors(file_field)]` macro attribute (mirrors
+  the existing `max_length`-on-non-`String` validation pattern), mapping to the same SQL type as
+  `Text` in migrations' `sql_type_for`. **My own design doc had a real mistake**: it named `s3 =
+  "0.37"` as the dependency, based on querying crates.io for "rust-s3" and wrongly assuming that
+  was the same crate as the one actually named `s3` on the registry — they're two separate,
+  differently-versioned crates. The dispatch caught this itself, correctly used the real `s3`
+  crate at its actual current version (`0.1.36`), and verified its real API rather than guessing.
+  **Independent review found two more real, small bugs the dispatch's own "all tests passed"
+  self-report missed** (caught only by actually running `cargo test --workspace` myself, not
+  trusting the claim): `crates/djangors-macros/tests/pass/simple_model.rs` asserted
+  `meta.fields.len() == 3` after the dispatch added a 4th field for the new `file_field` case, and
+  `tests/fail/file_field_wrong_type.stderr`'s recorded line number (8) didn't match the real
+  compiler output (9) once the file's line count shifted — both one-line fixes, the latter
+  resolved via `TRYBUILD=overwrite` rather than hand-editing the snapshot. I also wrote the one
+  required-verification test the dispatch itself flagged as skipped (a real DB-backed `FileField`
+  save/reload round trip) plus a small unit test in `djangors-migrations` confirming
+  `FileField`/`Text` map to the same SQL type — both pass. Full `fmt`/`build`/`clippy -D
+  warnings`/`test --workspace` clean, independently re-verified after every fix, not just once at
+  the end.
+
+**All 8 architecture-parity items are now done.** Commits: 1 (`4deb27f`/`1ffe8d7`), 2 (`0aad3de`),
+3 (`6da33b5`), 4 (`393e184`), 5 (`685c030`), 6 (`fcae7eb`), 8 (`9c8e277`), 7a (`a89a197`), 7b (this
+commit).
 - [x] **8. Cursor pagination** — **done (10.6/10.6b):** new `QuerySet::after(order_field,
   order_value, pk_field, cursor_pk, descending)` builds a real keyset predicate
   (`order_field > val OR (order_field = val AND pk_field > cursor_pk)`, mirroring the existing

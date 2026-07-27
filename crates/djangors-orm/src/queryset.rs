@@ -32,7 +32,8 @@ fn null_bind_kind_for(field_name: &str, meta: &'static ModelMeta) -> NullBindKin
             | FieldKind::Email
             | FieldKind::Url
             | FieldKind::Slug
-            | FieldKind::Ip => NullBindKind::Text,
+            | FieldKind::Ip
+            | FieldKind::FileField => NullBindKind::Text,
             FieldKind::Integer | FieldKind::BigInt => NullBindKind::I64,
             FieldKind::Float => NullBindKind::F64,
             FieldKind::Boolean => NullBindKind::Bool,

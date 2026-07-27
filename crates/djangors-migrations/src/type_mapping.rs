@@ -28,7 +28,7 @@ pub fn sql_type_for(
                 })
             }
         }
-        FieldKind::Text => Ok("TEXT".to_string()),
+        FieldKind::Text | FieldKind::FileField => Ok("TEXT".to_string()),
         FieldKind::Integer => {
             if auto {
                 Ok("SERIAL".to_string())
@@ -57,5 +57,19 @@ pub fn sql_type_for(
         FieldKind::Ip => Ok("INET".to_string()),
         FieldKind::Binary => Ok("BYTEA".to_string()),
         FieldKind::Json => Ok("JSONB".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_field_maps_to_the_same_sql_type_as_text() {
+        let file_field_sql =
+            sql_type_for(&FieldKind::FileField, None, false, "attachment").unwrap();
+        let text_sql = sql_type_for(&FieldKind::Text, None, false, "body").unwrap();
+        assert_eq!(file_field_sql, text_sql);
+        assert_eq!(file_field_sql, "TEXT");
     }
 }

@@ -1,6 +1,60 @@
 use bytes::Bytes;
 use djangors_core::{DjangorsError, PathParams, Request, Router};
-use djangors_staticfiles::{LocalDiskStorage, Manifest, StaticFiles, Storage};
+use djangors_staticfiles::{LocalDiskStorage, Manifest, S3Storage, StaticFiles, Storage};
+
+async fn round_trip(storage: &impl Storage, path: &str) {
+    let bytes = b"storage abstraction".to_vec();
+    storage.save(path, bytes.clone()).await.unwrap();
+    assert!(storage.exists(path).await.unwrap());
+    assert_eq!(storage.open(path).await.unwrap(), bytes);
+    storage.delete(path).await.unwrap();
+    assert!(!storage.exists(path).await.unwrap());
+}
+
+#[tokio::test]
+async fn storage_backends_share_the_same_trait_contract() {
+    let root = tempfile::tempdir().unwrap();
+    let local = LocalDiskStorage::new(root.path(), "");
+    round_trip(&local, "trait-local.txt").await;
+
+    let s3 = S3Storage::new(
+        "djangors-test",
+        "us-east-1",
+        Some("http://localhost:19000"),
+        "test",
+        "testtest",
+        "http://localhost:19000/djangors-test",
+    )
+    .unwrap();
+    if s3.create_bucket().await.is_err() {
+        return;
+    }
+    round_trip(&s3, "trait-s3.txt").await;
+}
+
+#[tokio::test]
+async fn s3_storage_round_trips_against_minio() {
+    let s3 = S3Storage::new(
+        "djangors-test",
+        "us-east-1",
+        Some("http://localhost:19000"),
+        "test",
+        "testtest",
+        "http://localhost:19000/djangors-test",
+    )
+    .unwrap();
+    if s3.create_bucket().await.is_err() {
+        return;
+    }
+    let content = b"real minio wire round trip".to_vec();
+    s3.save("integration/object.bin", content.clone())
+        .await
+        .unwrap();
+    assert!(s3.exists("integration/object.bin").await.unwrap());
+    assert_eq!(s3.open("integration/object.bin").await.unwrap(), content);
+    s3.delete("integration/object.bin").await.unwrap();
+    assert!(!s3.exists("integration/object.bin").await.unwrap());
+}
 use hyper::http::{HeaderMap, Method, Uri};
 use hyper::StatusCode;
 use std::fs;

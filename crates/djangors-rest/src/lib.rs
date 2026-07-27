@@ -347,6 +347,16 @@ pub fn deserialize<M: Model>(
                         );
                     }
                 }
+                FieldKind::FileField => {
+                    if let Some(s) = v.as_str() {
+                        values.push((field.name, Value::Text(s.to_string())));
+                    } else {
+                        errors.insert(
+                            field.name.to_string(),
+                            format!("Field '{}' must be a string.", field.name),
+                        );
+                    }
+                }
                 FieldKind::Integer | FieldKind::BigInt => {
                     if let Some(n) = v.as_i64() {
                         values.push((field.name, Value::I64(n)));
@@ -525,6 +535,7 @@ fn parse_filter_value<M: Model>(field_name: &str, raw_val: &str) -> Option<Value
             | FieldKind::Time
             | FieldKind::Duration
             | FieldKind::Uuid => Some(Value::Text(raw_val.to_string())),
+            FieldKind::FileField => Some(Value::Text(raw_val.to_string())),
         }
     } else if meta.relations.iter().any(|r| r.field_name == field_name) {
         raw_val.parse::<i64>().ok().map(Value::I64)
@@ -1387,7 +1398,9 @@ pub fn openapi_schema_for<M: Model>() -> serde_json::Value {
                 }
                 s
             }
-            FieldKind::Text | FieldKind::Slug => serde_json::json!({ "type": "string" }),
+            FieldKind::Text | FieldKind::Slug | FieldKind::FileField => {
+                serde_json::json!({ "type": "string" })
+            }
             FieldKind::Email => serde_json::json!({ "type": "string", "format": "email" }),
             FieldKind::Url => serde_json::json!({ "type": "string", "format": "uri" }),
             FieldKind::Ip => serde_json::json!({ "type": "string", "format": "ipv4" }),

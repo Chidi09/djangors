@@ -11,6 +11,9 @@ pub struct Simple {
     pub name: String,
 
     pub is_active: bool,
+
+    #[djangors(file_field)]
+    pub attachment: Option<String>,
 }
 
 fn main() {
@@ -18,7 +21,7 @@ fn main() {
     assert_eq!(meta.struct_name, "Simple");
     assert_eq!(meta.app_label, "test_app");
     assert_eq!(meta.table_name, "custom_table");
-    assert_eq!(meta.fields.len(), 3);
+    assert_eq!(meta.fields.len(), 4);
     assert_eq!(meta.ordering, &["-name"]);
 
     let id_field = meta.fields[0];
@@ -36,4 +39,5 @@ fn main() {
     let active_field = meta.fields[2];
     assert_eq!(active_field.name, "is_active");
     assert_eq!(active_field.kind, FieldKind::Boolean);
+    assert_eq!(meta.fields[3].kind, FieldKind::FileField);
 }
