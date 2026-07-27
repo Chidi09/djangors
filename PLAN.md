@@ -390,7 +390,7 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 **DoD:** a Django dev completes the tutorial without asking a question in chat.
 
 ### Phase 10 — Hardening & 1.0 (~2–3 months)
-- [ ] Benchmarks published honestly: vs Django (expect 10–50x), vs axum/actix (target: within 15–25% on full-stack paths, and say why the gap buys you the admin), TechEmpower submission.
+- [x] **Benchmarks** — **done (v1, 10.1, commit `dc3c6cb`):** `docs/src/benchmarks.md`, real `oha`-driven measurements vs Django/Gunicorn and a fair axum comparison target (`benchmarks/`, excluded from the main workspace), independently reproduced. Hello-path: Djangors 60,890 req/s vs axum 78,447 vs Django 831. Full-stack path (real Postgres query): Djangors 7,290 req/s vs axum 9,503 vs Django 26. Reports honestly that the axum full-stack comparison **missed** the "within 15-25%" target (23.3% lower throughput) rather than reframing it. **Remaining:** TechEmpower submission (a real external submission process — needs a human decision to actually submit, not attempted here).
 - [ ] Load testing the admin + ORM under concurrency; connection-pool tuning guide.
 - [ ] Third-party **security audit** of auth/sessions/CSRF/admin (budget for it; publish results — enormous credibility with your banking audience).
 - [ ] API freeze review: go over every public item; `#[doc(hidden)]` or seal what you're unsure of. Deprecation policy + release cadence doc (time-based, like Django's).
