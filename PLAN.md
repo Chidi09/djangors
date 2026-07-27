@@ -382,6 +382,7 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 - [x] **Docs site (mdBook)** — **done (v1, 9.2, commit `1c01335`):** `docs/book.toml` + `docs/src/SUMMARY.md`, `mdbook build docs` confirmed producing real HTML with no broken links.
 - [x] **Topic guides** — **done (v1, 9.2, commit `1c01335`):** ORM, templates, forms, auth, admin, testing, deployment, security — `docs/src/guides/*.md`, every named API verified against real crate source.
 - [x] **"Djangors for Django developers" guide + how-tos** — **done (v1, 9.3, commit `1a9d086`):** `docs/src/django-comparison.md` (10 side-by-side sections) + 6 how-tos under `docs/src/how-to/`. Independent review caught and fixed 7 fabricated API usages before commit (see commit message for the full list) — the first Phase 9 dispatch with real content bugs, unlike 9.1/9.2's clean first passes. **Remaining:** rustdoc reference (100% public-API coverage enforced) is still open.
+- [x] **`dj shell` real REPL (user-requested scope addition)** — **done (v1, 9.4, commit `e9e9c3e`):** execs the user's own `evcxr` binary (`cargo install evcxr_repl --no-default-features`), mirroring `dj dbshell`'s exec pattern; closes the gap 9.3 had documented honestly.
 - [ ] Every doc code block extracted and compiled in CI (doctests / skeptic-style).
 - [ ] `djangors.rs` (or chosen domain) landing page: pitch, live admin demo (deployed e-commerce example, read-only), benchmark numbers, "deploy in 5 minutes" screencast.
 
