@@ -182,6 +182,14 @@ pub async fn register_recurring(
 pub async fn tick_recurring_tasks(db: &djangors_db::Database) -> Result<usize, TaskError> {
     db.transaction(|tx| Box::pin(async move {
         let now = chrono::Utc::now();
+        // A tick spans several statements (cron evaluation, enqueue, and
+        // schedule advancement).  Serialize that claim-and-advance sequence
+        // at the database level so READ COMMITTED cannot let another tick
+        // observe the same due row between those statements.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('djangors.tick_recurring_tasks', 0))")
+            .execute(&mut *tx)
+            .await
+            .map_err(djangors_db::DbError::QueryFailed)?;
         let rows = sqlx::query("SELECT id, task_name, payload, cron_expr, next_run_at FROM djangors_recurring_task WHERE enabled = true AND next_run_at <= $1 ORDER BY next_run_at, id FOR UPDATE SKIP LOCKED")
             .bind(now).fetch_all(&mut *tx).await.map_err(djangors_db::DbError::QueryFailed)?;
         let mut count = 0;
