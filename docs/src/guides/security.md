@@ -23,6 +23,14 @@ let service = ServiceBuilder::new()
 2. **Unsafe Method Validation**: For unsafe HTTP methods (`POST`, `PUT`, `PATCH`, `DELETE`), the token in the `X-CSRFToken` request header is compared against the `csrftoken` cookie value using constant-time comparison (`constant_time_eq`).
 3. **Form Fallback**: If the header is missing or mismatched, `CsrfLayer` sets `CsrfPendingFormCheck` on the request extensions. Form submission handlers verify the `csrfmiddlewaretoken` form body field against the pending token, returning `403 Forbidden` if missing or invalid.
 
+**Production checklist**: `csrf_layer()` defaults to `Secure` **off** on the `csrftoken` cookie, the
+same way `SignedCookieStore::new()` defaults `Secure` off (see below) — this keeps local HTTP
+development working out of the box. In production, enable it the same way the session store does:
+`csrf_layer().with_secure(!settings.debug)`. Both `examples/school` and `examples/polls` wire this
+correctly; if you're copying from an older reference, check that your own `main.rs` does too — an
+internal security review (2026-07-27) found neither example app had actually done this before,
+despite the session-cookie guidance below already documenting the correct pattern.
+
 ---
 
 ## Security Headers (`SecurityHeadersLayer`)

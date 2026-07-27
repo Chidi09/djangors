@@ -410,7 +410,23 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
   pool undersizes relative to concurrency) against the real numbers before leaving it in. Full
   `fmt`/`build`/`clippy`/`test --workspace` clean on the main workspace, `benchmarks/`, and
   `mdbook build docs`, independently re-verified.
-- [ ] Third-party **security audit** of auth/sessions/CSRF/admin (budget for it; publish results — enormous credibility with your banking audience).
+- [ ] Third-party **security audit** of auth/sessions/CSRF/admin (budget for it; publish results —
+  enormous credibility with your banking audience). **Still genuinely open** — a real independent
+  audit needs a real budget/vendor decision only the user can make. In the meantime, ran an
+  **internal automated + manual security review** (`docs/security-review-2026-07-27.md`) as real,
+  useful groundwork: `cargo audit` against the full dependency tree found 2 HIGH-severity
+  advisories in `quick-xml` (pulled in transitively via the new `s3` crate from item 7b, currently
+  unfixable from this project — verified directly that `s3`'s own `quick-xml` pin blocks the
+  upgrade) and 1 MEDIUM (`rsa`, only reachable via the optional `jwt` feature, no upstream fix
+  exists, documented mitigation is to prefer HS256/ES256 over RSA-family JWT algorithms). Manual
+  review found and **fixed** a real gap: neither example app actually enabled the `Secure` cookie
+  flag on CSRF/session cookies, even though the security guide's own session-cookie section
+  already documented the correct pattern — both examples now wire
+  `.with_secure(!settings.debug)`. Positive findings worth recording: zero `unsafe` code anywhere
+  in `crates/`, Argon2id password hashing with real CSPRNG salts, genuine timing-attack mitigation
+  on login (a real dummy-hash verification runs even for nonexistent usernames), constant-time
+  CSRF/session signature comparisons, and no raw user-value SQL string interpolation found
+  anywhere in the ORM/REST layers.
 - [x] **API freeze review + deprecation policy** — **done, pass 1 (10.12 + 10.13).** Part A
   (10.12): `crates/djangors/src/lib.rs` (the "batteries-included" facade crate) previously
   re-exported only `djangors_tasks` despite its own doc comment claiming to bundle "ORM,

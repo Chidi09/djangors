@@ -42,9 +42,10 @@ async fn main() -> Result<(), DjangorsError> {
     let service = tower::ServiceBuilder::new()
         .layer(djangors_core::middleware::security_headers_layer())
         .layer(djangors_sessions::SessionLayer::new(
-            djangors_sessions::SignedCookieStore::new(secret_key.as_bytes()),
+            djangors_sessions::SignedCookieStore::new(secret_key.as_bytes())
+                .with_secure(!settings.debug),
         ))
-        .layer(djangors_core::middleware::csrf_layer())
+        .layer(djangors_core::middleware::csrf_layer().with_secure(!settings.debug))
         .service(router_service);
 
     Djangors::new(settings, Router::new())
