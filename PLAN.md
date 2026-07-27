@@ -398,6 +398,33 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
 
 **DoD:** semver 1.0 with a written stability contract; audit published; three example apps deployed live.
 
+### Addendum — architecture-parity initiative (user-directed, 2026-07-27)
+
+A full architectural analysis of `/root/dev/school-management-saas-` (a cleanly-organized
+multi-tenant Django/DRF + Next.js SaaS the user named as "the level I want djangors to be in")
+surfaced 8 concrete gaps between that codebase's discipline and what Djangors currently supports.
+User directive: "let's do it all."
+
+- [x] **1. Migration autogeneration** — **done (v1, 10.2, commit `4deb27f`):** `dj new` projects get
+  a hidden `DJANGORS_INTROSPECT_MODELS=1` mode; `dj migrate`/`makemigrations` invoke the project's
+  own binary in that mode via `cargo run` and capture its JSON model registry, rather than trying
+  to introspect from outside. **Also fixed a real, previously-unknown bug**: `dj migrate` ran
+  `djangors_migrations::migrate()` directly inside `dj`'s own process, which can only ever see
+  models registered within `djangors-cli`'s own dependency tree (`djangors-auth`'s built-ins) —
+  it silently never created tables for any project's own custom models. Independently verified
+  end-to-end: generated a project, added a real model, ran real `makemigrations`/`migrate`, queried
+  the resulting Postgres table directly. `makemigrations` v1 diffing covers new models + new
+  fields; type changes/removals/renames/relation alterations remain deferred.
+- [ ] 2. A Rust-idiomatic "impossible to misuse" generic viewset pattern (trait with a required
+  method, not inheritance — no direct Rust analogue to Python's `get_queryset()` override).
+- [ ] 3. `prefetch_related`-equivalent batch eager-loading + N+1 regression-test tooling.
+- [ ] 4. A pluggable, project-customizable global error envelope (`DjangorsError` is currently a
+  fixed core enum).
+- [ ] 5. Named, scoped rate limiting per endpoint (only login has this today).
+- [ ] 6. Cron/scheduled background jobs (task queue exists, no scheduler).
+- [ ] 7. Pluggable file storage / S3 backend (`djangors-staticfiles` is local-disk-only).
+- [ ] 8. Cursor pagination (admin/REST use offset pagination only).
+
 ---
 
 ## Part 6 — What "banking / schools / e-commerce grade" concretely requires
