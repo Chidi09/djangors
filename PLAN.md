@@ -747,10 +747,17 @@ double-checked to exist and are *not* relisted here.
 - [ ] **Contenttypes / `GenericForeignKey` framework** — no `ContentType` model or generic-relation
   abstraction; `object_id`-shaped fields exist only as bespoke, non-reusable fields inside
   `djangors-contrib-guardian` and `djangors-admin`.
-- [ ] **`TestDatabase` transactional rollback-per-test + fixtures loader** — `djangors-test`'s
-  `TestDatabase` explicitly does not roll back per test (its own doc comment says so: ORM
-  querysets require `&Database` and execute directly through the pool) and there's no fixtures
-  loader.
+- [x] **`TestDatabase` per-test isolation + fixtures loader** — **done (11.4, commit `1d67a54`).**
+  Rather than the invasive "wrap each test in one open transaction" rewrite (which would require
+  threading a transaction handle through 60+ call sites across 17 crates, since every `QuerySet`
+  method takes `&Database` and executes directly through its pool), `TestDatabase::isolated()`
+  gives each test a uniquely-named, genuinely separate throwaway Postgres database instead —
+  same practical guarantee (no cross-test contamination, ever), zero changes to
+  `Database`/`QuerySet`'s existing execution model. `cleanup()` is the primary teardown path
+  (terminates lingering connections, `DROP DATABASE`); a `Drop` impl provides a best-effort
+  fallback since Rust has no async `Drop`. `load_fixtures<T>()` deserializes a JSON array and
+  reuses `QuerySet::bulk_create`. The existing `TestDatabase::connect()` behavior (shared
+  persistent database) is untouched — this is additive, not breaking.
 - [x] **`CHANGELOG.md`** — **done (commit `ea252fe`).** Written directly from real git history,
   grouped by phase.
 - [ ] **crates.io publish prep + actual publish** — **prep done (commit `59b07ee`):** added the
