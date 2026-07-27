@@ -458,8 +458,22 @@ User directive: "let's do it all."
   race was real and is now gone, then reran the full workspace suite with `pipefail` explicitly set
   (a piped `cargo test | tail` reports `tail`'s exit code, not cargo's — worth remembering) to get a
   trustworthy clean result.
-- [ ] 4. A pluggable, project-customizable global error envelope (`DjangorsError` is currently a
-  fixed core enum).
+- [x] **4. Pluggable, project-customizable global error envelope** — **done (10.5):** investigation
+  found the gap was actually two gaps — `DjangorsError::into_response()` rendered plain text only
+  (no JSON envelope existed at all), and there were THREE independently-hardcoded rendering paths
+  (`Router::dispatch`/`dispatch_debug`/`dispatch_boxed`, the last being what real running servers
+  actually use per `app.rs`), meaning a real REST API's `DjangorsError` failures rendered as HTML
+  debug/production pages in production, not JSON. New `ErrorRenderer` trait (`fn render(&self, err,
+  req) -> Response`) + a ready-made `JsonErrorRenderer` (`{"error": {"status", "code", "message"}}`)
+  — opt-in only, via `Arc<dyn ErrorRenderer>` registered in `AppState`, checked first at every
+  error-conversion call site across all three dispatch paths, falling back to each path's existing
+  default (plain text / debug HTML / production HTML) when nothing is registered. Purely additive:
+  zero behavior change for any app that doesn't opt in. **Dispatch left the required verification
+  tests unwritten** (self-reported truthfully — no test bullet in its own summary); I wrote them
+  directly (small, in-memory router tests, no new production code): one proving default rendering
+  is byte-for-byte unchanged with no renderer registered, three proving a registered
+  `JsonErrorRenderer` actually overrides `dispatch`/`dispatch_debug`/`dispatch_boxed` respectively
+  (debug=true and debug=false both), all passing against real `Router` dispatch, not mocks.
 - [ ] 5. Named, scoped rate limiting per endpoint (only login has this today).
 - [ ] 6. Cron/scheduled background jobs (task queue exists, no scheduler).
 - [ ] 7. Pluggable file storage / S3 backend (`djangors-staticfiles` is local-disk-only).

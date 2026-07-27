@@ -421,7 +421,12 @@ impl Router {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 let err = DjangorsError::Internal(format!("failed to read request body: {e}"));
-                return err.into_response().into_hyper();
+                let req = Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
+                    .with_state(self.state.clone());
+                return err
+                    .try_custom_render(&req)
+                    .unwrap_or_else(|| err.into_response())
+                    .into_hyper();
             }
         };
 
@@ -451,13 +456,20 @@ impl Router {
 
             if !valid {
                 let err = DjangorsError::Forbidden("CSRF token missing or invalid".to_string());
-                return err.into_response().into_hyper();
+                return err
+                    .try_custom_render(&req)
+                    .unwrap_or_else(|| err.into_response())
+                    .into_hyper();
             }
         }
 
+        let req_clone = req.clone();
         match self.handle(req).await {
             Ok(resp) => resp.into_hyper(),
-            Err(e) => e.into_response().into_hyper(),
+            Err(e) => e
+                .try_custom_render(&req_clone)
+                .unwrap_or_else(|| e.into_response())
+                .into_hyper(),
         }
     }
 
@@ -482,9 +494,15 @@ impl Router {
                     let dummy_req =
                         Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
                             .with_state(self.state.clone());
-                    crate::debug_page::render_debug_page(&err, &dummy_req)
+                    err.try_custom_render(&dummy_req)
+                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&err, &dummy_req))
                 } else {
-                    crate::debug_page::render_production_error_page(err.status_code())
+                    let dummy_req =
+                        Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
+                            .with_state(self.state.clone());
+                    err.try_custom_render(&dummy_req).unwrap_or_else(|| {
+                        crate::debug_page::render_production_error_page(err.status_code())
+                    })
                 };
                 return resp.into_hyper();
             }
@@ -517,9 +535,12 @@ impl Router {
             if !valid {
                 let err = DjangorsError::Forbidden("CSRF token missing or invalid".to_string());
                 let resp = if debug {
-                    crate::debug_page::render_debug_page(&err, &req)
+                    err.try_custom_render(&req)
+                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&err, &req))
                 } else {
-                    crate::debug_page::render_production_error_page(err.status_code())
+                    err.try_custom_render(&req).unwrap_or_else(|| {
+                        crate::debug_page::render_production_error_page(err.status_code())
+                    })
                 };
                 return resp.into_hyper();
             }
@@ -531,9 +552,12 @@ impl Router {
             Ok(resp) => resp.into_hyper(),
             Err(e) => {
                 let resp = if debug {
-                    crate::debug_page::render_debug_page(&e, &req_clone)
+                    e.try_custom_render(&req_clone)
+                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&e, &req_clone))
                 } else {
-                    crate::debug_page::render_production_error_page(e.status_code())
+                    e.try_custom_render(&req_clone).unwrap_or_else(|| {
+                        crate::debug_page::render_production_error_page(e.status_code())
+                    })
                 };
                 resp.into_hyper()
             }
@@ -561,9 +585,15 @@ impl Router {
                     let dummy_req =
                         Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
                             .with_state(self.state.clone());
-                    crate::debug_page::render_debug_page(&err, &dummy_req)
+                    err.try_custom_render(&dummy_req)
+                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&err, &dummy_req))
                 } else {
-                    crate::debug_page::render_production_error_page(err.status_code())
+                    let dummy_req =
+                        Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
+                            .with_state(self.state.clone());
+                    err.try_custom_render(&dummy_req).unwrap_or_else(|| {
+                        crate::debug_page::render_production_error_page(err.status_code())
+                    })
                 };
                 return resp.into_hyper_boxed();
             }
@@ -596,9 +626,12 @@ impl Router {
             if !valid {
                 let err = DjangorsError::Forbidden("CSRF token missing or invalid".to_string());
                 let resp = if debug {
-                    crate::debug_page::render_debug_page(&err, &req)
+                    err.try_custom_render(&req)
+                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&err, &req))
                 } else {
-                    crate::debug_page::render_production_error_page(err.status_code())
+                    err.try_custom_render(&req).unwrap_or_else(|| {
+                        crate::debug_page::render_production_error_page(err.status_code())
+                    })
                 };
                 return resp.into_hyper_boxed();
             }
@@ -611,9 +644,12 @@ impl Router {
             Ok(ResponseKind::Streaming(resp)) => resp.into_hyper(),
             Err(e) => {
                 let resp = if debug {
-                    crate::debug_page::render_debug_page(&e, &req_clone)
+                    e.try_custom_render(&req_clone)
+                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&e, &req_clone))
                 } else {
-                    crate::debug_page::render_production_error_page(e.status_code())
+                    e.try_custom_render(&req_clone).unwrap_or_else(|| {
+                        crate::debug_page::render_production_error_page(e.status_code())
+                    })
                 };
                 resp.into_hyper_boxed()
             }
@@ -1009,5 +1045,127 @@ mod tests {
         use http_body_util::BodyExt;
         let body_bytes = hyper_resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body_bytes[..], b"injected-by-middleware");
+    }
+
+    #[tokio::test]
+    async fn test_default_error_rendering_is_unchanged_without_a_registered_renderer() {
+        // No ErrorRenderer registered in state: dispatch/dispatch_debug/dispatch_boxed must all
+        // fall back to their pre-existing default behavior exactly as before this feature landed.
+        let router = Router::new();
+
+        let hyper_req = hyper::Request::builder()
+            .method("GET")
+            .uri("/does-not-exist")
+            .body(http_body_util::Full::new(Bytes::new()))
+            .unwrap();
+        let hyper_resp = router.dispatch(hyper_req).await;
+        assert_eq!(hyper_resp.status(), StatusCode::NOT_FOUND);
+        use http_body_util::BodyExt;
+        let body = hyper_resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[..], b"404 Not Found");
+
+        let hyper_req_debug = hyper::Request::builder()
+            .method("GET")
+            .uri("/does-not-exist")
+            .body(http_body_util::Full::new(Bytes::new()))
+            .unwrap();
+        let hyper_resp_debug = router.dispatch_debug(hyper_req_debug, false).await;
+        assert_eq!(hyper_resp_debug.status(), StatusCode::NOT_FOUND);
+        let body_debug = hyper_resp_debug
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let body_debug_str = String::from_utf8(body_debug.to_vec()).unwrap();
+        assert!(body_debug_str.contains("<!DOCTYPE html>"));
+
+        let hyper_req_boxed = hyper::Request::builder()
+            .method("GET")
+            .uri("/does-not-exist")
+            .body(http_body_util::Full::new(Bytes::new()))
+            .unwrap();
+        let hyper_resp_boxed = router.dispatch_boxed(hyper_req_boxed, false).await;
+        assert_eq!(hyper_resp_boxed.status(), StatusCode::NOT_FOUND);
+        let body_boxed = hyper_resp_boxed
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let body_boxed_str = String::from_utf8(body_boxed.to_vec()).unwrap();
+        assert!(body_boxed_str.contains("<!DOCTYPE html>"));
+    }
+
+    #[tokio::test]
+    async fn test_registered_error_renderer_overrides_dispatch() {
+        let router = Router::new().with_state(std::sync::Arc::new(crate::error::JsonErrorRenderer)
+            as std::sync::Arc<dyn crate::error::ErrorRenderer>);
+
+        let hyper_req = hyper::Request::builder()
+            .method("GET")
+            .uri("/does-not-exist")
+            .body(http_body_util::Full::new(Bytes::new()))
+            .unwrap();
+        let hyper_resp = router.dispatch(hyper_req).await;
+        assert_eq!(hyper_resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            hyper_resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json; charset=utf-8")
+        );
+        use http_body_util::BodyExt;
+        let body = hyper_resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["status"], 404);
+        assert_eq!(json["error"]["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn test_registered_error_renderer_overrides_dispatch_debug_in_both_modes() {
+        let router = Router::new()
+            .get("/panic", panicking_handler_fn)
+            .with_state(std::sync::Arc::new(crate::error::JsonErrorRenderer)
+                as std::sync::Arc<dyn crate::error::ErrorRenderer>);
+
+        for debug in [true, false] {
+            let hyper_req = hyper::Request::builder()
+                .method("GET")
+                .uri("/panic")
+                .body(http_body_util::Full::new(Bytes::new()))
+                .unwrap();
+            let hyper_resp = router.dispatch_debug(hyper_req, debug).await;
+            assert_eq!(hyper_resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            use http_body_util::BodyExt;
+            let body = hyper_resp.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"]["code"], "panicked");
+            assert_eq!(json["error"]["message"], "boom");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_registered_error_renderer_overrides_dispatch_boxed_in_both_modes() {
+        let router = Router::new()
+            .get("/panic", panicking_handler_fn)
+            .with_state(std::sync::Arc::new(crate::error::JsonErrorRenderer)
+                as std::sync::Arc<dyn crate::error::ErrorRenderer>);
+
+        for debug in [true, false] {
+            let hyper_req = hyper::Request::builder()
+                .method("GET")
+                .uri("/panic")
+                .body(http_body_util::Full::new(Bytes::new()))
+                .unwrap();
+            let hyper_resp = router.dispatch_boxed(hyper_req, debug).await;
+            assert_eq!(hyper_resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            use http_body_util::BodyExt;
+            let body = hyper_resp.into_body().collect().await.unwrap().to_bytes();
+            let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(json["error"]["code"], "panicked");
+            assert_eq!(json["error"]["message"], "boom");
+        }
     }
 }

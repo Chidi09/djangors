@@ -55,7 +55,7 @@ pub mod sse;
 pub mod state;
 
 pub use app::Djangors;
-pub use error::DjangorsError;
+pub use error::{DjangorsError, ErrorRenderer, JsonErrorRenderer};
 pub use groups::{GroupHandle, Groups};
 pub use handler::{Handler, StreamingHandler};
 pub use pagination::Paginator;
