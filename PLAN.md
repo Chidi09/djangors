@@ -477,7 +477,30 @@ User directive: "let's do it all."
 - [ ] 5. Named, scoped rate limiting per endpoint (only login has this today).
 - [ ] 6. Cron/scheduled background jobs (task queue exists, no scheduler).
 - [ ] 7. Pluggable file storage / S3 backend (`djangors-staticfiles` is local-disk-only).
-- [ ] 8. Cursor pagination (admin/REST use offset pagination only).
+- [x] **8. Cursor pagination** — **done (10.6/10.6b):** new `QuerySet::after(order_field,
+  order_value, pk_field, cursor_pk, descending)` builds a real keyset predicate
+  (`order_field > val OR (order_field = val AND pk_field > cursor_pk)`, mirroring the existing
+  `filter_datetime_range`'s `Expr`/`CompareOp` pattern, reversed for descending), plus opaque
+  `encode_cursor`/`decode_cursor` (`crates/djangors-core/src/pagination.rs`) and an opt-in
+  `ViewSetConfig.cursor_pagination: bool` (default `false`) wired into both `ViewSet` and
+  `ScopedViewSet::list_with_config`. Purely additive — offset pagination is completely unchanged
+  when not opted into. **Took three rounds and one bug I found and fixed myself in production
+  code** (beyond the dispatches' own honestly-reported gaps): round 1 (10.6) shipped the core
+  feature but left `ScopedViewSet` unwired and skipped every required test; round 2 (10.6b) wired
+  `ScopedViewSet` and fixed a real `decode_cursor` bug (rejected any cursor whose ordering value
+  legitimately contained a `|` character) but again skipped all required tests. I wrote the 4
+  required DB-backed tests myself (duplicate-ordering-value correctness across a forced
+  105-row/100-page-size boundary; concurrent-insert-during-pagination stability; malformed-cursor
+  and non-allowlisted-ordering-field rejection; `ScopedViewSet` tenant isolation holding across
+  cursor pages) — and in writing them, found a real, previously-undiscovered bug of my own: the
+  cursor branch only activated when `?cursor=` was already present, meaning a client could never
+  actually bootstrap into cursor mode at all (the very first request has no cursor yet, and the
+  no-cursor path fell back to the old offset-shaped response, which never returns a
+  `next_cursor`) — cursor pagination was completely unreachable as shipped. Fixed by decoupling
+  "is cursor pagination enabled" from "is a cursor present": the first request (no `?cursor=`)
+  now returns the cursor-shaped envelope directly (ordering only, no `.after()` filter), same as
+  every subsequent page. All 4 new tests plus every pre-existing test pass; full
+  `fmt`/`build`/`clippy -D warnings`/`test --workspace` clean.
 
 ---
 

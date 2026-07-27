@@ -1,5 +1,49 @@
 //! Pagination utility shared by admin and user code.
 
+use base64::Engine;
+
+/// Errors returned while decoding an opaque cursor.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CursorError {
+    /// The cursor was not valid base64.
+    #[error("invalid cursor encoding")]
+    InvalidEncoding,
+    /// The decoded cursor did not contain exactly a primary key and ordering value.
+    #[error("invalid cursor format")]
+    InvalidFormat,
+    /// The primary key portion was not an integer.
+    #[error("invalid cursor primary key")]
+    InvalidPrimaryKey,
+}
+
+/// Encodes a cursor as base64 of the UTF-8 string `pk|ordering-value`.
+pub fn encode_cursor(pk: i64, order_value: Option<&str>) -> String {
+    let raw = format!("{}|{}", pk, order_value.unwrap_or(""));
+    base64::engine::general_purpose::STANDARD.encode(raw)
+}
+
+/// Decodes a cursor produced by [`encode_cursor`].
+pub fn decode_cursor(cursor: &str) -> Result<(i64, Option<String>), CursorError> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(cursor)
+        .map_err(|_| CursorError::InvalidEncoding)?;
+    let raw = String::from_utf8(bytes).map_err(|_| CursorError::InvalidFormat)?;
+    let (pk, value) = raw.split_once('|').ok_or(CursorError::InvalidFormat)?;
+    let pk = pk.parse().map_err(|_| CursorError::InvalidPrimaryKey)?;
+    Ok((pk, (!value.is_empty()).then(|| value.to_string())))
+}
+
+/// A page of results addressed by opaque cursors.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CursorPage<T> {
+    /// Items in this page.
+    pub items: Vec<T>,
+    /// Cursor for the next page, if one exists.
+    pub next_cursor: Option<String>,
+    /// Cursor for the previous page, if one exists.
+    pub previous_cursor: Option<String>,
+}
+
 /// Pagination math engine for item sequences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Paginator {
@@ -61,6 +105,15 @@ mod tests {
         assert_eq!(p.offset(1), 0);
         assert!(!p.has_previous(1));
         assert!(!p.has_next(1));
+    }
+
+    #[test]
+    fn test_cursor_ordering_value_may_contain_pipe() {
+        let cursor = encode_cursor(42, Some("title|with|pipes"));
+        assert_eq!(
+            decode_cursor(&cursor),
+            Ok((42, Some("title|with|pipes".to_string())))
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use djangors_auth::AuthUser;
 use djangors_core::error::DjangorsError;
 use djangors_core::extract::FromRequest;
-use djangors_core::pagination::Paginator;
+use djangors_core::pagination::{decode_cursor, encode_cursor, Paginator};
 use djangors_core::path_params::PathParams;
 use djangors_core::request::Request;
 use djangors_core::response::Response;
@@ -459,6 +459,8 @@ pub struct ViewSetConfig {
     pub filterable_fields: &'static [&'static str],
     /// Allowlist of field names that can be ordered via `?ordering=field` / `?ordering=-field` query params.
     pub orderable_fields: &'static [&'static str],
+    /// Enables opt-in cursor pagination when `?cursor=` is supplied.
+    pub cursor_pagination: bool,
 }
 
 fn parse_filter_value<M: Model>(field_name: &str, raw_val: &str) -> Option<Value> {
@@ -570,10 +572,18 @@ impl<M: Scoped> ScopedViewSet<M> {
                 }
             }
         }
+        let mut cursor_ordering: Option<(&'static str, bool)> = None;
         if let Some(ordering) = req.query("ordering") {
             for part in ordering.split(',').map(str::trim).filter(|p| !p.is_empty()) {
                 let field = part.strip_prefix('-').unwrap_or(part);
                 if config.orderable_fields.contains(&field) {
+                    if cursor_ordering.is_none() {
+                        cursor_ordering = M::meta()
+                            .fields
+                            .iter()
+                            .find(|f| f.name == field)
+                            .map(|f| (f.name, part.starts_with('-')));
+                    }
                     qs = qs
                         .order_by(part)
                         .map_err(|e| DjangorsError::Internal(e.to_string()))?;
@@ -584,6 +594,83 @@ impl<M: Scoped> ScopedViewSet<M> {
             .count(db)
             .await
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        if config.cursor_pagination {
+            let (order_field, descending) = cursor_ordering.ok_or_else(|| {
+                DjangorsError::BadRequest(
+                    "Cursor pagination requires an allowlisted ordering field".into(),
+                )
+            })?;
+            let pk_field = M::meta()
+                .fields
+                .iter()
+                .find(|f| f.primary_key)
+                .ok_or_else(|| DjangorsError::Internal("Primary key field not found".into()))?
+                .name;
+            // A first request has no `?cursor=` yet (there's nothing to bootstrap it from) -
+            // that's the start-of-sequence case, not an error: apply ordering only, skip
+            // `.after(...)`. Any subsequent request supplies the cursor from the previous
+            // response's `next_cursor`.
+            if let Some(raw_cursor) = req.query("cursor") {
+                let (cursor_pk, raw_value) = decode_cursor(raw_cursor)
+                    .map_err(|e| DjangorsError::BadRequest(e.to_string()))?;
+                let raw_value = raw_value.ok_or_else(|| {
+                    DjangorsError::BadRequest("Cursor is missing its ordering value".into())
+                })?;
+                let order_value =
+                    parse_filter_value::<M>(order_field, &raw_value).ok_or_else(|| {
+                        DjangorsError::BadRequest("Cursor ordering value is invalid".into())
+                    })?;
+                qs = qs
+                    .after(order_field, order_value, pk_field, cursor_pk, descending)
+                    .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            }
+            let order_spec = if descending {
+                format!("-{order_field}")
+            } else {
+                order_field.to_string()
+            };
+            let pk_spec = if descending {
+                format!("-{pk_field}")
+            } else {
+                pk_field.to_string()
+            };
+            qs = qs
+                .order_by(&order_spec)
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?
+                .order_by(&pk_spec)
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            let fetched = qs
+                .limit(REST_PER_PAGE + 1)
+                .all(db)
+                .await
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            let has_next = fetched.len() > REST_PER_PAGE as usize;
+            let items: Vec<M> = fetched.into_iter().take(REST_PER_PAGE as usize).collect();
+            let next_cursor = if has_next {
+                items.last().map(|item| {
+                    let values = item.field_values();
+                    let pk = values
+                        .iter()
+                        .find(|(n, _)| *n == pk_field)
+                        .and_then(|(_, v)| match v {
+                            Value::I64(n) => Some(*n),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let value = values
+                        .iter()
+                        .find(|(n, _)| *n == order_field)
+                        .map(|(_, v)| v.to_string());
+                    encode_cursor(pk, value.as_deref())
+                })
+            } else {
+                None
+            };
+            return Response::json(
+                StatusCode::OK,
+                &serde_json::json!({"count": total, "results": items.iter().map(serialize).collect::<Vec<_>>(), "next_cursor": next_cursor, "previous_cursor": serde_json::Value::Null}),
+            );
+        }
         let paginator = Paginator::new(total, REST_PER_PAGE);
         let items = qs
             .limit(REST_PER_PAGE)
@@ -797,6 +884,7 @@ where
         }
 
         // 2. Parse ?ordering=field / ?ordering=-field query params for allowlisted orderable_fields
+        let mut cursor_ordering: Option<(&'static str, bool)> = None;
         if let Some(ordering_param) = req.query("ordering") {
             for part in ordering_param.split(',') {
                 let part = part.trim();
@@ -805,6 +893,13 @@ where
                 }
                 let clean_field = part.strip_prefix('-').unwrap_or(part);
                 if config.orderable_fields.contains(&clean_field) {
+                    if cursor_ordering.is_none() {
+                        cursor_ordering = M::meta()
+                            .fields
+                            .iter()
+                            .find(|f| f.name == clean_field)
+                            .map(|f| (f.name, part.starts_with('-')));
+                    }
                     qs = qs
                         .order_by(part)
                         .map_err(|e| DjangorsError::Internal(e.to_string()))?;
@@ -816,6 +911,85 @@ where
             .count(db)
             .await
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+
+        if config.cursor_pagination {
+            let (order_field, descending) = cursor_ordering.ok_or_else(|| {
+                DjangorsError::BadRequest(
+                    "Cursor pagination requires an allowlisted ordering field".into(),
+                )
+            })?;
+            let pk_field = M::meta()
+                .fields
+                .iter()
+                .find(|f| f.primary_key)
+                .ok_or_else(|| DjangorsError::Internal("Primary key field not found".into()))?
+                .name;
+            // A first request has no `?cursor=` yet (there's nothing to bootstrap it from) -
+            // that's the start-of-sequence case, not an error: apply ordering only, skip
+            // `.after(...)`. Any subsequent request supplies the cursor from the previous
+            // response's `next_cursor`.
+            if let Some(raw_cursor) = req.query("cursor") {
+                let (cursor_pk, raw_value) = decode_cursor(raw_cursor)
+                    .map_err(|e| DjangorsError::BadRequest(e.to_string()))?;
+                let raw_value = raw_value.ok_or_else(|| {
+                    DjangorsError::BadRequest("Cursor is missing its ordering value".into())
+                })?;
+                let order_value =
+                    parse_filter_value::<M>(order_field, &raw_value).ok_or_else(|| {
+                        DjangorsError::BadRequest("Cursor ordering value is invalid".into())
+                    })?;
+                qs = qs
+                    .after(order_field, order_value, pk_field, cursor_pk, descending)
+                    .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            }
+            let order_spec = if descending {
+                format!("-{}", order_field)
+            } else {
+                order_field.to_string()
+            };
+            let pk_spec = if descending {
+                format!("-{}", pk_field)
+            } else {
+                pk_field.to_string()
+            };
+            qs = qs
+                .order_by(&order_spec)
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?
+                .order_by(&pk_spec)
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            let items = qs
+                .limit(REST_PER_PAGE + 1)
+                .all(db)
+                .await
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            let has_next = items.len() > REST_PER_PAGE as usize;
+            let items: Vec<M> = items.into_iter().take(REST_PER_PAGE as usize).collect();
+            let next_cursor = if has_next {
+                items.last().map(|item| {
+                    let values = item.field_values();
+                    let pk = values
+                        .iter()
+                        .find(|(n, _)| *n == pk_field)
+                        .and_then(|(_, v)| match v {
+                            Value::I64(n) => Some(*n),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let value = values
+                        .iter()
+                        .find(|(n, _)| *n == order_field)
+                        .map(|(_, v)| v.to_string());
+                    encode_cursor(pk, value.as_deref())
+                })
+            } else {
+                None
+            };
+            let results: Vec<serde_json::Value> = items.iter().map(serialize).collect();
+            return Response::json(
+                StatusCode::OK,
+                &serde_json::json!({"count": total_items, "results": results, "next_cursor": next_cursor, "previous_cursor": serde_json::Value::Null}),
+            );
+        }
 
         let paginator = Paginator::new(total_items, REST_PER_PAGE);
         let total_pages = paginator.total_pages();
@@ -2065,6 +2239,7 @@ mod tests {
         let viewset_config = ViewSetConfig {
             filterable_fields: &["is_published", "title"],
             orderable_fields: &["view_count", "title"],
+            ..Default::default()
         };
 
         let router = viewset_routes_with_config_and_permission::<TestArticle, _>(
@@ -2159,6 +2334,389 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let json: serde_json::Value = serde_json::from_slice(res.body()).unwrap();
         assert_eq!(json["count"], 3);
+    }
+
+    /// REST_PER_PAGE is a fixed 100-row page size, so to actually exercise a cursor boundary
+    /// (as opposed to a single page that happens to contain everything) these tests seed just
+    /// over 100 rows and force the tie/insert of interest to sit right at that boundary.
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_cursor_pagination_handles_duplicate_ordering_values() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_article")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_category")
+            .execute(db.pool())
+            .await;
+        sqlx::query(
+            "CREATE TABLE rest_test_category (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL)",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE rest_test_article (
+                id BIGSERIAL PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                view_count BIGINT NOT NULL,
+                is_published BOOLEAN NOT NULL,
+                published_at TIMESTAMPTZ NOT NULL,
+                category BIGINT NOT NULL REFERENCES rest_test_category(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let cat = TestCategory {
+            id: 0,
+            name: "Tech".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+        let now = chrono::Utc::now();
+
+        // 105 rows, ALL sharing the same view_count: the page-100 boundary necessarily falls
+        // inside one giant tie group, which is exactly the failure mode a missing pk-tiebreaker
+        // in QuerySet::after would expose (a skipped or duplicated row at the boundary).
+        let total_rows = 105;
+        for i in 0..total_rows {
+            sqlx::query(
+                "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ($1, $2, $3, $4, $5)"
+            )
+            .bind(format!("Row-{i}"))
+            .bind(10_i64)
+            .bind(true)
+            .bind(now)
+            .bind(cat.id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+
+        let viewset_config = ViewSetConfig {
+            orderable_fields: &["view_count"],
+            cursor_pagination: true,
+            ..Default::default()
+        };
+
+        // First page has no cursor param supplied at all (only ?ordering=), matching a client's
+        // very first request.
+        let req1 = Request::new(
+            Method::GET,
+            Uri::from_static("/api/articles?ordering=view_count"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res1 =
+            ViewSet::<TestArticle>::list_with_config(req1, PathParams::new(), &viewset_config)
+                .await
+                .unwrap();
+        assert_eq!(res1.status(), StatusCode::OK);
+        let json1: serde_json::Value = serde_json::from_slice(res1.body()).unwrap();
+        let page1_titles: Vec<String> = json1["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["title"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(page1_titles.len(), 100);
+        let next_cursor = json1["next_cursor"].as_str().unwrap().to_string();
+
+        let req2 = Request::new(
+            Method::GET,
+            Uri::from_static(Box::leak(
+                format!("/api/articles?ordering=view_count&cursor={next_cursor}").into_boxed_str(),
+            )),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res2 =
+            ViewSet::<TestArticle>::list_with_config(req2, PathParams::new(), &viewset_config)
+                .await
+                .unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+        let json2: serde_json::Value = serde_json::from_slice(res2.body()).unwrap();
+        let page2_titles: Vec<String> = json2["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["title"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(page2_titles.len(), 5);
+
+        let mut all_titles: Vec<String> = page1_titles.into_iter().chain(page2_titles).collect();
+        all_titles.sort();
+        all_titles.dedup();
+        assert_eq!(
+            all_titles.len(),
+            total_rows,
+            "every row must appear exactly once across both pages, no skips or duplicates"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_cursor_pagination_stable_under_concurrent_insert() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_article")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_category")
+            .execute(db.pool())
+            .await;
+        sqlx::query(
+            "CREATE TABLE rest_test_category (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL)",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE rest_test_article (
+                id BIGSERIAL PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                view_count BIGINT NOT NULL,
+                is_published BOOLEAN NOT NULL,
+                published_at TIMESTAMPTZ NOT NULL,
+                category BIGINT NOT NULL REFERENCES rest_test_category(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let cat = TestCategory {
+            id: 0,
+            name: "Tech".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+        let now = chrono::Utc::now();
+
+        // 102 rows with distinct, ascending view_count values 1..=102.
+        for i in 1..=102_i64 {
+            sqlx::query(
+                "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ($1, $2, $3, $4, $5)"
+            )
+            .bind(format!("Row-{i}"))
+            .bind(i)
+            .bind(true)
+            .bind(now)
+            .bind(cat.id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+
+        let viewset_config = ViewSetConfig {
+            orderable_fields: &["view_count"],
+            cursor_pagination: true,
+            ..Default::default()
+        };
+
+        // Page 1: view_count 1..=100.
+        let req1 = Request::new(
+            Method::GET,
+            Uri::from_static("/api/articles?ordering=view_count"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res1 =
+            ViewSet::<TestArticle>::list_with_config(req1, PathParams::new(), &viewset_config)
+                .await
+                .unwrap();
+        let json1: serde_json::Value = serde_json::from_slice(res1.body()).unwrap();
+        let next_cursor = json1["next_cursor"].as_str().unwrap().to_string();
+
+        // Concurrent write: insert a new row that sorts BEFORE the cursor position
+        // (view_count = 50, well within page 1's already-served range).
+        sqlx::query(
+            "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ($1, $2, $3, $4, $5)"
+        )
+        .bind("Inserted-After-Page-1")
+        .bind(50_i64)
+        .bind(true)
+        .bind(now)
+        .bind(cat.id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Page 2 via the cursor from page 1: must be exactly the original 2 remaining rows
+        // (view_count 101, 102) - the new row must not leak in (it sorts before the cursor
+        // position), and neither of the 2 tail rows may be skipped or duplicated. This is
+        // exactly what offset pagination would get wrong (the new row would shift everything
+        // and either duplicate or skip a row depending on where OFFSET lands).
+        let req2 = Request::new(
+            Method::GET,
+            Uri::from_static(Box::leak(
+                format!("/api/articles?ordering=view_count&cursor={next_cursor}").into_boxed_str(),
+            )),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res2 =
+            ViewSet::<TestArticle>::list_with_config(req2, PathParams::new(), &viewset_config)
+                .await
+                .unwrap();
+        let json2: serde_json::Value = serde_json::from_slice(res2.body()).unwrap();
+        let page2_titles: Vec<&str> = json2["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(page2_titles, vec!["Row-101", "Row-102"]);
+        assert!(!page2_titles.contains(&"Inserted-After-Page-1"));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_cursor_pagination_rejects_malformed_cursor_and_non_allowlisted_field() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_article")
+            .execute(db.pool())
+            .await;
+        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_category")
+            .execute(db.pool())
+            .await;
+        sqlx::query(
+            "CREATE TABLE rest_test_category (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL)",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE rest_test_article (
+                id BIGSERIAL PRIMARY KEY,
+                title VARCHAR(200) NOT NULL,
+                view_count BIGINT NOT NULL,
+                is_published BOOLEAN NOT NULL,
+                published_at TIMESTAMPTZ NOT NULL,
+                category BIGINT NOT NULL REFERENCES rest_test_category(id) ON DELETE CASCADE
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let cat = TestCategory {
+            id: 0,
+            name: "Tech".to_string(),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+        TestArticle {
+            id: 0,
+            title: "Solo".to_string(),
+            view_count: 1,
+            is_published: true,
+            published_at: chrono::Utc::now(),
+            category: djangors_orm::ForeignKey::new(cat.id),
+        }
+        .save(&db)
+        .await
+        .unwrap();
+
+        let viewset_config = ViewSetConfig {
+            orderable_fields: &["view_count"],
+            cursor_pagination: true,
+            ..Default::default()
+        };
+
+        // Not valid base64 at all.
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/api/articles?ordering=view_count&cursor=%25%25not-base64%25%25"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res =
+            ViewSet::<TestArticle>::list_with_config(req, PathParams::new(), &viewset_config).await;
+        assert!(matches!(res, Err(DjangorsError::BadRequest(_))));
+
+        // Valid base64, but no `|` separator at all (wrong format).
+        let bad_format = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            "no-separator-here",
+        );
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static(Box::leak(
+                format!("/api/articles?ordering=view_count&cursor={bad_format}").into_boxed_str(),
+            )),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res =
+            ViewSet::<TestArticle>::list_with_config(req, PathParams::new(), &viewset_config).await;
+        assert!(matches!(res, Err(DjangorsError::BadRequest(_))));
+
+        // Valid base64, correct `pk|value` shape, but the pk portion isn't numeric.
+        let bad_pk = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "abc|5");
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static(Box::leak(
+                format!("/api/articles?ordering=view_count&cursor={bad_pk}").into_boxed_str(),
+            )),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res =
+            ViewSet::<TestArticle>::list_with_config(req, PathParams::new(), &viewset_config).await;
+        assert!(matches!(res, Err(DjangorsError::BadRequest(_))));
+
+        // A syntactically valid cursor, but `?ordering=` names a field NOT in orderable_fields
+        // (title isn't allowlisted here) - cursor pagination must be rejected, not silently
+        // fall back to page 1 / an unscoped ordering.
+        let valid_cursor =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "1|1");
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static(Box::leak(
+                format!("/api/articles?ordering=title&cursor={valid_cursor}").into_boxed_str(),
+            )),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res =
+            ViewSet::<TestArticle>::list_with_config(req, PathParams::new(), &viewset_config).await;
+        assert!(matches!(res, Err(DjangorsError::BadRequest(_))));
+
+        // No `?ordering=` at all: cursor pagination must also be rejected, not silently ignored.
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static(Box::leak(
+                format!("/api/articles?cursor={valid_cursor}").into_boxed_str(),
+            )),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(djangors_core::state::AppState::new().insert(db.clone()));
+        let res =
+            ViewSet::<TestArticle>::list_with_config(req, PathParams::new(), &viewset_config).await;
+        assert!(matches!(res, Err(DjangorsError::BadRequest(_))));
     }
 
     /// A per-request "current owner" marker, inserted into a request's [`AppState`](djangors_core::state::AppState)
@@ -2362,5 +2920,146 @@ mod tests {
         .with_state(djangors_core::state::AppState::new().insert(db.clone()));
         let res = ScopedViewSet::<TestNote>::list(req, PathParams::new()).await;
         assert!(matches!(res, Err(DjangorsError::Unauthorized(_))));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_scoped_viewset_cursor_pagination_preserves_isolation_across_pages() {
+        let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let config = djangors_db::config::DatabaseConfig::new(db_url);
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+
+        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_note")
+            .execute(db.pool())
+            .await;
+        sqlx::query(
+            "CREATE TABLE rest_test_note (
+                id BIGSERIAL PRIMARY KEY,
+                owner_id BIGINT NOT NULL,
+                body VARCHAR(200) NOT NULL
+            )",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        // Owner 1 gets 105 rows (forces a real cursor-page boundary at REST_PER_PAGE=100),
+        // owner 2 gets 5 rows.
+        for i in 0..105 {
+            sqlx::query("INSERT INTO rest_test_note (owner_id, body) VALUES ($1, $2)")
+                .bind(1_i64)
+                .bind(format!("owner1-note-{i}"))
+                .execute(db.pool())
+                .await
+                .unwrap();
+        }
+        for i in 0..5 {
+            sqlx::query("INSERT INTO rest_test_note (owner_id, body) VALUES ($1, $2)")
+                .bind(2_i64)
+                .bind(format!("owner2-note-{i}"))
+                .execute(db.pool())
+                .await
+                .unwrap();
+        }
+
+        let viewset_config = ViewSetConfig {
+            orderable_fields: &["id"],
+            cursor_pagination: true,
+            ..Default::default()
+        };
+
+        // Owner 1, page 1: 100 rows, all owner1's.
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/api/notes?ordering=id"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(
+            djangors_core::state::AppState::new()
+                .insert(db.clone())
+                .insert(CurrentOwner(1)),
+        );
+        let res =
+            ScopedViewSet::<TestNote>::list_with_config(req, PathParams::new(), &viewset_config)
+                .await
+                .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(res.body()).unwrap();
+        let page1: Vec<String> = json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["body"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(page1.len(), 100);
+        assert!(page1.iter().all(|b| b.starts_with("owner1-note-")));
+        let next_cursor = json["next_cursor"].as_str().unwrap().to_string();
+
+        // Owner 1, page 2 via cursor: the remaining 5 rows, still all owner1's, never owner2's.
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static(Box::leak(
+                format!("/api/notes?ordering=id&cursor={next_cursor}").into_boxed_str(),
+            )),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(
+            djangors_core::state::AppState::new()
+                .insert(db.clone())
+                .insert(CurrentOwner(1)),
+        );
+        let res =
+            ScopedViewSet::<TestNote>::list_with_config(req, PathParams::new(), &viewset_config)
+                .await
+                .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(res.body()).unwrap();
+        let page2: Vec<String> = json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["body"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(page2.len(), 5);
+        assert!(page2.iter().all(|b| b.starts_with("owner1-note-")));
+        assert_eq!(json["next_cursor"], serde_json::Value::Null);
+
+        let mut all: Vec<String> = page1.into_iter().chain(page2).collect();
+        all.sort();
+        all.dedup();
+        assert_eq!(
+            all.len(),
+            105,
+            "owner1 must see all 105 of their own rows exactly once"
+        );
+
+        // Owner 2: must only ever see their own 5 rows, never owner1's, even on the same
+        // cursor-paginated endpoint.
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/api/notes?ordering=id"),
+            HeaderMap::new(),
+            Bytes::new(),
+        )
+        .with_state(
+            djangors_core::state::AppState::new()
+                .insert(db.clone())
+                .insert(CurrentOwner(2)),
+        );
+        let res =
+            ScopedViewSet::<TestNote>::list_with_config(req, PathParams::new(), &viewset_config)
+                .await
+                .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(res.body()).unwrap();
+        let owner2_notes: Vec<String> = json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["body"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(owner2_notes.len(), 5);
+        assert!(owner2_notes.iter().all(|b| b.starts_with("owner2-note-")));
+        assert_eq!(json["next_cursor"], serde_json::Value::Null);
     }
 }

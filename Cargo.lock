@@ -902,6 +902,7 @@ name = "djangors-core"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "base64",
  "bytes",
  "djangors-db",
  "djangors-macros",
@@ -1015,6 +1016,7 @@ name = "djangors-rest"
 version = "0.0.1"
 dependencies = [
  "async-trait",
+ "base64",
  "bytes",
  "chrono",
  "djangors-auth",

@@ -169,6 +169,53 @@ impl<T: Model + FromRow> QuerySet<T> {
         Ok(self)
     }
 
+    /// Restricts results to rows strictly after a keyset position.
+    pub fn after(
+        mut self,
+        order_field: &'static str,
+        order_value: Value,
+        pk_field: &'static str,
+        cursor_pk: i64,
+        descending: bool,
+    ) -> Result<Self, OrmError> {
+        let meta = T::meta();
+        for field in [order_field, pk_field] {
+            if !meta.fields.iter().any(|f| f.name == field)
+                && !meta.relations.iter().any(|r| r.field_name == field)
+            {
+                return Err(OrmError::FieldNotFound {
+                    field: field.to_string(),
+                    model: meta.struct_name,
+                });
+            }
+        }
+        let op = if descending {
+            CompareOp::Lt
+        } else {
+            CompareOp::Gt
+        };
+        self.filters.push(Expr::Or(vec![
+            Expr::Compare {
+                field: order_field,
+                op,
+                value: order_value.clone(),
+            },
+            Expr::And(vec![
+                Expr::Compare {
+                    field: order_field,
+                    op: CompareOp::Eq,
+                    value: order_value,
+                },
+                Expr::Compare {
+                    field: pk_field,
+                    op,
+                    value: Value::I64(cursor_pk),
+                },
+            ]),
+        ]));
+        Ok(self)
+    }
+
     /// Order results by the given field. A leading `-` means descending.
     ///
     /// # Errors

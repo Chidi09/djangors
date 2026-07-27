@@ -58,7 +58,7 @@ pub use app::Djangors;
 pub use error::{DjangorsError, ErrorRenderer, JsonErrorRenderer};
 pub use groups::{GroupHandle, Groups};
 pub use handler::{Handler, StreamingHandler};
-pub use pagination::Paginator;
+pub use pagination::{decode_cursor, encode_cursor, CursorError, CursorPage, Paginator};
 pub use path_params::PathParams;
 pub use request::Request;
 pub use response::Response;
