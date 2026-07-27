@@ -745,8 +745,14 @@ double-checked to exist and are *not* relisted here.
   column can legitimately be `false`, so boolean form fields are always `required: false`
   regardless of model nullability. HTML widget rendering is deliberately out of scope (tracked
   under the generic-CBV item below).
-- [ ] **Real multipart file upload parsing.** `FileField` currently only stores a path string; no
-  actual `multipart/form-data` streaming-to-storage-backend parsing is wired up.
+- [x] **Real multipart file upload parsing** — **done (11.6, commit `dd0b672`).** A new
+  `Multipart` extractor (`djangors-core`, via `multer`) parses `multipart/form-data` bodies with
+  real size limits, splitting fields into `files`/`texts` (Django's `request.FILES`/`request.POST`
+  split). `save_upload()` (`djangors-staticfiles`, since it already depends on `djangors-core` —
+  the reverse dependency direction would have been a cycle) writes a parsed file through any
+  `Storage` backend under a content-hash-based, collision-avoiding path. Wiring this into
+  ModelForm/CBVs end-to-end is separate, future work — this ships the parsing + storage-writing
+  primitives.
 - [ ] **Server-rendered generic CBVs** (`ListView`/`DetailView`/`CreateView`/`UpdateView`/
   `DeleteView`) — only the JSON `ViewSet`/`ScopedViewSet` exist today; nothing renders HTML via
   `djangors-template` the way Django's generic views do.
