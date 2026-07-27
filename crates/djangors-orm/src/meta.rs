@@ -217,6 +217,20 @@ pub trait Model {
     }
 }
 
+/// Form operations generated for a model by `#[derive(Model)]`.
+pub trait ModelForm: Model {
+    /// The cleaned representation produced by form validation.
+    type FormCleaned;
+    /// Validate raw form fields and return cleaned values.
+    fn validate_form(
+        data: &std::collections::HashMap<String, String>,
+    ) -> Result<Self::FormCleaned, djangors_forms::FormErrors>;
+    /// Construct a model from cleaned form values.
+    fn from_cleaned_form(cleaned: Self::FormCleaned) -> Self;
+    /// Apply cleaned form values to an existing model.
+    fn apply_cleaned_form(&mut self, cleaned: Self::FormCleaned);
+}
+
 /// Entry representing a registered model.
 ///
 /// Used by the `inventory` crate to collect all models at startup.

@@ -838,6 +838,14 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         }
 
         #[allow(missing_docs)]
+        impl djangors_orm::ModelForm for #struct_name_ident {
+            type FormCleaned = #form_cleaned_name;
+            fn validate_form(data: &std::collections::HashMap<String, String>) -> Result<Self::FormCleaned, djangors_orm::djangors_forms::FormErrors> { Self::validate_form(data) }
+            fn from_cleaned_form(cleaned: Self::FormCleaned) -> Self { Self::from_cleaned_form(cleaned) }
+            fn apply_cleaned_form(&mut self, cleaned: Self::FormCleaned) { Self::apply_cleaned_form(self, cleaned) }
+        }
+
+        #[allow(missing_docs)]
         impl djangors_orm::Model for #struct_name_ident {
             fn meta() -> &'static djangors_orm::ModelMeta {
                 #struct_name_ident::meta()

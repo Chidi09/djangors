@@ -25,8 +25,8 @@ pub use sqlx;
 
 pub use meta::{
     all_registered_models, DefaultValue, FieldKind, FieldMeta, FieldSnapshot, ForeignKey,
-    IndexMeta, Model, ModelMeta, ModelRegistration, ModelSnapshot, OnDelete, RelationKind,
-    RelationMeta, RelationSnapshot, SnapshotDefault,
+    IndexMeta, Model, ModelForm, ModelMeta, ModelRegistration, ModelSnapshot, OnDelete,
+    RelationKind, RelationMeta, RelationSnapshot, SnapshotDefault,
 };
 
 pub use aggregate::{AggExpr, AggResult};

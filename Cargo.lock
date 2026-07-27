@@ -1164,6 +1164,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "djangors-views"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "djangors-core",
+ "djangors-db",
+ "djangors-macros",
+ "djangors-orm",
+ "djangors-template",
+ "hyper",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "doc-code-check"
 version = "0.1.0"
 dependencies = [
