@@ -34,7 +34,7 @@ where
     }
 }
 
-/// Trait for types that can handle an HTTP request and produce a [`StreamingResponse`].
+/// Trait for types that can handle an HTTP request and produce a [`StreamingResponse`](crate::sse::StreamingResponse).
 pub trait StreamingHandler: Send + Sync {
     /// Handle an incoming request and return a streaming response (or error).
     fn call(

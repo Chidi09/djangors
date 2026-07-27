@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! # djangors-contrib-messages
 //!
 //! Per-session flash-message queue for the Djangors web framework.
@@ -39,22 +40,32 @@ use serde::{Deserialize, Serialize};
 
 const SESSION_KEY: &str = "_djangors_messages";
 
+/// Severity level of a flash message, matching Django message levels.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Level {
+    /// Development/debug informational message.
     Debug,
+    /// Standard informational notification.
     Info,
+    /// Action completed successfully.
     Success,
+    /// Non-fatal warning or advisory.
     Warning,
+    /// Operation failed or critical error message.
     Error,
 }
 
+/// A queued flash notification message containing a severity level and message string.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
+    /// Severity level of the message.
     pub level: Level,
+    /// Text body of the message.
     pub text: String,
 }
 
 impl Message {
+    /// Creates a new `Message` with the given level and text.
     pub fn new(level: Level, text: impl Into<String>) -> Self {
         Self {
             level,

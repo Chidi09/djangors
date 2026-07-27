@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Authentication, users, and permissions for Djangors.
 //!
 //! Rust-idiomatic equivalent of Django's `AUTH_USER_MODEL` swap is compile-time genericity
@@ -22,23 +23,31 @@ type HmacSha256 = Hmac<Sha256>;
 /// Error type for authentication and user operations.
 #[derive(Error, Debug)]
 pub enum AuthError {
+    /// Password hashing or verification failed.
     #[error("password hashing error: {0}")]
     Hashing(String),
+    /// Database error during authentication or permission lookup.
     #[error("database error: {0}")]
     Database(#[from] djangors_orm::OrmError),
+    /// Too many failed login attempts within the rate limit window.
     #[error("too many login attempts, try again later")]
     RateLimited,
+    /// Provided password reset or authentication token is invalid or expired.
     #[error("invalid or expired token")]
     InvalidToken,
+    /// Mail sending failed during password reset workflow.
     #[error("mail sending error: {0}")]
     Mail(String),
 }
 
 const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHQ$dGVzdHBhc3N3b3Jk";
 
+/// Payload for the [`LOGIN_SUCCEEDED`] signal.
 #[derive(Debug, Clone)]
 pub struct LoginSucceeded {
+    /// User ID of the user who logged in.
     pub user_id: i64,
+    /// Username of the user who logged in.
     pub username: String,
 }
 
@@ -48,22 +57,31 @@ pub struct LoginSucceeded {
 /// used unescaped in any context where that could pose a security risk (e.g. html).
 #[derive(Debug, Clone)]
 pub struct LoginFailed {
+    /// Username attempt submitted during failed login.
     pub username: String,
 }
 
+/// Payload for the [`LOGGED_OUT`] signal.
 #[derive(Debug, Clone)]
 pub struct LoggedOut {
+    /// Optional user ID of the user who logged out.
     pub user_id: Option<i64>,
 }
 
+/// Signal emitted when a user successfully authenticates.
 pub static LOGIN_SUCCEEDED: LazyLock<Signal<LoginSucceeded>> = LazyLock::new(Signal::new);
+/// Signal emitted when an authentication attempt fails.
 pub static LOGIN_FAILED: LazyLock<Signal<LoginFailed>> = LazyLock::new(Signal::new);
+/// Signal emitted when a user logs out.
 pub static LOGGED_OUT: LazyLock<Signal<LoggedOut>> = LazyLock::new(Signal::new);
 
+/// Trait defining an authentication backend mechanism.
 #[async_trait::async_trait]
 pub trait AuthBackend {
+    /// The user model type produced by this authentication backend.
     type User: AuthUser;
 
+    /// Authenticates a user using `username` and `password`.
     async fn authenticate(
         &self,
         db: &djangors_db::Database,
@@ -72,6 +90,7 @@ pub trait AuthBackend {
     ) -> Result<Option<Self::User>, AuthError>;
 }
 
+/// Default database model authentication backend checking username and password hash.
 pub struct ModelBackend;
 
 #[async_trait::async_trait]
@@ -136,6 +155,7 @@ pub struct RateLimitedBackend<B: AuthBackend> {
 }
 
 impl<B: AuthBackend> RateLimitedBackend<B> {
+    /// Constructs a rate limited wrapper backend around `inner` with `max_attempts` per `window`.
     pub fn new(inner: B, max_attempts: u32, window: Duration) -> Self {
         Self {
             inner,
@@ -145,6 +165,7 @@ impl<B: AuthBackend> RateLimitedBackend<B> {
         }
     }
 
+    /// Constructs a rate limited wrapper backend with default throttling (5 attempts per 15 minutes).
     pub fn default_login_throttle(inner: B) -> Self {
         Self::new(inner, 5, Duration::from_secs(15 * 60))
     }
@@ -187,6 +208,7 @@ impl<B: AuthBackend + Send + Sync> AuthBackend for RateLimitedBackend<B> {
     }
 }
 
+/// Session key used to store the authenticated user ID.
 pub const SESSION_USER_ID_KEY: &str = "_auth_user_id";
 
 /// Establish an authenticated session for `user`. Rotates the session
@@ -260,12 +282,19 @@ impl<U: AuthUser> djangors_core::extract::FromRequest for Auth<U> {
 /// Real apps that need custom user fields implement this on their own struct instead of using the built-in `User`.
 #[async_trait::async_trait]
 pub trait AuthUser: djangors_orm::Model + djangors_orm::FromRow + Send + Sync + 'static {
+    /// Returns the unique primary key identifier for the user.
     fn id(&self) -> i64;
+    /// Returns the username of the user.
     fn username(&self) -> &str;
+    /// Returns the password hash string of the user.
     fn password_hash(&self) -> &str;
+    /// Sets the password hash string of the user.
     fn set_password_hash(&mut self, hash: String);
+    /// Returns `true` if the user account is active.
     fn is_active(&self) -> bool;
+    /// Returns `true` if the user is a superuser.
     fn is_superuser(&self) -> bool;
+    /// Updates the user record in the database.
     async fn update_user(&self, db: &djangors_db::Database) -> Result<(), djangors_orm::OrmError>;
 }
 
@@ -273,12 +302,15 @@ pub trait AuthUser: djangors_orm::Model + djangors_orm::FromRow + Send + Sync + 
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_auth", table_name = "auth_user")]
 pub struct User {
+    /// Primary key user identifier.
     #[djangors(primary_key, auto)]
     pub id: i64,
 
+    /// Unique username.
     #[djangors(max_length = 150)]
     pub username: String,
 
+    /// User email address.
     #[djangors(max_length = 254)]
     pub email: String,
 
@@ -286,11 +318,16 @@ pub struct User {
     /// self-contained) - never the plaintext password.
     pub password: String,
 
+    /// Whether the user account is active.
     pub is_active: bool,
+    /// Whether the user has staff privileges.
     pub is_staff: bool,
+    /// Whether the user has superuser privileges.
     pub is_superuser: bool,
 
+    /// Account creation timestamp.
     pub date_joined: chrono::DateTime<chrono::Utc>,
+    /// Optional last login timestamp.
     pub last_login: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -325,9 +362,11 @@ impl AuthUser for User {
     }
 }
 
+/// Model representing a permission codename and human-readable name.
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_auth", table_name = "auth_permission")]
 pub struct Permission {
+    /// Primary key permission identifier.
     #[djangors(primary_key, auto)]
     pub id: i64,
     /// "{app_label}.{action}_{model_name_lowercase}", e.g. "polls.add_question".
@@ -338,11 +377,14 @@ pub struct Permission {
     pub name: String,
 }
 
+/// Model representing a user permission group.
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_auth", table_name = "auth_group")]
 pub struct Group {
+    /// Primary key group identifier.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// Unique group name.
     #[djangors(max_length = 150, unique)]
     pub name: String,
 }
@@ -351,9 +393,12 @@ pub struct Group {
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_auth", table_name = "auth_user_groups")]
 pub struct UserGroup {
+    /// Primary key join identifier.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// Foreign key reference to User.
     pub user: ForeignKey<User>,
+    /// Foreign key reference to Group.
     pub group: ForeignKey<Group>,
 }
 
@@ -361,9 +406,12 @@ pub struct UserGroup {
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_auth", table_name = "auth_group_permissions")]
 pub struct GroupPermission {
+    /// Primary key join identifier.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// Foreign key reference to Group.
     pub group: ForeignKey<Group>,
+    /// Foreign key reference to Permission.
     pub permission: ForeignKey<Permission>,
 }
 
@@ -371,9 +419,12 @@ pub struct GroupPermission {
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_auth", table_name = "auth_user_permissions")]
 pub struct UserPermission {
+    /// Primary key join identifier.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// Foreign key reference to User.
     pub user: ForeignKey<User>,
+    /// Foreign key reference to Permission.
     pub permission: ForeignKey<Permission>,
 }
 

@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Admin-editable flat pages.
 //!
 //! Flatpage content is served as trusted HTML, matching Django's convention that
@@ -9,15 +10,20 @@ use djangors_core::{DjangorsError, PathParams, Request, Response, Router, Status
 use djangors_macros::Model;
 use djangors_orm::{Model, UnresolvedCompare, UnresolvedExpr, Value};
 
+/// An admin-editable flat HTML page model.
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_contrib_flatpages", table_name = "djangors_flatpage")]
 pub struct FlatPage {
+    /// Auto-incrementing primary key.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// The unique URL path for the flat page (e.g. "/about/").
     #[djangors(max_length = 255, unique)]
     pub url: String,
+    /// The human-readable title of the flat page.
     #[djangors(max_length = 255)]
     pub title: String,
+    /// The raw HTML content of the flat page.
     pub content: String,
 }
 

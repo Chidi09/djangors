@@ -4,8 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// A static file manifest mapping original relative paths to content-hashed paths.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
+    /// Map of original relative path to hashed relative path.
     pub mapping: std::collections::HashMap<String, String>,
 }
 
@@ -56,6 +58,7 @@ fn get_hashed_relative_path(rel_path: &str, hash: &str) -> String {
 }
 
 impl StaticFiles {
+    /// Collects static files from source directories into `output_dir` with content hashes and writes `manifest.json`.
     pub fn collect(&self, output_dir: &Path) -> Result<Manifest, StaticFilesError> {
         fs::create_dir_all(output_dir)?;
 

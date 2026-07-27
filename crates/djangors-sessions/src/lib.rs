@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Session engines for the Djangors web framework.
 //!
 //! Provides signed-cookie session management.
@@ -51,12 +52,14 @@ impl Session {
         }
     }
 
+    /// Gets a deserialized value for the specified key from the session.
     pub fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
         let inner = self.inner.lock().ok()?;
         let val = inner.data.get(key)?;
         serde_json::from_value(val.clone()).ok()
     }
 
+    /// Sets a serializable value for the specified key in the session and marks it as modified.
     pub fn set<T: serde::Serialize>(&self, key: &str, value: T) {
         if let Ok(mut inner) = self.inner.lock() {
             if let Ok(json_val) = serde_json::to_value(value) {
@@ -66,6 +69,7 @@ impl Session {
         }
     }
 
+    /// Removes a key and its value from the session and marks it as modified.
     pub fn remove(&self, key: &str) {
         if let Ok(mut inner) = self.inner.lock() {
             if inner.data.remove(key).is_some() {
@@ -74,6 +78,7 @@ impl Session {
         }
     }
 
+    /// Clears all non-internal key-value pairs from the session and marks it as modified.
     pub fn clear(&self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.data.clear();
@@ -85,6 +90,7 @@ impl Session {
         }
     }
 
+    /// Returns `true` if the session contains no application data keys.
     pub fn is_empty(&self) -> bool {
         if let Ok(inner) = self.inner.lock() {
             inner.data.keys().all(|k| k == "_session_key")
@@ -114,6 +120,7 @@ fn generate_session_key() -> String {
     s
 }
 
+/// A signed cookie store for encoding and decoding session data.
 pub struct SignedCookieStore {
     key: Vec<u8>,        // from settings.SECRET_KEY, NOT hardcoded, NOT optional
     cookie_name: String, // default "djangors_sessionid"
@@ -122,6 +129,7 @@ pub struct SignedCookieStore {
 }
 
 impl SignedCookieStore {
+    /// Creates a new `SignedCookieStore` using the provided secret key.
     pub fn new(secret_key: &[u8]) -> Self {
         Self {
             key: secret_key.to_vec(),
@@ -131,21 +139,25 @@ impl SignedCookieStore {
         }
     }
 
+    /// Configures a custom cookie name.
     pub fn with_cookie_name(mut self, name: String) -> Self {
         self.cookie_name = name;
         self
     }
 
+    /// Configures the cookie max age duration.
     pub fn with_max_age(mut self, max_age: Duration) -> Self {
         self.max_age = max_age;
         self
     }
 
+    /// Configures whether the cookie should set the `Secure` flag.
     pub fn with_secure(mut self, secure: bool) -> Self {
         self.secure = secure;
         self
     }
 
+    /// Encodes and signs the session state into a cookie value string.
     pub fn encode(&self, session: &Session) -> String {
         let mut inner = session.inner.lock().unwrap();
         if inner.cycled {
@@ -253,6 +265,7 @@ pub struct SessionLayer {
 }
 
 impl SessionLayer {
+    /// Creates a new `SessionLayer` wrapping the specified store.
     pub fn new(store: SignedCookieStore) -> Self {
         Self {
             store: Arc::new(store),
@@ -271,6 +284,7 @@ impl<S> Layer<S> for SessionLayer {
     }
 }
 
+/// Tower service middleware managing per-request session lifecycle.
 #[derive(Clone)]
 pub struct SessionService<S> {
     inner: S,

@@ -607,6 +607,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     let field_names_list: Vec<String> = model_fields.iter().map(|f| f.ident.to_string()).collect();
 
     Ok(quote! {
+        #[allow(missing_docs)]
         impl #struct_name_ident {
             pub fn meta() -> &'static djangors_orm::ModelMeta {
                 static META: std::sync::OnceLock<djangors_orm::ModelMeta> = std::sync::OnceLock::new();
@@ -691,6 +692,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             }
         }
 
+        #[allow(missing_docs)]
         impl djangors_orm::Model for #struct_name_ident {
             fn meta() -> &'static djangors_orm::ModelMeta {
                 #struct_name_ident::meta()
@@ -709,6 +711,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             }
         }
 
+        #[allow(missing_docs)]
         impl djangors_orm::FromRow for #struct_name_ident {
             fn from_row(row: &djangors_orm::sqlx::postgres::PgRow) -> Result<Self, djangors_orm::OrmError> {
                 #struct_name_ident::from_row(row)

@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Raw-byte caches, common backends, and explicitly opted-in response caching.
 
 use async_trait::async_trait;
@@ -10,10 +11,13 @@ use std::{convert::Infallible, future::Future, sync::Arc, time::Duration};
 use thiserror::Error;
 use tower::{Layer, Service};
 
+/// Errors encountered during cache access or value serialization.
 #[derive(Debug, Error)]
 pub enum CacheError {
+    /// An error reported by the underlying cache backend.
     #[error("cache backend error: {0}")]
     Backend(String),
+    /// An error serializing or deserializing cached values.
     #[error("cache serialization error: {0}")]
     Serialization(String),
 }
@@ -21,14 +25,19 @@ pub enum CacheError {
 /// An object-safe cache of raw byte values.
 #[async_trait]
 pub trait Cache: Send + Sync {
+    /// Retrieves the raw byte value associated with `key` if present and unexpired.
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, CacheError>;
+    /// Stores `value` under `key` with an optional time-to-live (`ttl`).
     async fn set(&self, key: &str, value: Vec<u8>, ttl: Option<Duration>)
         -> Result<(), CacheError>;
+    /// Deletes any entry associated with `key`.
     async fn delete(&self, key: &str) -> Result<(), CacheError>;
 }
 
+/// Extension trait providing convenient `get_or_set` helpers on any [`Cache`].
 #[async_trait]
 pub trait CacheExt: Cache {
+    /// Retrieves `key` if cached; otherwise executes `f`, caches the result under `key`, and returns it.
     async fn get_or_set<F, Fut>(
         &self,
         key: &str,
@@ -47,6 +56,7 @@ pub trait CacheExt: Cache {
         Ok(value)
     }
 
+    /// Retrieves and deserializes `key` from JSON; otherwise executes `f`, serializes to JSON, caches, and returns `T`.
     async fn get_or_set_json<T, F, Fut>(
         &self,
         key: &str,
@@ -69,6 +79,7 @@ pub trait CacheExt: Cache {
 }
 impl<T: Cache + ?Sized> CacheExt for T {}
 
+/// Helper function to retrieve or compute a template fragment or raw byte cache entry.
 pub async fn get_or_set_fragment<F, Fut>(
     cache: &dyn Cache,
     key: &str,
@@ -82,6 +93,7 @@ where
     cache.get_or_set(key, ttl, f).await
 }
 
+/// An in-memory cache backend powered by Moka.
 #[derive(Clone)]
 pub struct InMemoryCache {
     inner: MokaCache<String, MemoryEntry>,
@@ -92,6 +104,7 @@ struct MemoryEntry {
     expires_at: Option<std::time::Instant>,
 }
 impl InMemoryCache {
+    /// Creates a new `InMemoryCache` instance with `max_capacity` elements limit.
     pub fn new(max_capacity: u64) -> Self {
         Self {
             inner: MokaCache::builder().max_capacity(max_capacity).build(),
@@ -140,11 +153,13 @@ impl Cache for InMemoryCache {
     }
 }
 
+/// A database-backed cache backend storing entries in `djangors_cache_entries`.
 #[derive(Clone)]
 pub struct DatabaseCache {
     db: djangors_db::Database,
 }
 impl DatabaseCache {
+    /// Creates a new `DatabaseCache` backend using `db`.
     pub fn new(db: djangors_db::Database) -> Self {
         Self { db }
     }
@@ -193,12 +208,14 @@ impl Cache for DatabaseCache {
 }
 
 #[cfg(feature = "redis")]
+/// A Redis-backed cache implementation.
 #[derive(Clone)]
 pub struct RedisCache {
     client: redis::Client,
 }
 #[cfg(feature = "redis")]
 impl RedisCache {
+    /// Creates a new `RedisCache` connecting to the given Redis URL string.
     pub fn new(url: &str) -> Result<Self, CacheError> {
         redis::Client::open(url)
             .map(|client| Self { client })
@@ -248,14 +265,18 @@ impl Cache for RedisCache {
     }
 }
 
+/// Request/response extension marker indicating that a response is cacheable by [`CacheLayer`].
 #[derive(Clone, Copy, Debug)]
 pub struct CacheableResponse;
+
+/// Tower middleware layer for caching responses marked with [`CacheableResponse`].
 #[derive(Clone)]
 pub struct CacheLayer {
     cache: Arc<dyn Cache>,
     ttl: Option<Duration>,
 }
 impl CacheLayer {
+    /// Creates a new `CacheLayer` using `cache` and optional default `ttl`.
     pub fn new(cache: Arc<dyn Cache>, ttl: Option<Duration>) -> Self {
         Self { cache, ttl }
     }
@@ -280,6 +301,8 @@ where
         }
     }
 }
+
+/// Tower service middleware that intercepts GET requests and serves/caches responses.
 #[derive(Clone)]
 pub struct CacheService<S> {
     inner: S,

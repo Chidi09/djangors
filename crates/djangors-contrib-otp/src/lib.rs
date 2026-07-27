@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! TOTP-based two-factor authentication primitives for Djangors.
 //!
 //! This v1 intentionally ships TOTP only; WebAuthn is a separate future scope.  `OtpDevice`
@@ -15,21 +16,28 @@ use djangors_macros::Model;
 use djangors_orm::ForeignKey;
 use totp_rs::{Algorithm, Secret, TOTP};
 
+/// Represents an enrolled or unconfirmed TOTP device for a user.
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_contrib_otp", table_name = "djangors_otp_device")]
 pub struct OtpDevice {
+    /// Auto-incrementing primary key.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// Foreign key reference to the owning user.
     pub user: ForeignKey<djangors_auth::User>,
+    /// Base32 encoded TOTP secret key.
     #[djangors(max_length = 255)]
     pub secret: String,
+    /// Whether the device setup has been confirmed by verifying a code.
     pub confirmed: bool,
 }
 
+/// Generates a new random base32 encoded TOTP secret key.
 pub fn generate_secret() -> String {
     Secret::generate_secret().to_encoded().to_string()
 }
 
+/// Generates an `otpauth://` provisioning URI string for QR code creation.
 pub fn provisioning_uri(secret: &str, account_name: &str, issuer: &str) -> String {
     let totp = TOTP::new(
         Algorithm::SHA1,
@@ -46,6 +54,7 @@ pub fn provisioning_uri(secret: &str, account_name: &str, issuer: &str) -> Strin
     totp.get_url()
 }
 
+/// Verifies a 6-digit TOTP code against a base32 encoded secret key.
 pub fn verify_code(secret: &str, code: &str) -> bool {
     let Ok(bytes) = Secret::Encoded(secret.to_string()).to_bytes() else {
         return false;

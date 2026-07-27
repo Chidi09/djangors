@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Background task queue, `#[task]` attribute macro, and worker loop for Djangors.
 
 extern crate self as djangors_tasks;
@@ -10,39 +11,50 @@ pub use djangors_macros::task;
 pub use inventory;
 pub use serde_json;
 
+/// Boxed pinned sendable future returned by background task handlers.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Error types for task queue operations and task execution.
 #[derive(thiserror::Error, Debug)]
 pub enum TaskError {
+    /// A database operation failed.
     #[error("Database error: {0}")]
     Db(#[from] djangors_db::DbError),
 
+    /// An ORM operation failed.
     #[error("ORM error: {0}")]
     Orm(#[from] djangors_orm::OrmError),
 
+    /// A JSON serialization or deserialization error occurred.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// Task payload deserialization failed.
     #[error("Task payload deserialization failed: {0}")]
     PayloadDeserialization(String),
 
+    /// Task serialization failed.
     #[error("Task serialization failed: {0}")]
     Serialization(String),
 
+    /// Requested task handler was not found in the inventory registry.
     #[error("Task handler not found: {0}")]
     TaskNotFound(String),
 
+    /// Task execution encountered an error.
     #[error("Task execution failed: {0}")]
     TaskExecution(String),
 
+    /// Task execution panicked.
     #[error("Task panicked: {0}")]
     TaskPanicked(String),
 }
 
 /// Registration record for background tasks registered via the `#[task]` macro.
 pub struct TaskRegistration {
+    /// Unique identifier name of the task.
     pub name: &'static str,
+    /// Function pointer executing the task handler logic given JSON payload value.
     pub handler: fn(serde_json::Value) -> BoxFuture<'static, Result<(), TaskError>>,
 }
 
@@ -52,17 +64,26 @@ inventory::collect!(TaskRegistration);
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_tasks", table_name = "djangors_task_queue")]
 pub struct QueuedTask {
+    /// Primary key task identifier.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// Name of the registered task handler.
     #[djangors(max_length = 255)]
     pub task_name: String,
+    /// JSON payload parameter string.
     pub payload: String,
+    /// Status string (`"pending"`, `"running"`, `"completed"`, `"failed"`).
     #[djangors(max_length = 50)]
     pub status: String,
+    /// Number of execution attempts attempted so far.
     pub attempts: i32,
+    /// Maximum allowed execution attempts before marking failed.
     pub max_attempts: i32,
+    /// Record creation timestamp.
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Earliest scheduled execution timestamp.
     pub scheduled_at: chrono::DateTime<chrono::Utc>,
+    /// Last error or panic message if execution failed.
     pub error_message: Option<String>,
 }
 
@@ -209,6 +230,7 @@ pub struct Worker {
 }
 
 impl Worker {
+    /// Creates a new `Worker` backed by database `db`.
     pub fn new(db: djangors_db::Database) -> Self {
         Self {
             db,
@@ -216,11 +238,13 @@ impl Worker {
         }
     }
 
+    /// Configures the polling interval for checking due tasks when idle.
     pub fn with_poll_interval(mut self, interval: std::time::Duration) -> Self {
         self.poll_interval = interval;
         self
     }
 
+    /// Runs the worker loop indefinitely, processing tasks as they become due.
     pub async fn run(&self) -> ! {
         loop {
             match self.run_once().await {
@@ -235,6 +259,7 @@ impl Worker {
         }
     }
 
+    /// Claims and attempts to execute a single task from the queue.
     pub async fn run_once(&self) -> Result<bool, TaskError> {
         let task = match claim_next_task(&self.db).await? {
             Some(t) => t,

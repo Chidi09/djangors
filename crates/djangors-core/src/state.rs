@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// A type-erased, per-app container for shared state (e.g. a database
-/// connection pool) that handlers can retrieve via [`Request::state`].
+/// connection pool) that handlers can retrieve via [`Request::state`](crate::request::Request::state).
 /// Cheaply cloneable — cloning an `AppState` clones the underlying `Arc`s,
 /// not the contained values.
 #[derive(Clone, Default, Debug)]

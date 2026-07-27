@@ -25,14 +25,20 @@ enum Segment {
     Capture(CaptureType),
 }
 
+/// Encapsulates standard or streaming handler implementations.
 #[derive(Clone)]
 pub enum HandlerKind {
+    /// A standard buffered handler.
     Standard(Arc<dyn Handler>),
+    /// A streaming HTTP response handler.
     Streaming(Arc<dyn StreamingHandler>),
 }
 
+/// Discriminates standard buffered responses from streaming responses.
 pub enum ResponseKind {
+    /// A standard buffered HTTP response.
     Standard(Response),
+    /// A streaming HTTP response.
     Streaming(StreamingResponse),
 }
 

@@ -1,12 +1,20 @@
+#![deny(missing_docs)]
+//! Schema migration planning, execution, and SQL DDL generation for Djangors.
+
+/// Migration error types.
 pub mod error;
+/// DDL operation definitions and SQL generation logic.
 pub mod operation;
+/// Topological sorting and migration plan building.
 pub mod plan;
+/// Mapping of ORM field types to SQL column types.
 pub mod type_mapping;
 
 pub use error::MigrationError;
 pub use operation::{ColumnDef, ForeignKeyRef, Operation};
 pub use plan::build_create_all_plan;
 
+/// Applies initial database schema migrations if not already applied.
 pub async fn migrate(db: &djangors_db::Database) -> Result<(), MigrationError> {
     // 1. Ensure tracking table exists
     sqlx::query(

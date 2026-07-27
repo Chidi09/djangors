@@ -1,6 +1,7 @@
 use crate::error::MigrationError;
 use djangors_orm::{FieldKind, FieldMeta};
 
+/// Maps an ORM [`FieldMeta`] definition to its corresponding PostgreSQL SQL type string.
 pub fn field_meta_to_sql_type(field: &FieldMeta) -> Result<String, MigrationError> {
     match &field.kind {
         FieldKind::Char | FieldKind::Email | FieldKind::Url | FieldKind::Slug => {

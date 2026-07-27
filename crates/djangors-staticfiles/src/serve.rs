@@ -3,11 +3,13 @@ use hyper::StatusCode;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Serves static files from configured source directories.
 pub struct StaticFiles {
     pub(crate) source_dirs: Vec<PathBuf>,
 }
 
 impl StaticFiles {
+    /// Creates a new `StaticFiles` instance with the given search directories.
     pub fn new(source_dirs: Vec<PathBuf>) -> Self {
         StaticFiles { source_dirs }
     }
@@ -94,6 +96,7 @@ impl StaticFiles {
     }
 }
 
+/// Router handler for serving static files.
 #[derive(Clone)]
 pub struct StaticFilesHandler {
     source_dirs: Vec<PathBuf>,

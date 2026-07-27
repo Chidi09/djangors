@@ -1,8 +1,11 @@
+#![deny(missing_docs)]
 //! Forms and validation for the Djangors web framework.
 //!
 //! Provides the core traits, fields, and error structures for form validation.
 
+/// Form error structures and per-field error maps.
 pub mod error;
+/// Form field types and field validation traits.
 pub mod fields;
 
 pub use djangors_macros::Form;

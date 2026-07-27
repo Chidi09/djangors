@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Small, in-process testing helpers for Djangors applications.
 
 use bytes::Bytes;
@@ -15,14 +16,17 @@ pub struct TestClient {
 }
 
 impl TestClient {
+    /// Creates a new `TestClient` wrapping `router`.
     pub fn new(router: Router) -> Self {
         Self { router }
     }
 
+    /// Prepares a GET request to `path`.
     pub fn get(&self, path: &str) -> RequestBuilder {
         RequestBuilder::new(self.router.clone(), Method::GET, path)
     }
 
+    /// Prepares a POST request to `path` with urlencoded form pairs.
     pub fn post_form(&self, path: &str, pairs: &[(&str, &str)]) -> RequestBuilder {
         let body = serde_urlencoded::to_string(pairs).expect("form pairs should encode");
         let mut builder = RequestBuilder::new(self.router.clone(), Method::POST, path);
@@ -35,6 +39,7 @@ impl TestClient {
     }
 }
 
+/// Builder for constructing in-process test HTTP requests.
 pub struct RequestBuilder {
     router: Router,
     method: Method,
@@ -58,16 +63,19 @@ impl RequestBuilder {
         }
     }
 
+    /// Attaches a session extension to the test request.
     pub fn with_session(mut self, session: Session) -> Self {
         self.extensions.insert(session);
         self
     }
 
+    /// Attaches state data to the test request.
     pub fn with_state<T: Send + Sync + 'static>(mut self, state: T) -> Self {
         self.state = self.state.insert(state);
         self
     }
 
+    /// Sends the test request through the router and returns a [`TestResponse`].
     pub async fn send(self) -> TestResponse {
         let request = Request::new(self.method, self.uri, self.headers, self.body)
             .with_extensions(self.extensions)
@@ -80,11 +88,13 @@ impl RequestBuilder {
     }
 }
 
+/// Wrapper around an HTTP response for test assertions.
 pub struct TestResponse {
     response: Response,
 }
 
 impl TestResponse {
+    /// Asserts that the response status matches `expected`.
     pub fn assert_status(self, expected: StatusCode) -> Self {
         assert_eq!(
             self.response.status(),
@@ -96,6 +106,7 @@ impl TestResponse {
         self
     }
 
+    /// Asserts that the response body text contains `needle`.
     pub fn assert_contains(&self, needle: &str) -> &Self {
         let body = self.body_str();
         assert!(
@@ -105,9 +116,12 @@ impl TestResponse {
         self
     }
 
+    /// Returns the response body as a UTF-8 string.
     pub fn body_str(&self) -> String {
         String::from_utf8_lossy(self.response.body()).into_owned()
     }
+
+    /// Returns the HTTP status code of the response.
     pub fn status(&self) -> StatusCode {
         self.response.status()
     }
@@ -120,6 +134,7 @@ pub struct TestDatabase {
 }
 
 impl TestDatabase {
+    /// Connects to the database specified by the `DATABASE_URL` environment variable.
     pub async fn connect() -> Result<Self, DbError> {
         let url = std::env::var("DATABASE_URL").map_err(|_| {
             DbError::ConnectionFailed("DATABASE_URL environment variable is not set".into())
@@ -127,16 +142,19 @@ impl TestDatabase {
         Self::connect_url(&url).await
     }
 
+    /// Connects to a database at the specified URL string.
     pub async fn connect_url(url: &str) -> Result<Self, DbError> {
         Ok(Self {
             database: Database::connect(&DatabaseConfig::new(url.to_string())).await?,
         })
     }
 
+    /// Returns a reference to the underlying [`Database`].
     pub fn database(&self) -> &Database {
         &self.database
     }
 
+    /// Executes raw DDL SQL to create a table.
     pub async fn create_table(&self, sql: &str) -> Result<(), sqlx::Error> {
         sqlx::QueryBuilder::<sqlx::Postgres>::new(sql)
             .build()
@@ -145,6 +163,7 @@ impl TestDatabase {
             .map(|_| ())
     }
 
+    /// Drops a table by name if it exists.
     pub async fn drop_table(&self, name: &str) -> Result<(), sqlx::Error> {
         sqlx::QueryBuilder::<sqlx::Postgres>::new(format!("DROP TABLE IF EXISTS {name}"))
             .build()
@@ -153,6 +172,7 @@ impl TestDatabase {
             .map(|_| ())
     }
 
+    /// Drops each table in `tables` sequentially.
     pub async fn reset(&self, tables: &[&str]) -> Result<(), sqlx::Error> {
         for table in tables {
             self.drop_table(table).await?;

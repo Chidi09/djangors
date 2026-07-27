@@ -4,8 +4,8 @@
 //! application to react to framework lifecycle events.
 //!
 //! Built-in signals:
-//! - [`REQUEST_STARTED`]: Fires right as a request begins matching.
-//! - [`REQUEST_FINISHED`]: Fires when a request completes (either successfully or with an error).
+//! - `REQUEST_STARTED`: Fires right as a request begins matching.
+//! - `REQUEST_FINISHED`: Fires when a request completes (either successfully or with an error).
 //!
 //! Analogous to Django's built-in signals (`request_started`, `request_finished`).
 //! Model-lifecycle signals (`pre_save`, `post_save`, etc.) will be added once an ORM is available.
@@ -24,7 +24,7 @@ pub type CallbackFn<T> = Arc<dyn Fn(T) -> BoxedFuture + Send + Sync>;
 /// A generic signal that async callbacks can subscribe to.
 ///
 /// Signals are typed, meaning they fire with a specific payload type `T`.
-/// Callbacks are registered using [`connect`] and executed concurrently when [`send`] is called.
+/// Callbacks are registered using `connect` and executed concurrently when `send` is called.
 /// Panic isolation is guaranteed: a panic in one subscriber callback will not affect other
 /// subscribers or the main execution flow.
 pub struct Signal<T: Clone + Send + Sync + 'static> {

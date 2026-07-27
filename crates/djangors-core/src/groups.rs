@@ -14,6 +14,7 @@ pub struct GroupHandle {
 }
 
 impl GroupHandle {
+    /// Creates a new `GroupHandle` wrapping `sender`.
     pub fn new(sender: broadcast::Sender<String>) -> Self {
         Self { sender }
     }

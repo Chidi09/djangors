@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Database-backed redirects for Djangors.
 //!
 //! This crate exposes a plain lookup helper rather than a generic `tower::Layer`:
@@ -8,13 +9,17 @@ use djangors_core::{DjangorsError, PathParams, Request, Response, Router, Status
 use djangors_macros::Model;
 use djangors_orm::{Model, UnresolvedCompare, UnresolvedExpr, Value};
 
+/// A database-backed HTTP redirect model.
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_contrib_redirects", table_name = "djangors_redirect")]
 pub struct Redirect {
+    /// Auto-incrementing primary key.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// The incoming URL path to match and redirect away from (e.g. "/old-path/").
     #[djangors(max_length = 255, unique)]
     pub old_path: String,
+    /// The destination URL path to redirect to (e.g. "/new-path/").
     #[djangors(max_length = 255)]
     pub new_path: String,
 }
@@ -62,6 +67,7 @@ where
     router
 }
 
+/// Registers the `Redirect` model with an admin site instance.
 pub fn register_admin(site: &djangors_admin::AdminSite) {
     site.register::<Redirect>();
 }

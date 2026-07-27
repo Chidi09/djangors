@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Runtime internationalization for Djangors.
 //!
 //! v1 deliberately provides runtime catalog loading and lookup only.  Catalogs are hand-written
@@ -22,21 +23,27 @@ use thiserror::Error;
 use tower::{Layer, Service};
 use unic_langid::LanguageIdentifier;
 
+/// Error types for internationalization operations.
 #[derive(Debug, Error)]
 pub enum I18nError {
+    /// An invalid locale string identifier was provided.
     #[error("invalid locale '{0}'")]
     InvalidLocale(String),
+    /// A Fluent bundle error occurred.
     #[error("invalid Fluent source: {0:?}")]
     Fluent(Vec<fluent_bundle::FluentError>),
+    /// A Fluent resource parsing error occurred.
     #[error("invalid Fluent resource: {0}")]
     Resource(String),
 }
 
+/// A parsed Fluent message catalog for a specific locale.
 pub struct Catalog {
     bundle: FluentBundle<FluentResource>,
 }
 
 impl Catalog {
+    /// Parses a Fluent (`.ftl`) source string into a `Catalog` for `locale`.
     pub fn from_ftl(locale: &str, ftl_source: &str) -> Result<Self, I18nError> {
         let language: LanguageIdentifier = locale
             .parse()
@@ -48,6 +55,7 @@ impl Catalog {
         Ok(Self { bundle })
     }
 
+    /// Looks up and formats a translated message by ID, passing optional arguments.
     pub fn get(&self, message_id: &str, args: Option<&FluentArgs<'_>>) -> Option<String> {
         let message = self.bundle.get_message(message_id)?;
         let pattern = message.value()?;
@@ -60,6 +68,7 @@ impl Catalog {
     }
 }
 
+/// A collection of locale catalogs mapped by locale identifier.
 pub struct Locales {
     default_locale: String,
     catalogs: HashMap<String, Catalog>,
@@ -75,6 +84,7 @@ impl fmt::Debug for Locales {
 }
 
 impl Locales {
+    /// Creates a new `Locales` container with `default_locale`.
     pub fn new(default_locale: &str) -> Self {
         Self {
             default_locale: default_locale.to_string(),
@@ -82,12 +92,14 @@ impl Locales {
         }
     }
 
+    /// Parses and adds a Fluent (`.ftl`) translation source for `locale`.
     pub fn add_locale(&mut self, locale: &str, ftl_source: &str) -> Result<(), I18nError> {
         self.catalogs
             .insert(locale.to_string(), Catalog::from_ftl(locale, ftl_source)?);
         Ok(())
     }
 
+    /// Translates `message_id` for `locale`, falling back to the default locale, then `message_id`.
     pub fn translate(
         &self,
         locale: &str,
@@ -105,20 +117,24 @@ impl Locales {
             .unwrap_or_else(|| message_id.to_string())
     }
 
+    /// Returns the configured default locale string.
     pub fn default_locale(&self) -> &str {
         &self.default_locale
     }
 }
 
+/// Request extension wrapper carrying the resolved locale string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedLocale(pub String);
 
+/// Tower middleware layer resolving the request locale into extensions.
 #[derive(Clone)]
 pub struct LocaleLayer {
     default_locale: String,
 }
 
 impl LocaleLayer {
+    /// Creates a new `LocaleLayer` with `default_locale`.
     pub fn new(default_locale: impl Into<String>) -> Self {
         Self {
             default_locale: default_locale.into(),
@@ -132,6 +148,7 @@ impl Default for LocaleLayer {
     }
 }
 
+/// Tower service middleware performing locale resolution per request.
 #[derive(Clone)]
 pub struct LocaleService<S> {
     inner: S,
@@ -186,6 +203,7 @@ where
     }
 }
 
+/// Parses the first valid BCP-47 language tag from an `Accept-Language` header value.
 pub fn first_locale_tag(header: &str) -> Option<String> {
     let tag = header
         .split(',')
@@ -198,13 +216,17 @@ pub fn first_locale_tag(header: &str) -> Option<String> {
         .map(|_| tag.to_string())
 }
 
+/// Opaque MiniJinja Object wrapper for `Locales`.
 #[derive(Clone, Debug)]
 pub struct LocalesValue(pub Arc<Locales>);
 impl Object for LocalesValue {}
+
+/// Wraps an `Arc<Locales>` into a MiniJinja value suitable for template context.
 pub fn locales_value(locales: Arc<Locales>) -> minijinja::Value {
     minijinja::Value::from_object(LocalesValue(locales))
 }
 
+/// Template filter function `trans` for translating message IDs.
 pub fn trans(
     message_id: minijinja::Value,
     locales: minijinja::Value,
@@ -221,6 +243,7 @@ pub fn trans(
     Ok(locales.0.translate(&locale, &message_id.to_string(), None))
 }
 
+/// Formats a `NaiveDate` according to locale date conventions.
 pub fn localized_date(date: NaiveDate, locale: &str) -> String {
     let format = match locale {
         "en-US" => "%m/%d/%Y",
@@ -236,6 +259,7 @@ pub fn localized_date(date: NaiveDate, locale: &str) -> String {
     date.format(format).to_string()
 }
 
+/// Formats a `DateTime<Utc>` according to locale date conventions.
 pub fn localized_datetime(date: DateTime<Utc>, locale: &str) -> String {
     localized_date(date.date_naive(), locale)
 }

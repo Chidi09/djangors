@@ -159,6 +159,7 @@ pub fn request_id_layer() -> RequestIdLayer {
     RequestIdLayer
 }
 
+/// Extension containing the validated or generated CSRF token.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CsrfToken(pub String);
 
@@ -167,11 +168,14 @@ pub(crate) struct CsrfPendingFormCheck(pub String);
 
 /// CSRF protection middleware implementing a double-submit cookie scheme.
 ///
-/// **CRITICAL SECURITY NOTE (v1 Scope):**
-/// This middleware only validates CSRF tokens via the custom HTTP header (default: `X-CSRFToken`).
-/// It does **not** look at or validate form body fields (e.g. `csrfmiddlewaretoken`).
-/// Consequently, classic HTML `<form>` submissions without client-side JavaScript headers are
-/// NOT protected in this version.
+/// On an unsafe-method request (POST/PUT/PATCH/DELETE), this layer first checks the custom HTTP
+/// header (default: `X-CSRFToken`) against the `csrftoken` cookie using a constant-time
+/// comparison. If the header is missing or doesn't match, the request is **not** rejected
+/// immediately — instead a pending-check marker is attached and the request falls through to the
+/// framework's own request dispatch, which (for `application/x-www-form-urlencoded` bodies) checks
+/// a `csrfmiddlewaretoken` form field against the same pending token before allowing the request
+/// through. This means both JavaScript-set-header submissions and classic HTML `<form>`
+/// submissions (with a hidden `csrfmiddlewaretoken` input) are protected.
 #[derive(Clone)]
 pub struct CsrfLayer {
     cookie_name: String,
@@ -234,6 +238,7 @@ impl<S> Layer<S> for CsrfLayer {
     }
 }
 
+/// Service middleware handling CSRF token validation and cookie setting.
 #[derive(Clone)]
 pub struct CsrfService<S> {
     inner: S,

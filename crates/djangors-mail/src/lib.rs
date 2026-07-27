@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Email messages and pluggable delivery backends.
 
 use async_trait::async_trait;
@@ -12,30 +13,43 @@ use std::{
 };
 use thiserror::Error;
 
+/// An outgoing email message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
+    /// Recipient email addresses.
     pub to: Vec<String>,
+    /// Sender email address.
     pub from: String,
+    /// Email subject line.
     pub subject: String,
+    /// Plain text email body.
     pub body: String,
+    /// Optional HTML formatted email body.
     pub html_body: Option<String>,
 }
 
+/// Errors returned by email backends during delivery or configuration.
 #[derive(Error, Debug)]
 pub enum MailError {
+    /// Email sending failed.
     #[error("failed to send mail: {0}")]
     Send(String),
+    /// Invalid mail backend configuration.
     #[error("invalid mail configuration: {0}")]
     Configuration(String),
 }
 
+/// Trait defining a pluggable email delivery backend.
 #[async_trait]
 pub trait MailBackend: Send + Sync {
+    /// Delivers the specified email `message`.
     async fn send(&self, message: &Message) -> Result<(), MailError>;
 }
 
+/// Email backend that logs outgoing messages via `tracing::info`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ConsoleBackend;
+
 #[async_trait]
 impl MailBackend for ConsoleBackend {
     async fn send(&self, message: &Message) -> Result<(), MailError> {
@@ -44,15 +58,23 @@ impl MailBackend for ConsoleBackend {
     }
 }
 
+/// Configuration parameters for SMTP mail delivery.
 #[derive(Debug, Clone)]
 pub struct SmtpConfig {
+    /// Hostname or IP address of the SMTP server.
     pub host: String,
+    /// Port number for the SMTP connection.
     pub port: u16,
+    /// Optional username for SMTP authentication.
     pub username: Option<String>,
+    /// Optional password for SMTP authentication.
     pub password: Option<String>,
+    /// Whether to enforce TLS encryption.
     pub use_tls: bool,
 }
+
 impl SmtpConfig {
+    /// Creates a new `SmtpConfig` targeting `host` on default port 587 with TLS enabled.
     pub fn new(host: impl Into<String>) -> Self {
         Self {
             host: host.into(),
@@ -62,19 +84,26 @@ impl SmtpConfig {
             use_tls: true,
         }
     }
+
+    /// Sets the SMTP server port.
     pub fn port(mut self, port: u16) -> Self {
         self.port = port;
         self
     }
+
+    /// Sets the username and password for SMTP authentication.
     pub fn credentials(mut self, username: impl Into<String>, password: impl Into<String>) -> Self {
         self.username = Some(username.into());
         self.password = Some(password.into());
         self
     }
+
+    /// Configures whether TLS encryption should be required.
     pub fn use_tls(mut self, use_tls: bool) -> Self {
         self.use_tls = use_tls;
         self
     }
+
     fn validate(&self) -> Result<(), MailError> {
         if self.host.trim().is_empty() {
             return Err(MailError::Configuration("SMTP host cannot be empty".into()));
@@ -88,10 +117,13 @@ impl SmtpConfig {
     }
 }
 
+/// SMTP email delivery backend using Lettre.
 pub struct SmtpBackend {
     transport: AsyncSmtpTransport<Tokio1Executor>,
 }
+
 impl SmtpBackend {
+    /// Constructs a new `SmtpBackend` from `config`.
     pub fn new(config: SmtpConfig) -> Result<Self, MailError> {
         config.validate()?;
         // `relay` uses implicit TLS; when TLS is disabled, `builder_dangerous` is explicit.
@@ -112,6 +144,7 @@ impl SmtpBackend {
             transport: builder.build(),
         })
     }
+
     fn build_message(message: &Message) -> Result<LettreMessage, MailError> {
         let from: Mailbox = message
             .from
@@ -142,11 +175,13 @@ impl SmtpBackend {
                 .map_err(|e| MailError::Send(e.to_string()))
         }
     }
+
     #[cfg(test)]
     fn serialize(message: &Message) -> Result<Vec<u8>, MailError> {
         Ok(Self::build_message(message)?.formatted())
     }
 }
+
 #[async_trait]
 impl MailBackend for SmtpBackend {
     async fn send(&self, message: &Message) -> Result<(), MailError> {
@@ -158,16 +193,20 @@ impl MailBackend for SmtpBackend {
     }
 }
 
+/// Email backend that writes outgoing messages as `.eml` files to a target directory.
 #[derive(Debug, Clone)]
 pub struct FileBackend {
     directory: PathBuf,
 }
+
 impl FileBackend {
+    /// Creates a new `FileBackend` that outputs emails into `directory`.
     pub fn new(directory: impl Into<PathBuf>) -> Self {
         Self {
             directory: directory.into(),
         }
     }
+
     fn format(message: &Message) -> String {
         format!(
             "From: {}\nTo: {}\nSubject: {}\n\n{}{}",
@@ -183,6 +222,7 @@ impl FileBackend {
         )
     }
 }
+
 #[async_trait]
 impl MailBackend for FileBackend {
     async fn send(&self, message: &Message) -> Result<(), MailError> {
@@ -200,11 +240,14 @@ impl MailBackend for FileBackend {
     }
 }
 
+/// An in-memory email backend for testing that records sent messages.
 #[derive(Debug, Clone, Default)]
 pub struct InMemoryBackend {
     messages: Arc<Mutex<Vec<Message>>>,
 }
+
 impl InMemoryBackend {
+    /// Returns a vector clone of all email messages sent through this backend.
     pub fn sent_messages(&self) -> Vec<Message> {
         self.messages
             .lock()

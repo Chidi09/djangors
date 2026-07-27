@@ -3,7 +3,9 @@
 /// Pagination math engine for item sequences.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Paginator {
+    /// Total count of items across all pages.
     pub total_items: i64,
+    /// Maximum number of items per page.
     pub page_size: i64,
 }
 

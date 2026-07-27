@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Object-level permissions for Djangors.
 //!
 //! Layered on top of `djangors_auth::has_perm`, `djangors-contrib-guardian` provides
@@ -38,14 +39,20 @@ use djangors_orm::ForeignKey;
     table_name = "djangors_object_permission"
 )]
 pub struct ObjectPermission {
+    /// Auto-incrementing primary key.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// The user to whom object-level permission is granted.
     pub user: ForeignKey<djangors_auth::User>,
+    /// The permission being granted.
     pub permission: ForeignKey<djangors_auth::Permission>,
+    /// The app label of the target object model (e.g. "docs").
     #[djangors(max_length = 100)]
     pub app_label: String,
+    /// The struct name of the target object model (e.g. "Document").
     #[djangors(max_length = 100)]
     pub model_name: String,
+    /// The primary key ID of the target object instance.
     pub object_id: i64,
 }
 

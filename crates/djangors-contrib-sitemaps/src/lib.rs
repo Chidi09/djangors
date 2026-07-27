@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! XML sitemap generation for Djangors.
 
 use std::sync::Arc;
@@ -17,14 +18,19 @@ fn xml_escape(input: &str) -> String {
 /// One URL in a generated sitemap.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SitemapEntry {
+    /// The absolute URL location of the page.
     pub loc: String,
+    /// Optional last modification timestamp of the page.
     pub lastmod: Option<DateTime<Utc>>,
+    /// Optional change frequency indicator (e.g. "daily", "weekly").
     pub changefreq: Option<String>,
+    /// Optional priority ranking relative to other URLs (0.0 to 1.0).
     pub priority: Option<f32>,
 }
 
 /// Supplies sitemap entries for one part of an application.
 pub trait Sitemap: Send + Sync {
+    /// Returns the collection of sitemap entries provided by this sitemap instance.
     fn items(&self) -> Vec<SitemapEntry>;
 }
 

@@ -40,7 +40,7 @@ impl Request {
     }
 
     /// Retrieve a piece of shared state attached to the app via
-    /// [`Router::with_state`], if any was registered for type `T`.
+    /// [`Router::with_state`](crate::router::Router::with_state), if any was registered for type `T`.
     pub fn state<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.state.get::<T>()
     }

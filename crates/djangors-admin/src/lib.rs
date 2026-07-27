@@ -1,3 +1,6 @@
+#![deny(missing_docs)]
+//! Automatic administration interface for Djangors applications.
+
 use async_trait::async_trait;
 use djangors_auth::{Auth, User};
 use djangors_core::extract::{Form, FromRequest};
@@ -76,15 +79,23 @@ fn build_query_string(pairs: &[(&str, Option<&str>)]) -> String {
     }
 }
 
+/// Struct containing page data for a model's changelist view.
 pub struct ChangelistPage {
-    pub columns: Vec<&'static str>, // field names, declaration order
-    pub rows: Vec<Vec<String>>,     // Display-rendered, NOT escaped (view escapes)
+    /// Field names to display as columns in declaration order.
+    pub columns: Vec<&'static str>,
+    /// Display-rendered row strings (view escapes).
+    pub rows: Vec<Vec<String>>,
+    /// Primary key strings corresponding to each row.
     pub pks: Vec<String>,
-    pub total: i64, // COUNT(*) over the whole table
-    pub page: i64,  // 1-based current page
+    /// Total count of matching items across all pages.
+    pub total: i64,
+    /// 1-based current page number.
+    pub page: i64,
+    /// Number of items displayed per page.
     pub per_page: i64,
 }
 
+/// Configuration options for custom model admin registration.
 #[derive(Default, Clone)]
 pub struct ModelAdminConfig {
     /// Subset/reorder of real field names to show as changelist columns.
@@ -95,9 +106,11 @@ pub struct ModelAdminConfig {
     pub search_fields: Option<&'static [&'static str]>,
     /// Boolean field names only.
     pub list_filter: Option<&'static [&'static str]>,
+    /// Date or datetime field name to display date hierarchy navigation bar.
     pub date_hierarchy: Option<&'static str>,
+    /// List of field names that are editable inline on the changelist page.
     pub list_editable: Option<&'static [&'static str]>,
-    // Computed columns for display
+    /// Computed display columns functions.
     #[allow(clippy::type_complexity)]
     pub computed_columns: Option<
         &'static [(
@@ -105,17 +118,26 @@ pub struct ModelAdminConfig {
             fn(&[(&'static str, djangors_orm::expr::Value)]) -> String,
         )],
     >,
+    /// Bulk actions available on the changelist page.
     pub actions: Option<&'static [AdminAction]>,
+    /// Groupings of fields into fieldsets on the change form.
     pub fieldsets: Option<&'static [(&'static str, &'static [&'static str])]>,
+    /// List of field names rendered as read-only on the change form.
     pub readonly_fields: Option<&'static [&'static str]>,
+    /// List of foreign key field names rendered as raw ID inputs.
     pub raw_id_fields: Option<&'static [&'static str]>,
+    /// Base filter expression automatically applied to all admin queries.
     pub base_filter: Option<djangors_orm::UnresolvedExpr>,
 }
 
+/// Pluggable administration interface trait for managing ORM models.
 #[async_trait]
 pub trait ModelAdmin: Send + Sync {
+    /// Returns the metadata for the administered model.
     fn model_meta(&self) -> &'static ModelMeta;
+    /// Returns the list of model field names in declaration order.
     fn field_names(&self) -> Vec<&'static str>;
+    /// Queries and returns a paginated [`ChangelistPage`] for this model.
     #[allow(clippy::too_many_arguments)]
     async fn changelist(
         &self,
@@ -128,6 +150,7 @@ pub trait ModelAdmin: Send + Sync {
         date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
     ) -> Result<ChangelistPage, DjangorsError>;
 
+    /// Queries and returns headers and rows for CSV export.
     #[allow(clippy::too_many_arguments)]
     async fn export_csv_rows(
         &self,
@@ -138,29 +161,39 @@ pub trait ModelAdmin: Send + Sync {
         date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
     ) -> Result<(Vec<&'static str>, Vec<Vec<String>>), DjangorsError>;
 
+    /// Returns search field names for this model admin.
     fn search_fields(&self) -> &[&'static str];
+    /// Returns list filter field names for this model admin.
     fn list_filter_fields(&self) -> &[&'static str];
+    /// Returns the date hierarchy field name if configured.
     fn date_hierarchy_field(&self) -> Option<&'static str>;
+    /// Returns list editable field names for this model admin.
     fn list_editable_fields(&self) -> &[&'static str];
+    /// Returns configured bulk admin actions for this model admin.
     fn actions(&self) -> Vec<AdminAction> {
         Vec::new()
     }
+    /// Returns configured change form fieldsets.
     fn fieldsets(&self) -> Option<&'static [(&'static str, &'static [&'static str])]> {
         None
     }
+    /// Returns read-only field names for the change form.
     fn readonly_fields(&self) -> &[&'static str] {
         &[]
     }
+    /// Returns raw ID field names for foreign keys.
     fn raw_id_fields(&self) -> &[&'static str] {
         &[]
     }
 
+    /// Fetches a single object by primary key as name/value tuples.
     async fn get_by_pk(
         &self,
         db: &djangors_db::Database,
         pk: i64,
     ) -> Result<Option<Vec<(&'static str, djangors_orm::expr::Value)>>, DjangorsError>;
 
+    /// Updates an existing object from form parameters.
     async fn update_from_form(
         &self,
         db: &djangors_db::Database,
@@ -168,6 +201,7 @@ pub trait ModelAdmin: Send + Sync {
         form: &std::collections::HashMap<String, String>,
     ) -> Result<Result<(), std::collections::HashMap<String, String>>, DjangorsError>;
 
+    /// Updates specific fields of an existing object from form parameters.
     async fn update_fields_from_form(
         &self,
         db: &djangors_db::Database,
@@ -175,12 +209,14 @@ pub trait ModelAdmin: Send + Sync {
         form: &std::collections::HashMap<String, String>,
     ) -> Result<Result<(), std::collections::HashMap<String, String>>, DjangorsError>;
 
+    /// Creates a new model instance from form parameters.
     async fn create_from_form(
         &self,
         db: &djangors_db::Database,
         form: &std::collections::HashMap<String, String>,
     ) -> Result<Result<i64, std::collections::HashMap<String, String>>, DjangorsError>;
 
+    /// Deletes a single object by primary key.
     async fn delete_by_pk(
         &self,
         db: &djangors_db::Database,
@@ -718,11 +754,16 @@ struct FormFieldRow {
 
 use djangors_macros::Model as DeriveModel;
 
+/// Definition of a custom bulk admin action.
 #[derive(Clone)]
 pub struct AdminAction {
+    /// Internal action key name.
     pub name: &'static str,
+    /// Human-readable label displayed in the action dropdown.
     pub label: &'static str,
+    /// Whether executing this action requires a confirmation page step.
     pub requires_confirm: bool,
+    /// Async handler executing the action against selected primary keys.
     #[allow(clippy::type_complexity)]
     pub handler: for<'a> fn(
         &'a djangors_db::Database,
@@ -732,36 +773,57 @@ pub struct AdminAction {
     >,
 }
 
+/// Serialized row for rendering action options in templates.
 #[derive(serde::Serialize)]
 pub struct AdminActionRow {
+    /// Internal action key name.
     pub name: String,
+    /// Human-readable action label.
     pub label: String,
 }
 
+/// Log entry action flag for object addition.
 pub const ACTION_ADDITION: i32 = 1;
+/// Log entry action flag for object modification.
 pub const ACTION_CHANGE: i32 = 2;
+/// Log entry action flag for object deletion.
 pub const ACTION_DELETION: i32 = 3;
 
+/// Struct capturing a field change diff item.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FieldDiffItem {
+    /// Field name that changed.
     pub field: String,
+    /// Value before modification.
     pub old: String,
+    /// Value after modification.
     pub new: String,
 }
 
+/// Audit log entry model recording staff admin actions.
 #[derive(DeriveModel, Debug, Clone, serde::Serialize, sqlx::FromRow)]
 #[djangors(app = "admin", table_name = "djangors_admin_log")]
 pub struct LogEntry {
+    /// Primary key log entry ID.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// ID of the staff user who performed the action.
     pub user_id: i64,
+    /// Timestamp when the action was logged.
     pub action_time: chrono::DateTime<chrono::Utc>,
+    /// Application label of the target model.
     pub app_label: String,
+    /// Struct name of the target model.
     pub model_name: String,
+    /// Primary key ID of the target object.
     pub object_id: i64,
+    /// String representation of the target object.
     pub object_repr: String,
+    /// Action flag (`ACTION_ADDITION`, `ACTION_CHANGE`, `ACTION_DELETION`).
     pub action_flag: i32,
+    /// Human-readable summary of changes.
     pub change_message: String,
+    /// Optional JSON string detailing field-level diffs.
     pub field_diff: Option<String>,
 }
 
@@ -801,11 +863,16 @@ async fn log_action(
     }
 }
 
+/// Custom branding options for the admin interface header and title.
 #[derive(Clone)]
 pub struct SiteBranding {
+    /// Header title displayed at top left of admin pages.
     pub site_header: String,
+    /// Browser window/tab title suffix.
     pub site_title: String,
+    /// Optional custom logo image URL.
     pub logo_url: Option<String>,
+    /// Optional custom CSS accent color hex string.
     pub accent_color: Option<String>,
 }
 
@@ -973,6 +1040,7 @@ fn render_form(
     )
 }
 
+/// Central administration site registry managing registered models and admin views.
 pub struct AdminSite {
     registry: Mutex<Vec<Arc<dyn ModelAdmin>>>,
     branding: SiteBranding,
@@ -986,6 +1054,7 @@ impl Default for AdminSite {
 }
 
 impl AdminSite {
+    /// Creates a new empty `AdminSite` with default branding.
     pub fn new() -> Self {
         Self {
             registry: Mutex::new(Vec::new()),
@@ -994,21 +1063,25 @@ impl AdminSite {
         }
     }
 
+    /// Sets the admin site header text.
     pub fn with_site_header(mut self, header: impl Into<String>) -> Self {
         self.branding.site_header = header.into();
         self
     }
 
+    /// Sets the admin site title text.
     pub fn with_site_title(mut self, title: impl Into<String>) -> Self {
         self.branding.site_title = title.into();
         self
     }
 
+    /// Sets a custom logo URL for the admin site header.
     pub fn with_logo_url(mut self, url: impl Into<String>) -> Self {
         self.branding.logo_url = Some(url.into());
         self
     }
 
+    /// Sets a custom CSS accent color for the admin site.
     pub fn with_accent_color(mut self, color: impl Into<String>) -> Self {
         self.branding.accent_color = Some(color.into());
         self
@@ -1025,6 +1098,7 @@ impl AdminSite {
         self.register_with::<M>(ModelAdminConfig::default());
     }
 
+    /// Registers a model `M` with custom [`ModelAdminConfig`].
     pub fn register_with<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static>(
         &self,
         config: ModelAdminConfig,
@@ -2561,12 +2635,19 @@ async fn admin_change_post(
     }
 }
 
+/// Summary of related objects affected by a deletion action.
 pub struct RelatedObjectSummary {
+    /// App label of the referencing model.
     pub app_label: &'static str,
+    /// Struct name of the referencing model.
     pub struct_name: &'static str,
+    /// Foreign key field name on the referencing model.
     pub field_name: &'static str,
+    /// On delete cascade behavior strategy.
     pub on_delete: djangors_orm::meta::OnDelete,
+    /// Count of matching dependent objects.
     pub count: i64,
+    /// Nested child related object summaries.
     pub nested: Vec<RelatedObjectSummary>,
 }
 
@@ -3305,6 +3386,7 @@ async fn admin_save_changelist_post(
     )
 }
 
+/// Registers default admin favicon routes onto `router`.
 pub fn favicon_routes(router: Router) -> Router {
     router
         .get("/favicon.ico", favicon_ico)

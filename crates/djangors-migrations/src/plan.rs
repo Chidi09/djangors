@@ -4,6 +4,7 @@ use crate::type_mapping::field_meta_to_sql_type;
 use djangors_orm::{all_registered_models, ModelMeta};
 use std::collections::{HashMap, HashSet};
 
+/// Builds a sequence of migration DDL operations to create tables for all registered models.
 pub fn build_create_all_plan() -> Result<Vec<Operation>, MigrationError> {
     // 1. Get all models
     let models: Vec<&'static ModelMeta> = all_registered_models().collect();

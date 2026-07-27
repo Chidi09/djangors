@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! REST framework core for Djangors: generic serialization, ViewSets, and router mounting.
 //!
 //! ViewSet routes require an authenticated user by default. Public routes must opt into
@@ -26,11 +27,15 @@ use rand::RngCore;
 #[derive(djangors_macros::Model, Debug, Clone)]
 #[djangors(app = "djangors_rest", table_name = "djangors_rest_authtoken")]
 pub struct AuthToken {
+    /// Primary key for the token record.
     #[djangors(primary_key, auto)]
     pub id: i64,
+    /// Foreign key reference to the associated user.
     pub user: djangors_orm::ForeignKey<djangors_auth::User>,
+    /// Unique 64-character hexadecimal token string.
     #[djangors(max_length = 64, unique)]
     pub key: String,
+    /// Timestamp when this token was created.
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
@@ -169,6 +174,7 @@ fn settings_secret(req: &Request) -> Result<&str, DjangorsError> {
 /// A policy deciding whether a request may reach a ViewSet handler.
 #[async_trait::async_trait]
 pub trait Permission: Send + Sync + 'static {
+    /// Determines whether the given request satisfies this permission requirement.
     async fn has_permission(&self, req: &Request) -> bool;
 }
 

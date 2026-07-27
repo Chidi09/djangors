@@ -1,8 +1,8 @@
 //! Typed request extractors for the Djangors web framework.
 //!
 //! Handlers currently receive raw requests and path parameters.
-//! This module provides a set of typed extractors ([`Json`], [`Query`], [`Form`])
-//! and a [`FromRequest`] trait to extract typed information directly from the request.
+//! This module provides a set of typed extractors (`Json`, `Query`, `Form`)
+//! and a `FromRequest` trait to extract typed information directly from the request.
 //!
 //! # Usage
 //!

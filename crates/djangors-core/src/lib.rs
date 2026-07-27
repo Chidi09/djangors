@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! HTTP kernel for the Djangors web framework.
 //!
 //! Provides the core [`Request`], [`Response`], [`Router`], and [`Handler`]
@@ -16,23 +17,41 @@
 //! This version uses a double-submit cookie scheme. Django's BREACH-hardened masked-secret
 //! scheme is not yet implemented and is planned as future work.
 
+/// Application builder and launcher logic.
 pub mod app;
+/// Django-style HTML debug and error page rendering.
 pub mod debug_page;
+/// Framework core error types.
 pub mod error;
+/// Request parameter extractor utilities.
 pub mod extract;
+/// Pub/sub broadcast group channel registry.
 pub mod groups;
+/// Handler trait definitions for standard and streaming HTTP routes.
 pub mod handler;
+/// HTTP request/response logging middleware.
 pub mod logging;
+/// Standard HTTP middleware layers (CSRF, Request ID, etc.).
 pub mod middleware;
+/// Pagination utility engines.
 pub mod pagination;
+/// Path parameter map container.
 pub mod path_params;
+/// Request structure wrapper.
 pub mod request;
+/// Response structure wrapper.
 pub mod response;
+/// URL routing engine and pattern matching.
 pub mod router;
+/// Tower service implementations for Djangors applications.
 pub mod service;
+/// Framework-wide settings container.
 pub mod settings;
+/// Framework lifecycle event signals.
 pub mod signals;
+/// Server-Sent Events (SSE) streaming response types.
 pub mod sse;
+/// Type-map state storage container.
 pub mod state;
 
 pub use app::Djangors;
@@ -51,6 +70,7 @@ pub use state::AppState;
 /// Re-export of [`hyper::StatusCode`] for convenience.
 pub use hyper::StatusCode;
 
+/// Escapes HTML special characters in string input.
 pub fn html_escape(input: &str) -> String {
     let mut escaped = String::with_capacity(input.len());
     for c in input.chars() {

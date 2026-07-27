@@ -19,6 +19,7 @@ impl Default for PathParams {
 }
 
 impl PathParams {
+    /// Creates a new empty `PathParams` collection.
     pub fn new() -> Self {
         PathParams {
             params: HashMap::new(),

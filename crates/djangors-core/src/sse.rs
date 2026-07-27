@@ -82,7 +82,7 @@ impl StreamingResponse {
     }
 
     /// Convert this streaming response into a hyper [`Response`](hyper::Response) backed by
-    /// a [`BoxBody`](BoxBody).
+    /// a [`BoxBody`].
     pub fn into_hyper(self) -> hyper::Response<BoxBody<Bytes, std::convert::Infallible>> {
         let mapped_stream = self.stream.map(|res| res.map(hyper::body::Frame::data));
         let body = BodyExt::boxed(http_body_util::StreamBody::new(mapped_stream));

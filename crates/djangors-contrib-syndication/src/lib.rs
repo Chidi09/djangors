@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! Hand-rolled RSS 2.0 and Atom feed generation for Djangors.
 
 use chrono::{DateTime, Utc};
@@ -13,21 +14,32 @@ fn xml_escape(input: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
+/// Trait defining a syndication feed source.
 pub trait Feed: Send + Sync {
+    /// Returns the feed title.
     fn title(&self) -> String;
+    /// Returns the main feed URL link.
     fn link(&self) -> String;
+    /// Returns the feed description or subtitle.
     fn description(&self) -> String;
+    /// Returns the list of entries contained in this feed.
     fn items(&self) -> Vec<FeedItem>;
 }
 
+/// A single entry in an RSS or Atom syndication feed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeedItem {
+    /// The title of the feed entry.
     pub title: String,
+    /// The canonical URL link for the entry.
     pub link: String,
+    /// The body or summary description of the entry.
     pub description: String,
+    /// Optional publication timestamp.
     pub pub_date: Option<DateTime<Utc>>,
 }
 
+/// Renders a RSS 2.0 XML document string from the given `Feed`.
 pub fn render_rss(feed: &dyn Feed) -> String {
     let mut out = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>{}</title><link>{}</link><description>{}</description>"#,
@@ -51,6 +63,7 @@ pub fn render_rss(feed: &dyn Feed) -> String {
     out
 }
 
+/// Renders an Atom XML document string from the given `Feed`.
 pub fn render_atom(feed: &dyn Feed) -> String {
     let updated = feed
         .items()
@@ -83,12 +96,16 @@ pub fn render_atom(feed: &dyn Feed) -> String {
     out
 }
 
+/// Target output XML format for feed generation.
 #[derive(Clone, Copy)]
 pub enum FeedFormat {
+    /// Standard RSS 2.0 format.
     Rss,
+    /// Standard Atom format.
     Atom,
 }
 
+/// Mounts a feed route at `path` on the given router in the specified `format`.
 pub fn feed_routes(router: Router, path: &str, feed: Arc<dyn Feed>, format: FeedFormat) -> Router {
     let path = path.to_owned();
     router.get(&path, move |_req: Request, _params: PathParams| {
