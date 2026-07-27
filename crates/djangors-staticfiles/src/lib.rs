@@ -9,6 +9,8 @@ pub mod error;
 pub mod serve;
 /// Pluggable static-file storage backends.
 pub mod storage;
+/// Helpers for writing uploaded files through a storage backend.
+pub mod upload;
 
 pub use collect::Manifest;
 pub use error::StaticFilesError;

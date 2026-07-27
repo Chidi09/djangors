@@ -42,6 +42,7 @@ tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter", "jso
 toml = "0.8.20"
 async-trait = "0.1.86"
 serde_urlencoded = "0.7.1"
+multer = "3.1.0"
 rand = "0.8.7"
 base64 = "0.22.1"
 djangors-orm = { path = "../djangors-orm" }
