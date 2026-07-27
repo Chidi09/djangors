@@ -8,4 +8,18 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+djangors-core = { path = "../djangors-core" }
+djangors-orm = { path = "../djangors-orm" }
+djangors-migrations = { path = "../djangors-migrations" }
+djangors-rest = { path = "../djangors-rest" }
+djangors-admin = { path = "../djangors-admin" }
+djangors-auth = { path = "../djangors-auth" }
+djangors-forms = { path = "../djangors-forms" }
+djangors-sessions = { path = "../djangors-sessions" }
+djangors-template = { path = "../djangors-template" }
+djangors-staticfiles = { path = "../djangors-staticfiles" }
+djangors-cache = { path = "../djangors-cache" }
+djangors-mail = { path = "../djangors-mail" }
+djangors-i18n = { path = "../djangors-i18n" }
+djangors-db = { path = "../djangors-db" }
 djangors-tasks = { path = "../djangors-tasks" }

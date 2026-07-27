@@ -751,7 +751,21 @@ dependencies = [
 name = "djangors"
 version = "0.0.1"
 dependencies = [
+ "djangors-admin",
+ "djangors-auth",
+ "djangors-cache",
+ "djangors-core",
+ "djangors-db",
+ "djangors-forms",
+ "djangors-i18n",
+ "djangors-mail",
+ "djangors-migrations",
+ "djangors-orm",
+ "djangors-rest",
+ "djangors-sessions",
+ "djangors-staticfiles",
  "djangors-tasks",
+ "djangors-template",
 ]
 
 [[package]]
