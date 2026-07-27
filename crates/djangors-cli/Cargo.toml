@@ -1,6 +1,6 @@
 [package]
 name = "djangors-cli"
-description = "The dj command-line tool for the Djangors web framework (placeholder release)"
+description = "The dj command-line tool for the Djangors web framework"
 repository = "https://github.com/Chidi09/djangors"
 version.workspace = true
 edition.workspace = true

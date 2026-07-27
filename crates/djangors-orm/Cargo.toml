@@ -1,6 +1,6 @@
 [package]
 name = "djangors-orm"
-description = "Django-style ORM with querysets and model metadata for Djangors (placeholder release)"
+description = "Django-style ORM with querysets and model metadata for Djangors"
 repository = "https://github.com/Chidi09/djangors"
 version.workspace = true
 edition.workspace = true

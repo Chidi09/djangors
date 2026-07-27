@@ -1,6 +1,6 @@
 [package]
 name = "djangors-admin"
-description = "Auto-generated admin interface for Djangors (placeholder release)"
+description = "Auto-generated admin interface for Djangors"
 repository = "https://github.com/Chidi09/djangors"
 version.workspace = true
 edition.workspace = true
