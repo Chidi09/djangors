@@ -128,8 +128,9 @@ pub async fn healthz(_req: Request, _params: PathParams) -> Result<Response, Dja
     let djangors_toml = "debug = true\n";
 
     let dockerfile = format!(
-        r#"FROM rust:1-slim AS builder
+        r#"FROM rust:1-slim-bookworm AS builder
 WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY . .
 RUN cargo build --release
 

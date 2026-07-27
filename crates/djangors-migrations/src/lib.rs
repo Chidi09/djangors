@@ -207,6 +207,14 @@ mod migrate_from_dir_tests {
 
     const TEST_DB_URL: &str = "postgres://postgres:postgres@localhost/djangors_test";
 
+    // Each test uses its own uniquely-named table, but all of them share the single
+    // `djangors_migrations` bookkeeping table via `ensure_history()`'s
+    // `CREATE TABLE IF NOT EXISTS`. That statement is not atomic under real concurrency -
+    // two tests creating it at the same instant can hit Postgres's own catalog-level
+    // uniqueness constraints (pg_class_relname_nsp_index / pg_type_typname_nsp_index),
+    // the same class of cross-test DDL race documented in PLAN.md's Phase 11 (task #61).
+    static TEST_DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// Every test gets its own migrations directory and its own uniquely-named table, so
     /// tests can run concurrently against the one real shared `djangors_test` database
     /// without colliding (djangors-test's `TestDatabase` does not yet provide per-test
@@ -248,6 +256,7 @@ mod migrate_from_dir_tests {
     #[tokio::test]
     async fn multi_migration_sequence_add_column_actually_applies() {
         let db = connect().await;
+        let _guard = TEST_DB_LOCK.lock().await;
         let suffix = unique_suffix();
         let table = format!("mig_test_{suffix}");
         let dir = std::env::temp_dir().join(format!("djangors_migtest_{suffix}"));
@@ -295,6 +304,7 @@ mod migrate_from_dir_tests {
     #[tokio::test]
     async fn rollback_reverses_a_real_schema_change() {
         let db = connect().await;
+        let _guard = TEST_DB_LOCK.lock().await;
         let suffix = unique_suffix();
         let table = format!("mig_rb_{suffix}");
         let dir = std::env::temp_dir().join(format!("djangors_migtest_rb_{suffix}"));
@@ -358,6 +368,7 @@ mod migrate_from_dir_tests {
     #[tokio::test]
     async fn rollback_refuses_a_non_invertible_migration_without_partial_effect() {
         let db = connect().await;
+        let _guard = TEST_DB_LOCK.lock().await;
         let suffix = unique_suffix();
         let table = format!("mig_ni_{suffix}");
         let dir = std::env::temp_dir().join(format!("djangors_migtest_ni_{suffix}"));
@@ -410,6 +421,7 @@ mod migrate_from_dir_tests {
     #[tokio::test]
     async fn migrate_from_dir_is_idempotent() {
         let db = connect().await;
+        let _guard = TEST_DB_LOCK.lock().await;
         let suffix = unique_suffix();
         let table = format!("mig_idem_{suffix}");
         let dir = std::env::temp_dir().join(format!("djangors_migtest_idem_{suffix}"));

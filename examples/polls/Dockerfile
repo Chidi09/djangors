@@ -1,7 +1,7 @@
 # Build context is the repository root (this is a workspace member, not a
 # standalone crate - it needs the sibling crates/* path dependencies available).
 # See render.yaml: dockerContext: . / dockerfilePath: ./examples/polls/Dockerfile
-FROM rust:1-slim AS builder
+FROM rust:1-slim-bookworm AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY . .
