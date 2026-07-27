@@ -1,0 +1,80 @@
+version: 2.1
+
+jobs:
+  test:
+    docker:
+      - image: cimg/rust:1.83
+        environment:
+          DATABASE_URL: postgres://postgres:postgres@localhost/djangors_test
+      - image: cimg/postgres:16.0
+        environment:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+    steps:
+      - checkout
+      - run:
+          name: Install rustfmt / clippy components
+          command: rustup component add rustfmt clippy
+      - restore_cache:
+          keys:
+            - cargo-registry-{{ checksum "Cargo.lock" }}
+      - run:
+          name: Wait for Postgres and create test database
+          command: |
+            for i in $(seq 1 30); do
+              PGPASSWORD=postgres psql -h localhost -U postgres -c 'select 1' > /dev/null 2>&1 && break
+              sleep 1
+            done
+            PGPASSWORD=postgres psql -h localhost -U postgres -c 'CREATE DATABASE djangors_test;'
+            PGPASSWORD=postgres psql -h localhost -U postgres -c 'CREATE DATABASE djangors_bench;'
+      - run:
+          name: Check formatting
+          command: cargo fmt --all -- --check
+      - run:
+          name: Clippy (deny warnings)
+          command: cargo clippy --workspace --all-targets -- -D warnings
+      - run:
+          name: Build
+          command: cargo build --workspace --all-targets
+      - run:
+          name: Test
+          command: cargo test --workspace
+      - run:
+          name: Doc build
+          command: cargo doc --workspace --no-deps
+          environment:
+            RUSTDOCFLAGS: "-D warnings"
+      - save_cache:
+          key: cargo-registry-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - target
+
+  audit:
+    docker:
+      - image: cimg/rust:1.83
+    steps:
+      - checkout
+      - run:
+          name: Install cargo-audit
+          command: cargo install cargo-audit --locked
+      - run:
+          name: Run cargo audit
+          # RUSTSEC-2026-0194 / -0195 (quick-xml DoS, transitive via the `s3` crate) and
+          # RUSTSEC-2023-0071 (rsa Marvin Attack, only reachable via djangors-rest's optional
+          # `jwt` feature) are triaged, currently unfixable upstream, and documented in
+          # docs/security-review-2026-07-27.md. Re-run without --ignore periodically to notice
+          # when upstream ships a fix.
+          command: >-
+            cargo audit
+            --ignore RUSTSEC-2026-0194
+            --ignore RUSTSEC-2026-0195
+            --ignore RUSTSEC-2023-0071
+
+workflows:
+  version: 2
+  build-and-test:
+    jobs:
+      - test
+      - audit

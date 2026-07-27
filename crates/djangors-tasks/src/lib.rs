@@ -479,6 +479,14 @@ mod tests {
 
     static TEST_TASK_EXECUTED: AtomicBool = AtomicBool::new(false);
 
+    // All DB-touching tests below share the single real `djangors_test` database and a
+    // fixed `djangors_task_queue` table name (djangors-test's TestDatabase does not yet
+    // provide per-test isolation - see docs/design's TestDatabase rollback/fixtures item).
+    // `cargo test` runs `#[tokio::test]` functions concurrently by default, so without this
+    // lock two tests racing on the same table produce nondeterministic row counts. Every
+    // test that touches `djangors_task_queue` must acquire this guard before doing so.
+    static TEST_DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[derive(serde::Serialize, serde::Deserialize)]
     struct SamplePayload {
         message: String,
@@ -551,6 +559,7 @@ mod tests {
             Ok(db) => db,
             Err(_) => return Ok(()), // Skip if no test DB available
         };
+        let _guard = TEST_DB_LOCK.lock().await;
         let db = test_db.database();
         create_task_table(db).await?;
 
@@ -602,6 +611,7 @@ mod tests {
             Ok(db) => db,
             Err(_) => return Ok(()),
         };
+        let _guard = TEST_DB_LOCK.lock().await;
         let db = test_db.database();
         create_task_table(db).await?;
 
@@ -647,6 +657,7 @@ mod tests {
             Ok(db) => db,
             Err(_) => return Ok(()),
         };
+        let _guard = TEST_DB_LOCK.lock().await;
         let db = test_db.database();
         create_task_table(db).await?;
 
@@ -722,6 +733,7 @@ mod tests {
             Ok(db) => db,
             Err(_) => return Ok(()),
         };
+        let _guard = TEST_DB_LOCK.lock().await;
         let db = test_db.database();
         create_task_table(db).await?;
 
@@ -767,8 +779,12 @@ mod tests {
             Ok(db) => db,
             Err(_) => return Ok(()),
         };
+        let _guard = TEST_DB_LOCK.lock().await;
         let db = test_db.database();
         create_recurring_task_table(db).await?;
+        sqlx::query("DELETE FROM djangors_recurring_task")
+            .execute(db.pool())
+            .await?;
 
         let bad_syntax = register_recurring(
             db,
@@ -803,8 +819,12 @@ mod tests {
             Ok(db) => db,
             Err(_) => return Ok(()),
         };
+        let _guard = TEST_DB_LOCK.lock().await;
         let db = test_db.database();
         create_recurring_task_table(db).await?;
+        sqlx::query("DELETE FROM djangors_recurring_task")
+            .execute(db.pool())
+            .await?;
         create_task_table(db).await?;
 
         let name = "sample_task_fn_disabled_test";
@@ -850,8 +870,12 @@ mod tests {
             Ok(db) => db,
             Err(_) => return Ok(()),
         };
+        let _guard = TEST_DB_LOCK.lock().await;
         let db = test_db.database();
         create_recurring_task_table(db).await?;
+        sqlx::query("DELETE FROM djangors_recurring_task")
+            .execute(db.pool())
+            .await?;
         create_task_table(db).await?;
 
         let name = "sample_task_fn_advance_test";
@@ -903,8 +927,12 @@ mod tests {
             Ok(db) => db,
             Err(_) => return Ok(()),
         };
+        let _guard = TEST_DB_LOCK.lock().await;
         let db = test_db.database();
         create_recurring_task_table(db).await?;
+        sqlx::query("DELETE FROM djangors_recurring_task")
+            .execute(db.pool())
+            .await?;
         create_task_table(db).await?;
 
         let name = "sample_task_fn_race_test";
@@ -954,8 +982,12 @@ mod tests {
             Ok(db) => db,
             Err(_) => return Ok(()),
         };
+        let _guard = TEST_DB_LOCK.lock().await;
         let db = test_db.database();
         create_recurring_task_table(db).await?;
+        sqlx::query("DELETE FROM djangors_recurring_task")
+            .execute(db.pool())
+            .await?;
         create_task_table(db).await?;
         sqlx::query("DELETE FROM djangors_task_queue")
             .execute(db.pool())
