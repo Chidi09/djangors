@@ -17,6 +17,6 @@ proc-macro2 = "1.0"
 
 [dev-dependencies]
 trybuild = "1.0"
-djangors-orm = { path = "../djangors-orm", version = "0.1.0" }
-djangors-forms = { path = "../djangors-forms", version = "0.1.0" }
+djangors-orm = { path = "../djangors-orm" }
+djangors-forms = { path = "../djangors-forms" }
 
