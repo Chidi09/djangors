@@ -5,3 +5,7 @@
 /fuzz/artifacts
 /docs/book
 
+
+# chunk active sidecar tracking
+.chunk/sidecar.json
+.chunk/sidecar.*.json

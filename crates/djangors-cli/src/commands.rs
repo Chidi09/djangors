@@ -553,19 +553,30 @@ pub fn makemigrations(_check: bool) -> Result<(), String> {
     };
     let mut sql = Vec::new();
     let mut down = Vec::new();
-    for model in &current {
-        let old = previous.iter().find(|m| m.table_name == model.table_name);
-        if old.is_none() {
-            let op =
-                djangors_migrations::build_create_plan_from_snapshots(std::slice::from_ref(model))
-                    .map_err(|e| e.to_string())?
-                    .remove(0);
+
+    // New models must be planned together, not one at a time: a foreign key from a
+    // new model to another new model (e.g. djangors-auth's UserGroup -> User) can
+    // only be resolved if the target's own snapshot is in the same slice.
+    let new_models: Vec<djangors_orm::ModelSnapshot> = current
+        .iter()
+        .filter(|model| !previous.iter().any(|m| m.table_name == model.table_name))
+        .cloned()
+        .collect();
+    if !new_models.is_empty() {
+        for op in djangors_migrations::build_create_plan_from_snapshots(&new_models)
+            .map_err(|e| e.to_string())?
+        {
             sql.push(format!("{};", op.to_sql()));
             down.push(
                 op.to_down_sql()
                     .map_or_else(|| "".to_string(), |s| format!("{};", s)),
             );
-        } else if let Some(old) = old {
+        }
+    }
+
+    for model in &current {
+        let old = previous.iter().find(|m| m.table_name == model.table_name);
+        if let Some(old) = old {
             for field in &model.fields {
                 if !old
                     .fields

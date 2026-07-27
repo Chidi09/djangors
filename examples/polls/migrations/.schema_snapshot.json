@@ -1,0 +1,610 @@
+[
+  {
+    "struct_name": "User",
+    "app_label": "djangors_auth",
+    "table_name": "auth_user",
+    "fields": [
+      {
+        "name": "id",
+        "column_name": "id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": true,
+        "auto": true,
+        "unique": true,
+        "db_index": true,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "username",
+        "column_name": "username",
+        "kind": "Char",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": 150
+      },
+      {
+        "name": "email",
+        "column_name": "email",
+        "kind": "Char",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": 254
+      },
+      {
+        "name": "password",
+        "column_name": "password",
+        "kind": "Text",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "is_active",
+        "column_name": "is_active",
+        "kind": "Boolean",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "is_staff",
+        "column_name": "is_staff",
+        "kind": "Boolean",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "is_superuser",
+        "column_name": "is_superuser",
+        "kind": "Boolean",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "date_joined",
+        "column_name": "date_joined",
+        "kind": "DateTime",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "last_login",
+        "column_name": "last_login",
+        "kind": "DateTime",
+        "nullable": true,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      }
+    ],
+    "relations": [],
+    "unique_together": [],
+    "ordering": []
+  },
+  {
+    "struct_name": "UserGroup",
+    "app_label": "djangors_auth",
+    "table_name": "auth_user_groups",
+    "fields": [
+      {
+        "name": "id",
+        "column_name": "id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": true,
+        "auto": true,
+        "unique": true,
+        "db_index": true,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      }
+    ],
+    "relations": [
+      {
+        "field_name": "user",
+        "kind": "ForeignKey",
+        "target_struct": "User",
+        "on_delete": "Cascade",
+        "related_name": null
+      },
+      {
+        "field_name": "group",
+        "kind": "ForeignKey",
+        "target_struct": "Group",
+        "on_delete": "Cascade",
+        "related_name": null
+      }
+    ],
+    "unique_together": [],
+    "ordering": []
+  },
+  {
+    "struct_name": "Permission",
+    "app_label": "djangors_auth",
+    "table_name": "auth_permission",
+    "fields": [
+      {
+        "name": "id",
+        "column_name": "id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": true,
+        "auto": true,
+        "unique": true,
+        "db_index": true,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "codename",
+        "column_name": "codename",
+        "kind": "Char",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": true,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": 255
+      },
+      {
+        "name": "name",
+        "column_name": "name",
+        "kind": "Char",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": 255
+      }
+    ],
+    "relations": [],
+    "unique_together": [],
+    "ordering": []
+  },
+  {
+    "struct_name": "GroupPermission",
+    "app_label": "djangors_auth",
+    "table_name": "auth_group_permissions",
+    "fields": [
+      {
+        "name": "id",
+        "column_name": "id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": true,
+        "auto": true,
+        "unique": true,
+        "db_index": true,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      }
+    ],
+    "relations": [
+      {
+        "field_name": "group",
+        "kind": "ForeignKey",
+        "target_struct": "Group",
+        "on_delete": "Cascade",
+        "related_name": null
+      },
+      {
+        "field_name": "permission",
+        "kind": "ForeignKey",
+        "target_struct": "Permission",
+        "on_delete": "Cascade",
+        "related_name": null
+      }
+    ],
+    "unique_together": [],
+    "ordering": []
+  },
+  {
+    "struct_name": "Group",
+    "app_label": "djangors_auth",
+    "table_name": "auth_group",
+    "fields": [
+      {
+        "name": "id",
+        "column_name": "id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": true,
+        "auto": true,
+        "unique": true,
+        "db_index": true,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "name",
+        "column_name": "name",
+        "kind": "Char",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": true,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": 150
+      }
+    ],
+    "relations": [],
+    "unique_together": [],
+    "ordering": []
+  },
+  {
+    "struct_name": "UserPermission",
+    "app_label": "djangors_auth",
+    "table_name": "auth_user_permissions",
+    "fields": [
+      {
+        "name": "id",
+        "column_name": "id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": true,
+        "auto": true,
+        "unique": true,
+        "db_index": true,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      }
+    ],
+    "relations": [
+      {
+        "field_name": "user",
+        "kind": "ForeignKey",
+        "target_struct": "User",
+        "on_delete": "Cascade",
+        "related_name": null
+      },
+      {
+        "field_name": "permission",
+        "kind": "ForeignKey",
+        "target_struct": "Permission",
+        "on_delete": "Cascade",
+        "related_name": null
+      }
+    ],
+    "unique_together": [],
+    "ordering": []
+  },
+  {
+    "struct_name": "LogEntry",
+    "app_label": "admin",
+    "table_name": "djangors_admin_log",
+    "fields": [
+      {
+        "name": "id",
+        "column_name": "id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": true,
+        "auto": true,
+        "unique": true,
+        "db_index": true,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "user_id",
+        "column_name": "user_id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "action_time",
+        "column_name": "action_time",
+        "kind": "DateTime",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "app_label",
+        "column_name": "app_label",
+        "kind": "Text",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "model_name",
+        "column_name": "model_name",
+        "kind": "Text",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "object_id",
+        "column_name": "object_id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "object_repr",
+        "column_name": "object_repr",
+        "kind": "Text",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "action_flag",
+        "column_name": "action_flag",
+        "kind": "Integer",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "change_message",
+        "column_name": "change_message",
+        "kind": "Text",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "field_diff",
+        "column_name": "field_diff",
+        "kind": "Text",
+        "nullable": true,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      }
+    ],
+    "relations": [],
+    "unique_together": [],
+    "ordering": []
+  },
+  {
+    "struct_name": "Choice",
+    "app_label": "polls",
+    "table_name": "polls_choice",
+    "fields": [
+      {
+        "name": "id",
+        "column_name": "id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": true,
+        "auto": true,
+        "unique": true,
+        "db_index": true,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "choice_text",
+        "column_name": "choice_text",
+        "kind": "Char",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": 200
+      },
+      {
+        "name": "votes",
+        "column_name": "votes",
+        "kind": "Integer",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "I64",
+          "value": 0
+        },
+        "max_length": null
+      }
+    ],
+    "relations": [
+      {
+        "field_name": "question",
+        "kind": "ForeignKey",
+        "target_struct": "Question",
+        "on_delete": "Cascade",
+        "related_name": "choices"
+      }
+    ],
+    "unique_together": [],
+    "ordering": []
+  },
+  {
+    "struct_name": "Question",
+    "app_label": "polls",
+    "table_name": "polls_question",
+    "fields": [
+      {
+        "name": "id",
+        "column_name": "id",
+        "kind": "BigInt",
+        "nullable": false,
+        "primary_key": true,
+        "auto": true,
+        "unique": true,
+        "db_index": true,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      },
+      {
+        "name": "question_text",
+        "column_name": "question_text",
+        "kind": "Char",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": false,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": 200
+      },
+      {
+        "name": "pub_date",
+        "column_name": "pub_date",
+        "kind": "DateTime",
+        "nullable": false,
+        "primary_key": false,
+        "auto": false,
+        "unique": false,
+        "db_index": true,
+        "default": {
+          "kind": "None"
+        },
+        "max_length": null
+      }
+    ],
+    "relations": [],
+    "unique_together": [],
+    "ordering": [
+      "-pub_date"
+    ]
+  }
+]

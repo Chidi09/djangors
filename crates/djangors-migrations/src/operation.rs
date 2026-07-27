@@ -72,52 +72,31 @@ impl Operation {
                 table_name,
                 columns,
             } => {
-                let col_sqls: Vec<String> = columns
-                    .iter()
-                    .map(|col| {
-                        let mut sql = format!("{} {}", col.name, col.sql_type);
-                        if !col.nullable {
-                            sql.push_str(" NOT NULL");
-                        }
-                        if col.primary_key {
-                            sql.push_str(" PRIMARY KEY");
-                        }
-                        if col.unique && !col.primary_key {
-                            sql.push_str(" UNIQUE");
-                        }
-                        if let Some(ref default) = col.default_sql {
-                            sql.push_str(&format!(" DEFAULT {}", default));
-                        }
-                        if let Some(ref refs) = col.references {
-                            sql.push_str(&format!(
-                                " REFERENCES {}({}) ON DELETE {}",
-                                refs.table, refs.column, refs.on_delete
-                            ));
-                        }
-                        sql
-                    })
-                    .collect();
+                let col_sqls: Vec<String> = columns.iter().map(|col| column_sql(col)).collect();
                 format!(
-                    "CREATE TABLE IF NOT EXISTS {} (\n    {}\n)",
+                    "CREATE TABLE IF NOT EXISTS \"{}\" (\n    {}\n)",
                     table_name,
                     col_sqls.join(",\n    ")
                 )
             }
             Operation::AddColumn { table_name, column } => format!(
-                "ALTER TABLE {} ADD COLUMN {};",
+                "ALTER TABLE \"{}\" ADD COLUMN {};",
                 table_name,
                 column_sql(column)
             ),
             Operation::DropColumn {
                 table_name,
                 column_name,
-            } => format!("ALTER TABLE {} DROP COLUMN {};", table_name, column_name),
+            } => format!(
+                "ALTER TABLE \"{}\" DROP COLUMN \"{}\";",
+                table_name, column_name
+            ),
             Operation::AlterColumnType {
                 table_name,
                 column_name,
                 new_sql_type,
             } => format!(
-                "ALTER TABLE {} ALTER COLUMN {} TYPE {} USING {}::{};",
+                "ALTER TABLE \"{}\" ALTER COLUMN \"{}\" TYPE {} USING \"{}\"::{};",
                 table_name, column_name, new_sql_type, column_name, new_sql_type
             ),
             Operation::RenameColumn {
@@ -125,10 +104,10 @@ impl Operation {
                 old_name,
                 new_name,
             } => format!(
-                "ALTER TABLE {} RENAME COLUMN {} TO {};",
+                "ALTER TABLE \"{}\" RENAME COLUMN \"{}\" TO \"{}\";",
                 table_name, old_name, new_name
             ),
-            Operation::DropTable { table_name } => format!("DROP TABLE {};", table_name),
+            Operation::DropTable { table_name } => format!("DROP TABLE \"{}\";", table_name),
         }
     }
 
@@ -162,7 +141,7 @@ impl Operation {
 }
 
 fn column_sql(col: &ColumnDef) -> String {
-    let mut sql = format!("{} {}", col.name, col.sql_type);
+    let mut sql = format!("\"{}\" {}", col.name, col.sql_type);
     if !col.nullable {
         sql.push_str(" NOT NULL");
     }
@@ -177,7 +156,7 @@ fn column_sql(col: &ColumnDef) -> String {
     }
     if let Some(refs) = &col.references {
         sql.push_str(&format!(
-            " REFERENCES {}({}) ON DELETE {}",
+            " REFERENCES \"{}\"(\"{}\") ON DELETE {}",
             refs.table, refs.column, refs.on_delete
         ));
     }

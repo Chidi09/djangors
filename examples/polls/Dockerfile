@@ -5,14 +5,16 @@ FROM rust:1-slim AS builder
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN cargo build --release -p polls
+RUN cargo build --release -p polls -p djangors-cli
 
 FROM debian:bookworm-slim
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/polls /app/server
+COPY --from=builder /app/target/release/dj /app/dj
+COPY --from=builder /app/examples/polls/migrations /app/migrations
 EXPOSE 8000
 ENV DJANGORS_PORT=8000
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8000/healthz || exit 1
-CMD ["/app/server"]
+CMD ["/bin/sh", "-c", "/app/dj migrate && exec /app/server"]
