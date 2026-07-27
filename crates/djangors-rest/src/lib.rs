@@ -210,6 +210,29 @@ impl Permission for IsAuthenticated {
     }
 }
 
+/// A [`djangors_core::RateLimitKey`] strategy that keys by the currently authenticated user's
+/// id (checking session-based [`Auth`](djangors_auth::Auth) first, then [`TokenAuth`], mirroring
+/// [`IsAuthenticated`]'s own dual check). Rejects unauthenticated requests with
+/// [`DjangorsError::Unauthorized`] rather than falling back to a shared/empty key.
+///
+/// This lives here rather than in `djangors-core` because it needs `djangors-auth`, which
+/// depends on `djangors-core` — `djangors-core` itself cannot depend back on `djangors-auth`
+/// without a dependency cycle.
+pub struct ByAuthenticatedUser;
+
+#[async_trait::async_trait]
+impl djangors_core::RateLimitKey for ByAuthenticatedUser {
+    async fn key(&self, req: &Request) -> Result<String, DjangorsError> {
+        if let Ok(auth) = djangors_auth::Auth::<djangors_auth::User>::from_request(req).await {
+            return Ok(auth.0.id().to_string());
+        }
+        if let Ok(token_auth) = TokenAuth::from_request(req).await {
+            return Ok(token_auth.0.id().to_string());
+        }
+        Err(DjangorsError::Unauthorized("not authenticated".to_string()))
+    }
+}
+
 /// Default page size for REST ViewSet list pagination.
 /// Matches the admin's per-page convention (100).
 pub const REST_PER_PAGE: i64 = 100;
@@ -1795,6 +1818,19 @@ mod tests {
             TokenAuth::from_request(&req).await,
             Err(DjangorsError::Unauthorized(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn by_authenticated_user_rate_limit_key_rejects_unauthenticated_requests() {
+        use djangors_core::RateLimitKey;
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/"),
+            HeaderMap::new(),
+            Bytes::new(),
+        );
+        let result = ByAuthenticatedUser.key(&req).await;
+        assert!(matches!(result, Err(DjangorsError::Unauthorized(_))));
     }
 
     #[cfg(feature = "jwt")]

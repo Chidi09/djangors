@@ -45,6 +45,7 @@ serde_urlencoded = "0.7.1"
 rand = "0.8.7"
 base64 = "0.22.1"
 djangors-orm = { path = "../djangors-orm" }
+djangors-cache = { path = "../djangors-cache" }
 
 [dev-dependencies]
 djangors-db = { path = "../djangors-db" }

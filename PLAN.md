@@ -474,7 +474,32 @@ User directive: "let's do it all."
   is byte-for-byte unchanged with no renderer registered, three proving a registered
   `JsonErrorRenderer` actually overrides `dispatch`/`dispatch_debug`/`dispatch_boxed` respectively
   (debug=true and debug=false both), all passing against real `Router` dispatch, not mocks.
-- [ ] 5. Named, scoped rate limiting per endpoint (only login has this today).
+- [x] **5. Named, scoped rate limiting per endpoint** — **done (10.8):** new
+  `crates/djangors-core/src/ratelimit.rs` — `RateLimitKey` trait (`ByIp`, header-based, honestly
+  documented as spoofable unless behind a trusted proxy since this codebase has no real socket
+  peer-address plumbing today), `RateLimiter<K>` (named + scoped: cache keys prefixed
+  `ratelimit:{name}:{key}` so independently-configured limiters never interfere), backed by the
+  existing `djangors-cache::Cache` trait rather than a new counting mechanism, and a
+  `rate_limited(limiter, handler)` per-handler wrapper mirroring `djangors-rest`'s existing
+  `guarded()` pattern — strictly opt-in, no route is rate-limited unless a project explicitly
+  wraps it. Added a new `DjangorsError::TooManyRequests` variant (there was no 429-class variant
+  at all before this). The pre-existing login-only `RateLimitedBackend` in `djangors-auth` is
+  completely untouched. **Real architectural gap found in my own design doc, not just the
+  dispatch's code**: I'd specified `ByAuthenticatedUser` living in `djangors-core` and using
+  `djangors_auth`'s extraction directly — impossible, since `djangors-auth` depends on
+  `djangors-core` and the reverse would be a dependency cycle (confirmed directly in both crates'
+  `Cargo.toml`). The dispatch worked around this with a fragile `req.state::<i64>()` convention
+  plus an ugly `type_name::<K>().contains(...)` string check to detect it — both replaced: changed
+  `RateLimitKey::key` to return `Result<String, DjangorsError>` (so a key strategy can reject a
+  request outright, no more magic-empty-string signaling), and moved `ByAuthenticatedUser` to
+  `djangors-rest` (which already depends on `djangors-auth`), implementing it against the exact
+  same session/token dual-check `IsAuthenticated` already uses. Dispatch (codex, after a confirmed
+  agy quota-wall re-check) again shipped correct production code but skipped every required test —
+  the fourth time this session — wrote all 5 myself: a 20-concurrent-request-under-max-5 test
+  proving the limiter never goes unbounded (without asserting an exact count, per the stated
+  best-effort tolerance), cross-limiter scoping isolation, real-elapsed-time window expiry, a real
+  429 through an actual mounted route/dispatch, and `ByAuthenticatedUser` rejecting unauthenticated
+  requests. All pass; full `fmt`/`build`/`clippy -D warnings`/`test --workspace` clean.
 - [x] **6. Cron/scheduled background jobs** — **done (10.7):** new `RecurringTask` model (table
   `djangors_recurring_task`), `register_recurring(db, task_name, payload, cron_expr)` (validates
   the cron expression immediately, via the new `cron` crate — the only genuinely new external

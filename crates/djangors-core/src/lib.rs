@@ -37,6 +37,8 @@ pub mod middleware;
 pub mod pagination;
 /// Path parameter map container.
 pub mod path_params;
+/// Named, opt-in endpoint rate limiting.
+pub mod ratelimit;
 /// Request structure wrapper.
 pub mod request;
 /// Response structure wrapper.
@@ -60,6 +62,7 @@ pub use groups::{GroupHandle, Groups};
 pub use handler::{Handler, StreamingHandler};
 pub use pagination::{decode_cursor, encode_cursor, CursorError, CursorPage, Paginator};
 pub use path_params::PathParams;
+pub use ratelimit::{rate_limited, ByIp, RateLimitKey, RateLimiter};
 pub use request::Request;
 pub use response::Response;
 pub use router::Router;

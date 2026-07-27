@@ -26,6 +26,9 @@ pub fn render_debug_page(error: &DjangorsError, req: &Request) -> Response {
         ),
         DjangorsError::Unauthorized(msg) => ("unauthorized", "Unauthorized", msg.as_str()),
         DjangorsError::Forbidden(msg) => ("forbidden", "Forbidden", msg.as_str()),
+        DjangorsError::TooManyRequests(msg) => {
+            ("too-many-requests", "Too Many Requests", msg.as_str())
+        }
     };
 
     let mut headers_html = String::new();

@@ -917,6 +917,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
+ "djangors-cache",
  "djangors-db",
  "djangors-macros",
  "djangors-orm",

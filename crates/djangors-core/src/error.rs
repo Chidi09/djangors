@@ -58,6 +58,8 @@ pub enum DjangorsError {
     Unauthorized(String),
     /// The request is forbidden (403).
     Forbidden(String),
+    /// The request exceeded a configured rate limit (429).
+    TooManyRequests(String),
 }
 
 impl fmt::Display for DjangorsError {
@@ -69,6 +71,7 @@ impl fmt::Display for DjangorsError {
             DjangorsError::Panicked(msg) => write!(f, "Handler panicked: {msg}"),
             DjangorsError::Unauthorized(msg) => write!(f, "Unauthorized: {msg}"),
             DjangorsError::Forbidden(msg) => write!(f, "Forbidden: {msg}"),
+            DjangorsError::TooManyRequests(msg) => write!(f, "Too Many Requests: {msg}"),
         }
     }
 }
@@ -84,6 +87,7 @@ impl DjangorsError {
             Self::Panicked(_) => "panicked",
             Self::Unauthorized(_) => "unauthorized",
             Self::Forbidden(_) => "forbidden",
+            Self::TooManyRequests(_) => "too_many_requests",
         }
     }
 
@@ -95,6 +99,7 @@ impl DjangorsError {
             | Self::Panicked(msg)
             | Self::Unauthorized(msg)
             | Self::Forbidden(msg) => msg.clone(),
+            Self::TooManyRequests(msg) => msg.clone(),
         }
     }
 
@@ -113,6 +118,7 @@ impl DjangorsError {
             DjangorsError::Panicked(_) => StatusCode::INTERNAL_SERVER_ERROR,
             DjangorsError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             DjangorsError::Forbidden(_) => StatusCode::FORBIDDEN,
+            DjangorsError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
         }
     }
 
@@ -136,6 +142,9 @@ impl DjangorsError {
             }
             DjangorsError::Forbidden(msg) => {
                 Response::text(status, &format!("403 Forbidden: {msg}"))
+            }
+            DjangorsError::TooManyRequests(msg) => {
+                Response::text(status, &format!("429 Too Many Requests: {msg}"))
             }
         }
     }
