@@ -706,6 +706,17 @@ double-checked to exist and are *not* relisted here.
   full serialization of tick calls, an acceptable cost since this is a periodic scheduler
   operation, not a high-concurrency hot path. Independently re-verified with 8/8 clean reruns
   under the same load conditions that previously reproduced the bug.
+  **Update (still during Phase 11, discovered while verifying item 11.9): the fix reduced but did
+  not fully eliminate the race.** Re-running the real `cargo test --workspace` command (not the
+  narrower single-background-build repro used to verify the original fix) surfaced the identical
+  failure signature once in 4 repeated runs (1/4, down from a deterministic 6/6 pre-fix). The
+  `pg_advisory_xact_lock` is confirmed still present and correctly structured in
+  `crates/djangors-tasks/src/lib.rs`'s `tick_recurring_tasks` — the remaining gap has not been
+  root-caused. Plausible direction for follow-up: `cargo test --workspace`'s default cross-crate
+  concurrency (many crates' test binaries as separate OS processes, not just one extra background
+  build) may expose a timing window the original repro didn't reach. **Genuinely open, not
+  silently dropped** — needs either deeper diagnosis (e.g. live `pg_locks` inspection during a
+  captured failure) or an explicit decision to accept this as a rare, documented limitation.
 - [x] **Migration rollback + typed `Operation` variants** — **done (11.1, commit `c6e7e0e`).**
   Fixed the real, confirmed bug where `dj migrate` only ever checked a single hardcoded
   `'0001_initial'` flag and never read/applied any `migrations/NNNN_*.sql` file from disk (every
@@ -778,9 +789,16 @@ double-checked to exist and are *not* relisted here.
   every real invocation (fixed by making the function async instead). Wrote the required real
   end-to-end test myself: a genuine registered command in `examples/polls`, exercised via the
   actual `dj` binary as a subprocess, confirming an observable side effect.
-- [ ] **Contenttypes / `GenericForeignKey` framework** — no `ContentType` model or generic-relation
-  abstraction; `object_id`-shaped fields exist only as bespoke, non-reusable fields inside
-  `djangors-contrib-guardian` and `djangors-admin`.
+- [x] **Contenttypes / `GenericForeignKey` framework** — **done (11.9, commit `3338ed8`).** New
+  `djangors-contrib-contenttypes` crate: a real `ContentType` model, `sync_content_types()`
+  (mirroring `dj createpermissions`'s upsert-per-registered-model pattern, now wired into that
+  same command), and `generic_key_for`/`resolve_content_type` forward/reverse lookups. No attempt
+  at Rust-side dynamic type-erased fetching (no equivalent of Python's `ContentType.model_class()`)
+  — callers capture display info at creation time, the same precedent `djangors-admin`'s `LogEntry`
+  already sets. Deliberately does not migrate `djangors-contrib-guardian`/`djangors-admin`'s
+  existing bespoke `(app_label, model_name, object_id)` fields to the new abstraction — ships the
+  reusable primitive, adoption elsewhere is separate work. **This completes every Phase 11
+  Django-parity framework feature.**
 - [x] **`TestDatabase` per-test isolation + fixtures loader** — **done (11.4, commit `1d67a54`).**
   Rather than the invasive "wrap each test in one open transaction" rewrite (which would require
   threading a transaction handle through 60+ call sites across 17 crates, since every `QuerySet`
