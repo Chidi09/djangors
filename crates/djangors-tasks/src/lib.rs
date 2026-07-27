@@ -934,6 +934,9 @@ mod tests {
             .execute(db.pool())
             .await?;
         create_task_table(db).await?;
+        sqlx::query("DELETE FROM djangors_task_queue WHERE task_name = 'sample_task_fn_race_test'")
+            .execute(db.pool())
+            .await?;
 
         let name = "sample_task_fn_race_test";
         let recurring_id = register_recurring(
