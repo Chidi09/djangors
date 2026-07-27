@@ -1,0 +1,9 @@
+target
+fuzz/target
+fuzz/corpus
+fuzz/artifacts
+docs/book
+site/node_modules
+site/dist
+site/.vercel
+.git
