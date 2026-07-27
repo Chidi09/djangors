@@ -753,9 +753,17 @@ double-checked to exist and are *not* relisted here.
   `Storage` backend under a content-hash-based, collision-avoiding path. Wiring this into
   ModelForm/CBVs end-to-end is separate, future work — this ships the parsing + storage-writing
   primitives.
-- [ ] **Server-rendered generic CBVs** (`ListView`/`DetailView`/`CreateView`/`UpdateView`/
-  `DeleteView`) — only the JSON `ViewSet`/`ScopedViewSet` exist today; nothing renders HTML via
-  `djangors-template` the way Django's generic views do.
+- [x] **Server-rendered generic CBVs** — **done (11.7, commit `f348476`).** New `djangors-views`
+  crate: `ListView`/`DetailView`/`CreateView`/`UpdateView`/`DeleteView`, generic over `M: Model +
+  FromRow` (+ `ModelForm` for the write views), mirroring `djangors-rest`'s `ViewSet` method shape.
+  Required a prerequisite fix to already-shipped code: Phase 11 item 5's ModelForm methods were
+  inherent per-struct methods, not a trait, so generic code couldn't call them through a type
+  parameter — added a `ModelForm` trait (super-trait of `Model`) that `#[derive(Model)]` now also
+  implements by delegating to the existing inherent methods (purely additive, the 5 existing
+  ModelForm tests are untouched). Found and fixed 2 real bugs in the dispatch's own test suite: a
+  shared-table test race (same fixed-table-name pattern seen in `djangors-tasks`, fixed the same
+  way) and a minijinja template using `for k, v in errors` on a JSON object without the required
+  `.items()` call.
 - [ ] **Custom management commands plugin mechanism** — `dj`'s CLI is a fixed `clap` `enum
   Commands`; there's no registry letting a user's own app add `dj <mycommand>`.
 - [ ] **Contenttypes / `GenericForeignKey` framework** — no `ContentType` model or generic-relation
