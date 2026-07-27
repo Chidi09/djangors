@@ -156,7 +156,7 @@ pub async fn article_detail(req: Request, params: PathParams) -> Result<Response
 For the common list/detail/create/update/delete shape, `djangors-views` mirrors Django's
 `django.views.generic` — the hand-written `article_detail` above could instead be:
 
-```rust,ignore
+```rust,illustrative
 use djangors_views::{DetailView, ViewSetConfig};
 
 let config = ViewSetConfig { engine: &TEMPLATES, template_name: "articles/detail.html", success_url: "/articles/" };
