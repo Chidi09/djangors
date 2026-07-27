@@ -1765,3 +1765,161 @@ async fn test_model_lifecycle_signals() {
         .await
         .unwrap();
 }
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_modelform_model")]
+pub struct ModelFormTestModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    #[djangors(max_length = 10)]
+    pub name: String,
+    pub age: i64,
+    pub active: bool,
+    #[djangors(file_field)]
+    pub attachment: Option<String>,
+}
+
+#[test]
+fn test_modelform_valid_data_produces_correctly_typed_cleaned_values() {
+    let mut data = std::collections::HashMap::new();
+    data.insert("name".to_string(), "Alice".to_string());
+    data.insert("age".to_string(), "30".to_string());
+    data.insert("active".to_string(), "true".to_string());
+    // `attachment` (a FileField) and `id` (auto/primary-key) are deliberately omitted -
+    // they must not be required inputs on the generated form.
+
+    let cleaned =
+        ModelFormTestModel::validate_form(&data).expect("valid data must validate successfully");
+    assert_eq!(cleaned.name, "Alice");
+    assert_eq!(cleaned.age, Some(30));
+    assert!(cleaned.active);
+}
+
+#[test]
+fn test_modelform_missing_required_field_produces_a_named_error() {
+    let mut data = std::collections::HashMap::new();
+    data.insert("age".to_string(), "30".to_string());
+    data.insert("active".to_string(), "true".to_string());
+    // `name` is missing entirely.
+
+    let err = ModelFormTestModel::validate_form(&data)
+        .expect_err("missing required field must fail validation");
+    assert!(
+        err.fields.contains_key("name"),
+        "error map must name the missing field, got: {:?}",
+        err.fields
+    );
+}
+
+#[test]
+fn test_modelform_non_numeric_integer_produces_a_named_error() {
+    let mut data = std::collections::HashMap::new();
+    data.insert("name".to_string(), "Bob".to_string());
+    data.insert("age".to_string(), "not-a-number".to_string());
+    data.insert("active".to_string(), "true".to_string());
+
+    let err = ModelFormTestModel::validate_form(&data)
+        .expect_err("non-numeric integer must fail validation");
+    assert!(
+        err.fields.contains_key("age"),
+        "error map must name the invalid field, got: {:?}",
+        err.fields
+    );
+}
+
+#[test]
+fn test_modelform_over_max_length_string_produces_a_named_error() {
+    let mut data = std::collections::HashMap::new();
+    data.insert("name".to_string(), "way-too-long-a-name".to_string());
+    data.insert("age".to_string(), "30".to_string());
+    data.insert("active".to_string(), "true".to_string());
+
+    let err = ModelFormTestModel::validate_form(&data)
+        .expect_err("over-max_length string must fail validation");
+    assert!(
+        err.fields.contains_key("name"),
+        "error map must name the over-length field, got: {:?}",
+        err.fields
+    );
+}
+
+#[tokio::test]
+async fn test_modelform_saves_and_updates_a_real_row() {
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query("DROP TABLE IF EXISTS test_modelform_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE test_modelform_model (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            age BIGINT NOT NULL,
+            active BOOLEAN NOT NULL,
+            attachment TEXT
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // Create path: validate -> construct -> save -> read back.
+    let mut data = std::collections::HashMap::new();
+    data.insert("name".to_string(), "Carol".to_string());
+    data.insert("age".to_string(), "25".to_string());
+    data.insert("active".to_string(), "false".to_string());
+    let cleaned = ModelFormTestModel::validate_form(&data).unwrap();
+    let instance = ModelFormTestModel::from_cleaned_form(cleaned);
+    let saved = instance.save(&db).await.unwrap();
+    assert!(saved.id > 0);
+    assert_eq!(saved.name, "Carol");
+    assert_eq!(saved.age, 25);
+    assert!(!saved.active);
+
+    let reloaded = crate::queryset::QuerySet::<ModelFormTestModel>::new()
+        .filter(q!(id = saved.id))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(reloaded.name, "Carol");
+    assert_eq!(reloaded.age, 25);
+
+    // Update path: apply cleaned data onto the existing instance, leaving the pk intact.
+    let mut update_data = std::collections::HashMap::new();
+    update_data.insert("name".to_string(), "CarolUpdt2".to_string());
+    update_data.insert("age".to_string(), "26".to_string());
+    update_data.insert("active".to_string(), "true".to_string());
+    let update_cleaned = ModelFormTestModel::validate_form(&update_data).unwrap();
+
+    let mut to_update = saved.clone();
+    let original_id = to_update.id;
+    to_update.apply_cleaned_form(update_cleaned);
+    assert_eq!(
+        to_update.id, original_id,
+        "apply_cleaned_form must not touch the primary key"
+    );
+    to_update.update(&db).await.unwrap();
+
+    let reloaded_after_update = crate::queryset::QuerySet::<ModelFormTestModel>::new()
+        .filter(q!(id = original_id))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+    assert_eq!(reloaded_after_update.name, "CarolUpdt2");
+    assert_eq!(reloaded_after_update.age, 26);
+    assert!(reloaded_after_update.active);
+    assert_eq!(
+        reloaded_after_update.id, original_id,
+        "the real persisted row's primary key must be unchanged"
+    );
+
+    sqlx::query("DROP TABLE test_modelform_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}

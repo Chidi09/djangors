@@ -196,6 +196,11 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     let mut column_names = std::collections::HashMap::new();
     let mut from_row_assignments = Vec::new();
     let mut model_fields = Vec::new();
+    let mut form_names = Vec::new();
+    let mut form_types = Vec::new();
+    let mut form_validators = Vec::new();
+    let mut form_assignments = Vec::new();
+    let mut form_idents = Vec::new();
 
     for field in named_fields.named {
         let field_ident = field
@@ -337,6 +342,11 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 is_nullable: false,
                 null_bind_tok: quote! { i64 },
             });
+            form_names.push(field_name_str.clone());
+            form_idents.push(field_ident.clone());
+            form_types.push(quote! { Option<i64> });
+            form_validators.push(quote! { djangors_orm::djangors_forms::IntegerField { min: None, max: None, required: true } });
+            form_assignments.push(quote! { djangors_orm::ForeignKey::new(cleaned.unwrap()) });
         } else {
             // It is a regular field!
             let (inner_ty, nullable) = resolve_option_type(&field.ty);
@@ -486,10 +496,66 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 is_auto: auto,
                 is_primary_key: primary_key,
                 is_relation: false,
-                last_ident: last_ident_str,
+                last_ident: last_ident_str.clone(),
                 is_nullable: nullable,
                 null_bind_tok: quote! { #null_bind_ty },
             });
+            if !auto
+                && !primary_key
+                && !file_field
+                && matches!(
+                    last_ident_str.as_deref(),
+                    Some("String" | "i32" | "i64" | "bool")
+                )
+            {
+                let required = !nullable;
+                let form_field = match last_ident_str.as_deref() {
+                    Some("String") => {
+                        let max_len = match max_length {
+                            Some(v) => quote! { Some(#v as usize) },
+                            None => quote! { None },
+                        };
+                        quote! { djangors_orm::djangors_forms::CharField { max_length: #max_len, required: #required } }
+                    }
+                    Some("i32") | Some("i64") => quote! {
+                        djangors_orm::djangors_forms::IntegerField { min: None, max: None, required: #required }
+                    },
+                    Some("bool") => quote! {
+                        // A required BooleanField's `clean()` treats `false` as "missing"
+                        // (it mirrors Django's real ModelForm behavior: an HTML checkbox
+                        // that's unchecked submits no value at all, so `required` means
+                        // "must be checked/true", not "must be present"). A plain non-
+                        // nullable `bool` model column has no such "absent" state and can
+                        // legitimately be `false`, so the generated form field must always
+                        // accept both `true` and `false` here regardless of the model
+                        // field's own nullability.
+                        djangors_orm::djangors_forms::BooleanField { required: false }
+                    },
+                    _ => {
+                        quote! { djangors_orm::djangors_forms::CharField { max_length: None, required: #required } }
+                    }
+                };
+                let cleaned_ty = match last_ident_str.as_deref() {
+                    Some("i32") | Some("i64") => quote! { Option<i64> },
+                    Some("bool") => quote! { bool },
+                    _ => quote! { String },
+                };
+                let assignment = match (last_ident_str.as_deref(), nullable) {
+                    (Some("i32"), true) => quote! { cleaned.map(|v| v as i32) },
+                    (Some("i64"), true) => quote! { cleaned },
+                    (Some("i32"), false) => quote! { cleaned.unwrap() as i32 },
+                    (Some("i64"), false) => quote! { cleaned.unwrap() },
+                    (Some("bool"), true) => quote! { Some(cleaned) },
+                    (Some("bool"), false) => quote! { cleaned },
+                    (Some("String"), true) => quote! { Some(cleaned) },
+                    _ => quote! { cleaned },
+                };
+                form_names.push(field_name_str.clone());
+                form_idents.push(field_ident.clone());
+                form_types.push(cleaned_ty);
+                form_validators.push(form_field);
+                form_assignments.push(assignment);
+            }
         }
     }
 
@@ -617,9 +683,52 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
 
     let field_names_list: Vec<String> = model_fields.iter().map(|f| f.ident.to_string()).collect();
 
+    let form_cleaned_name = Ident::new(
+        &format!("{}FormCleaned", struct_name),
+        struct_name_ident.span(),
+    );
+    let form_val_idents: Vec<Ident> = form_idents
+        .iter()
+        .map(|i| Ident::new(&format!("{}_cleaned", i), i.span()))
+        .collect();
+    let form_apply = form_idents
+        .iter()
+        .zip(form_assignments.iter())
+        .map(|(id, assign)| quote! { self.#id = { let cleaned = cleaned.#id; #assign }; });
+    let form_construct = model_fields.iter().map(|f| {
+        if let Some(pos) = form_idents.iter().position(|id| id == &f.ident) {
+            let id = &f.ident;
+            let assign = &form_assignments[pos];
+            quote! { #id: { let cleaned = cleaned.#id; #assign } }
+        } else {
+            let id = &f.ident;
+            quote! { #id: Default::default() }
+        }
+    });
+
     Ok(quote! {
         #[allow(missing_docs)]
+        #[derive(Debug)]
+        pub struct #form_cleaned_name { #(pub #form_idents: #form_types),* }
+
+        #[allow(missing_docs)]
         impl #struct_name_ident {
+            pub fn validate_form(data: &std::collections::HashMap<String, String>) -> Result<#form_cleaned_name, djangors_orm::djangors_forms::FormErrors> {
+                use djangors_orm::djangors_forms::FormField;
+                let mut errors = djangors_orm::djangors_forms::FormErrors::new();
+                #(let #form_val_idents = match (#form_validators).clean(data.get(#form_names).map(String::as_str)) { Ok(v) => Some(v), Err(e) => { for m in e.0 { errors.add_field_error(#form_names, m); } None } };)*
+                if !errors.is_empty() { return Err(errors); }
+                Ok(#form_cleaned_name { #(#form_idents: #form_val_idents.unwrap()),* })
+            }
+
+            pub fn from_cleaned_form(cleaned: #form_cleaned_name) -> Self {
+                Self { #(#form_construct),* }
+            }
+
+            pub fn apply_cleaned_form(&mut self, cleaned: #form_cleaned_name) {
+                #(#form_apply)*
+            }
+
             pub fn meta() -> &'static djangors_orm::ModelMeta {
                 static META: std::sync::OnceLock<djangors_orm::ModelMeta> = std::sync::OnceLock::new();
                 META.get_or_init(|| djangors_orm::ModelMeta {

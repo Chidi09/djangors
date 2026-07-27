@@ -19,6 +19,7 @@ pub mod queryset;
 pub mod signals;
 
 pub use djangors_db;
+pub use djangors_forms;
 pub use inventory;
 pub use sqlx;
 

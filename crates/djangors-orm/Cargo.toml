@@ -8,6 +8,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+djangors-forms = { path = "../djangors-forms" }
 serde = { version = "1.0.228", features = ["derive"] }
 inventory = "0.3.24"
 thiserror = "2.0.18"
