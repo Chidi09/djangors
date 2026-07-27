@@ -717,6 +717,48 @@ double-checked to exist and are *not* relisted here.
   build) may expose a timing window the original repro didn't reach. **Genuinely open, not
   silently dropped** — needs either deeper diagnosis (e.g. live `pg_locks` inspection during a
   captured failure) or an explicit decision to accept this as a rare, documented limitation.
+  **Root-caused (2026-07-27, task #60): the `pg_advisory_xact_lock` fix is correct and complete —
+  `tick_recurring_tasks` itself is not the bug.** Directly re-verified with ~520 fresh repro
+  attempts across three independent methodologies: (1) 100 runs of the existing
+  `test_tick_recurring_tasks_dual_claim_race` under real 8-core CPU saturation via `tokio::spawn`
+  scheduling jitter, (2) a temporary 400-iteration `tokio::sync::Barrier`-synchronized loop forcing
+  the two concurrent calls to start at the same instant (removing scheduling luck as a variable
+  entirely) under the same CPU load, (3) 20 more runs of the original test while five other crates'
+  full DB-backed test suites (`djangors-orm`/`djangors-migrations`/`djangors-views`/
+  `djangors-admin`/`djangors-auth`) ran concurrently against the same `djangors_test` database to
+  reproduce genuine cross-binary connection contention. **Zero double-claims and zero lost updates
+  across all ~520 runs.** The real mechanism: during that cross-binary run, `djangors-admin`'s and
+  `djangors-auth`'s own test suites failed instead — `djangors-admin` hit
+  `relation "auth_user" already exists` (42P07) and `djangors-auth` hit `relation "auth_user" does
+  not exist` (42P01) plus a cascading `PoisonError` once one test panicked mid-suite. Both crates'
+  tests do their own `DROP TABLE IF EXISTS auth_user` / `CREATE TABLE auth_user` dance against the
+  *same shared* `djangors_test` Postgres database using the *same global table name*, each only
+  serialized by its own crate-local mutex (`djangors-admin`'s `DB_MUTEX`, confirmed present and
+  correctly held by every one of its 33 `auth_user`-touching test functions — not a bug there
+  either). Neither mutex has any effect across the process boundary between the two crates' separate
+  test binaries, which `cargo test --workspace` runs as concurrent OS processes. **Conclusion: the
+  previously observed "1/4 under `cargo test --workspace`" was very likely this cross-crate
+  shared-table DDL race being misattributed to `tick_recurring_tasks`, not a real fault in it** —
+  full-workspace runs surface *some* sporadic failure under load, and the tasks crate's own test
+  suite is where it happened to be first noticed and investigated. Closing this item as resolved;
+  the newly-confirmed cross-crate table-collision issue is tracked separately (see below) since it's
+  a distinct, real bug affecting any crate pair that shares a global table name against the same
+  test database, not something specific to background tasks.
+- [ ] **Cross-crate test DDL races on shared global table names (found via task #60 investigation,
+  2026-07-27)** — different crates' test binaries (e.g. `djangors-admin`, `djangors-auth`) each
+  `DROP TABLE IF EXISTS` / `CREATE TABLE` the same globally-named table (`auth_user`) against the
+  same shared `djangors_test` database, each serialized only by an in-process, crate-local mutex
+  that has no effect across the OS-process boundary `cargo test --workspace` runs crate binaries
+  across. Confirmed reproducible: running `djangors-admin` and `djangors-auth`'s test suites
+  concurrently reliably produced a `relation "auth_user" already exists` (42P07) failure in one and
+  a `relation "auth_user" does not exist` (42P01) + cascading `PoisonError` failure in the other.
+  Not limited to `auth_user` — any table name shared by two or more crates' test setup code is
+  exposed to the same class of race. **Fix direction**: adopt `djangors-test`'s existing
+  `TestDatabase::isolated()`/`isolated_url()` per-test-database feature (built in 11.4) more broadly
+  in place of the shared `TestDatabase::connect()` most crates currently use for these tests, or
+  serialize DB-touching crates' test binaries in CI (e.g. `cargo nextest` with limited
+  cross-binary parallelism). Not attempted here — real scope, deliberately left as its own item
+  rather than folded into the task #60 investigation that found it.
 - [x] **Migration rollback + typed `Operation` variants** — **done (11.1, commit `c6e7e0e`).**
   Fixed the real, confirmed bug where `dj migrate` only ever checked a single hardcoded
   `'0001_initial'` flag and never read/applied any `migrations/NNNN_*.sql` file from disk (every
