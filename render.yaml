@@ -28,6 +28,12 @@ services:
       # rejected on every request.
       - key: DJANGORS_ALLOWED_HOSTS
         value: "djangors-polls.onrender.com"
+      # HOST defaults to 127.0.0.1 for safe local dev (mirroring Django's own
+      # runserver default) - inside a container, Render's port scanner checks
+      # 0.0.0.0, so without this the deploy times out waiting for a port that's
+      # only listening on loopback.
+      - key: DJANGORS_HOST
+        value: "0.0.0.0"
 
   - type: web
     name: djangors-school
@@ -47,3 +53,5 @@ services:
         value: "false"
       - key: DJANGORS_ALLOWED_HOSTS
         value: "djangors-school.onrender.com"
+      - key: DJANGORS_HOST
+        value: "0.0.0.0"
