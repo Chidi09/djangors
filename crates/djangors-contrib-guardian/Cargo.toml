@@ -7,15 +7,15 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-auth = { path = "../djangors-auth" }
-djangors-db = { path = "../djangors-db" }
-djangors-macros = { path = "../djangors-macros" }
-djangors-orm = { path = "../djangors-orm" }
+djangors-auth = { path = "../djangors-auth", version = "0.1.0" }
+djangors-db = { path = "../djangors-db", version = "0.1.0" }
+djangors-macros = { path = "../djangors-macros", version = "0.1.0" }
+djangors-orm = { path = "../djangors-orm", version = "0.1.0" }
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]
-djangors-core = { path = "../djangors-core" }
-djangors-test = { path = "../djangors-test" }
+djangors-core = { path = "../djangors-core", version = "0.1.0" }
+djangors-test = { path = "../djangors-test", version = "0.1.0" }
 tokio = { version = "1.53.0", features = ["macros", "rt-multi-thread"] }
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }
 chrono = "0.4"
