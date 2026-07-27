@@ -6,6 +6,7 @@ pub fn urls() -> Router {
     djangors_admin::favicon_routes(
         Router::new()
             .get("/hello/", views::hello)
+            .get("/healthz", views::healthz)
             .get("/", views::index)
             .get("/{question_id:i64}/", views::detail)
             .get("/{question_id:i64}/results/", views::results)
