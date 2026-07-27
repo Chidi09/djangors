@@ -415,8 +415,23 @@ User directive: "let's do it all."
   end-to-end: generated a project, added a real model, ran real `makemigrations`/`migrate`, queried
   the resulting Postgres table directly. `makemigrations` v1 diffing covers new models + new
   fields; type changes/removals/renames/relation alterations remain deferred.
-- [ ] 2. A Rust-idiomatic "impossible to misuse" generic viewset pattern (trait with a required
-  method, not inheritance — no direct Rust analogue to Python's `get_queryset()` override).
+- [x] **2. Compile-time-enforced scoped viewset** — **done (10.3):** new `Scoped` trait
+  (`fn scope(req: &Request, qs: QuerySet<Self>) -> Result<QuerySet<Self>, DjangorsError>`, no
+  default impl) plus a purely-additive `ScopedViewSet<M: Scoped>` mirroring `ViewSet<M>`'s full
+  CRUD surface, but starting every read/write from `M::scope(...)` instead of a bare
+  `QuerySet::new()`; `scoped_viewset_routes::<M: Scoped>()` mounts it with `IsAuthenticated` by
+  default. `ViewSet<M>` itself is completely untouched (diff is 100% additive, zero deletions).
+  Design call: `scope` is also invoked on writes to validate request scope, but payload field
+  injection (e.g. auto-populating a tenant_id on create) is left to the application's own
+  deserializer rather than overloading one method for both read-filtering and write-injection.
+  Independently verified: a real, temporarily-uncommented compile attempt at using
+  `ScopedViewSet::<TestCategory>` (a model that does NOT implement `Scoped`) reproduces a genuine
+  `error[E0277]: the trait bound TestCategory: Scoped is not satisfied`; a real Postgres-backed
+  end-to-end test (`test_scoped_viewset_enforces_owner_isolation_end_to_end`) seeds two owners'
+  rows in one table and proves owner 1 only ever sees owner 1's rows (list + direct-by-pk
+  retrieve of another owner's real row correctly 404s), and a request with no scoping context at
+  all is rejected outright rather than silently falling back to an unscoped queryset. Full
+  `fmt`/`build`/`clippy -D warnings`/`test --workspace` clean.
 - [ ] 3. `prefetch_related`-equivalent batch eager-loading + N+1 regression-test tooling.
 - [ ] 4. A pluggable, project-customizable global error envelope (`DjangorsError` is currently a
   fixed core enum).
