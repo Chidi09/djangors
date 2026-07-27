@@ -17,6 +17,8 @@
 //! This version uses a double-submit cookie scheme. Django's BREACH-hardened masked-secret
 //! scheme is not yet implemented and is planned as future work.
 
+extern crate self as djangors_core;
+
 /// Application builder and launcher logic.
 pub mod app;
 /// Django-style HTML debug and error page rendering.

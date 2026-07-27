@@ -865,6 +865,63 @@ double-checked to exist and are *not* relisted here.
   real budget/vendor decision only the user can make; the internal review already done stands as
   real interim groundwork.
 
+### Phase 12 — Post-1.0 hardening (2026-07-27, ongoing)
+
+Compiled after the first real Render deployment surfaced several genuine bugs, and after
+comparing djangors directly against a real production Django SaaS backend
+(`school-management-saas-`) to find concrete, non-hypothetical gaps rather than guessing.
+Sequenced easiest → hardest; tracked as tasks #62–71.
+
+- [x] **Quote every SQL identifier in `QuerySet`** — **done.** The identifier-quoting bug fixed in
+  `derive(Model)`'s INSERT/UPDATE SQL (7.4) and flagged as a known, deliberately-deferred gap in
+  `queryset.rs`'s `field_to_col` was still open. Fixed every raw identifier interpolation (5
+  `field_to_col` closures, `order_by()`, and every `table_name`/`pk_column`/relation-column
+  reference in `insert_raw`/`bulk_create`/`delete_by_pk`/`prefetch_related`). Real regression test
+  (`test_filter_order_and_aggregate_on_reserved_keyword_field_names`) exercises `.filter()`/
+  `.order_by()`/`.count()` on a model with fields literally named `user`/`group`. Full
+  `djangors-orm`/`djangors-rest`/`djangors-admin`/`djangors-tasks`/`djangors-views` suites
+  re-verified clean.
+- [x] **`#[derive(Settings)]`** — **done.** The Djangors equivalent of `pydantic-settings`/
+  `django-environ`: a new proc-macro (`djangors-macros::settings`) generating a `load()` method
+  that reads each field from an environment variable (`{PREFIX}_{FIELD}`), coerces it into the
+  field's declared type via a new `djangors_core::settings::FromSettingsValue` trait (impl'd for
+  `String`, `bool`, every built-in int/float type, `Vec<String>` as comma-separated), supports
+  `#[djangors(default = <expr>)]` fallbacks and `Option<T>` fields (`None` if unset), and returns a
+  new `SettingsError` (`MissingRequired`/`InvalidValue`, distinguishable) on the first required-but-
+  unset or unparseable field. Unlike `DjangorsSettings` (the framework's own fixed settings
+  struct), this is for a *user's own app* config — replaces the ad-hoc `std::env::var()` +
+  `eprintln!`/`exit(1)` pattern `examples/polls/src/main.rs` used for `DATABASE_URL`. Required
+  adding `extern crate self as djangors_core;` (matching the established pattern in
+  `djangors-orm`/`djangors-tasks`) since the derive macro's generated code references
+  `djangors_core::settings::...` paths, which don't resolve from within `djangors-core`'s own test
+  suite without it. 4 real runtime tests (missing-required error, defaults applied, every
+  supported type parses from a real env var, invalid-value vs missing-required distinguished).
+- [ ] **CSP builder middleware** — `django-csp` equivalent; djangors-core has HSTS/
+  X-Content-Type-Options/Referrer-Policy but no dedicated Content-Security-Policy builder, despite
+  being a stated Phase 4 goal.
+- [ ] **Sentry/observability integration** — no error-tracking hook exists anywhere in the
+  framework; wire the official `sentry` crate into the existing `tracing`-based logging setup.
+- [ ] **django-axes-style persistent account lockout** — builds on the existing rate-limited login
+  with a DB-backed failure counter + lockout window + unlock mechanism.
+- [ ] **PDF generation helper** — `weasyprint` equivalent; needed for report cards/invoices/
+  receipts in any real SaaS app. No PDF generation exists in the framework today.
+- [ ] **Malware/AV scan hook for uploads** — `clamd` equivalent; an optional scan-on-upload hook
+  for the `Storage` trait or multipart extractor, off by default.
+- [ ] **Fix cross-crate test DDL races properly** (task #61) — adopt `djangors-test`'s existing
+  `TestDatabase::isolated()` (built in 11.4) broadly in place of the shared `connect()` most
+  crates' tests currently use.
+- [ ] **`dj deploy`** — multi-provider deployment (VPS/SSH, Render, Railway, GCP, AWS), porting the
+  `DeployProvider` trait architecture from a separate project's `crush-deploy` crate
+  (`provision`/`deploy`/`destroy`/`status`/`logs`), decoupled from that project's own container
+  runtime, plus a Render provider written from the real REST API knowledge gained deploying
+  `djangors-polls` this session.
+- [ ] **`djangors-contrib-payments`** — a `PaymentProvider` trait (Paystack first) with an
+  idempotency-key-first `Transaction` model and per-provider webhook signature verification.
+  Highest-care item on this list — real money correctness.
+- [ ] **Multi-tenancy support** — most architecturally invasive item, cuts across ORM query
+  scoping, auth, admin, and migrations. Needs its own design doc before implementation; deliberately
+  sequenced last.
+
 ---
 
 ## Part 6 — What "banking / schools / e-commerce grade" concretely requires

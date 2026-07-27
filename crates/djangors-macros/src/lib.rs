@@ -10,6 +10,7 @@ use syn::{parse_macro_input, DeriveInput};
 mod form;
 mod management_command;
 mod model;
+mod settings;
 mod task;
 
 /// Derive macro for `Model` structs in the Djangors ORM.
@@ -35,6 +36,40 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
 pub fn derive_form(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     form::expand_derive_form(input)
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
+/// Derive macro for typed, validated application settings structs.
+///
+/// The Djangors equivalent of `pydantic-settings`/`django-environ`: reads each
+/// field from an environment variable, coercing it into the field's declared
+/// type, with a compile-time-checked set of supported types (see
+/// [`djangors_core::settings::FromSettingsValue`]) rather than the runtime-only
+/// validation those Python tools provide.
+///
+/// ```ignore
+/// #[derive(Settings, Debug)]
+/// #[djangors(prefix = "MYAPP")]
+/// struct MySettings {
+///     api_key: String,                        // required - errors if MYAPP_API_KEY is unset
+///     #[djangors(default = "https://api.example.com".to_string())]
+///     base_url: String,                        // falls back to the default if unset
+///     #[djangors(default = 30)]
+///     timeout_secs: u64,
+///     feature_flag: Option<bool>,               // None if MYAPP_FEATURE_FLAG is unset
+/// }
+///
+/// let settings = MySettings::load()?;
+/// ```
+///
+/// Field types must implement [`djangors_core::settings::FromSettingsValue`]
+/// (implemented for `String`, `bool`, every built-in integer/float type, and
+/// `Vec<String>` as a comma-separated list) or be `Option<T>` where `T` does.
+#[proc_macro_derive(Settings, attributes(djangors))]
+pub fn derive_settings(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    settings::expand_derive_settings(input)
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }

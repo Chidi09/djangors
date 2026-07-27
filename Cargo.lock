@@ -1021,6 +1021,7 @@ dependencies = [
 name = "djangors-macros"
 version = "0.1.0"
 dependencies = [
+ "djangors-core",
  "djangors-forms",
  "djangors-orm",
  "proc-macro2",

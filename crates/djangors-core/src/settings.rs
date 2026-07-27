@@ -6,6 +6,93 @@ use crate::error::DjangorsError;
 use serde::Deserialize;
 use std::fmt;
 
+/// Error type produced by `#[derive(Settings)]`-generated `load()` methods.
+///
+/// Distinguishes a required field with no matching environment variable from a
+/// field whose environment variable was present but couldn't be parsed into the
+/// field's type, so callers (and error messages) can tell the two apart.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SettingsError {
+    /// A field had no `#[djangors(default = ...)]` and wasn't `Option<T>`, but its
+    /// environment variable was not set.
+    #[error("missing required setting: environment variable `{env_var}` is not set (field `{field}`)")]
+    MissingRequired {
+        /// The struct field name.
+        field: &'static str,
+        /// The environment variable name that was checked.
+        env_var: String,
+    },
+    /// A field's environment variable was set but could not be parsed into the
+    /// field's declared type.
+    #[error("invalid value for setting `{field}` (env var `{env_var}`): {message}")]
+    InvalidValue {
+        /// The struct field name.
+        field: &'static str,
+        /// The environment variable name that was checked.
+        env_var: String,
+        /// A human-readable description of why parsing failed.
+        message: String,
+    },
+}
+
+/// Implemented for every type a `#[derive(Settings)]` field can hold, so the derive
+/// macro can generate a single generic `std::env::var(...)` + parse call per field
+/// regardless of its concrete type.
+///
+/// Djangors implements this for `String`, `bool`, every built-in integer and float
+/// type, and `Vec<String>` (parsed as a comma-separated list, matching
+/// `DjangorsSettings`'s own `DJANGORS_ALLOWED_HOSTS` convention). `Option<T>` fields
+/// are handled directly by the derive macro (absent env var -> `None`) rather than
+/// through this trait.
+pub trait FromSettingsValue: Sized {
+    /// Parses a raw environment variable string into `Self`.
+    fn parse_settings_value(raw: &str) -> Result<Self, String>;
+}
+
+impl FromSettingsValue for String {
+    fn parse_settings_value(raw: &str) -> Result<Self, String> {
+        Ok(raw.to_string())
+    }
+}
+
+impl FromSettingsValue for bool {
+    fn parse_settings_value(raw: &str) -> Result<Self, String> {
+        match raw.to_lowercase().as_str() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            other => Err(format!(
+                "expected a boolean (`true`/`false`/`1`/`0`), got `{other}`"
+            )),
+        }
+    }
+}
+
+impl FromSettingsValue for Vec<String> {
+    fn parse_settings_value(raw: &str) -> Result<Self, String> {
+        Ok(raw
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect())
+    }
+}
+
+macro_rules! impl_from_settings_value_via_parse {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl FromSettingsValue for $ty {
+                fn parse_settings_value(raw: &str) -> Result<Self, String> {
+                    raw.parse::<$ty>().map_err(|e| e.to_string())
+                }
+            }
+        )+
+    };
+}
+
+impl_from_settings_value_via_parse!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64
+);
+
 /// Settings structure holding configuration parameters for the Djangors framework.
 /// Mirrors Django's `settings.py` structure.
 #[derive(Clone)]
@@ -298,6 +385,107 @@ mod tests {
         // Port 0 should fail validation
         settings.port = 0;
         assert!(settings.validate().is_err());
+    }
+
+    #[derive(djangors_macros::Settings, Debug, PartialEq)]
+    #[djangors(prefix = "TESTAPP")]
+    struct DeriveSettingsFixture {
+        api_key: String,
+        #[djangors(default = "https://api.example.com".to_string())]
+        base_url: String,
+        #[djangors(default = 30)]
+        timeout_secs: u64,
+        feature_flag: Option<bool>,
+        allowed_origins: Option<Vec<String>>,
+    }
+
+    #[test]
+    fn derive_settings_required_field_missing_errors() {
+        let _guard = EnvGuard::new(vec![
+            "TESTAPP_API_KEY",
+            "TESTAPP_BASE_URL",
+            "TESTAPP_TIMEOUT_SECS",
+            "TESTAPP_FEATURE_FLAG",
+            "TESTAPP_ALLOWED_ORIGINS",
+        ]);
+
+        let err = DeriveSettingsFixture::load().unwrap_err();
+        assert_eq!(
+            err,
+            SettingsError::MissingRequired {
+                field: "api_key",
+                env_var: "TESTAPP_API_KEY".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn derive_settings_applies_defaults_and_parses_option_fields() {
+        let _guard = EnvGuard::new(vec![
+            "TESTAPP_API_KEY",
+            "TESTAPP_BASE_URL",
+            "TESTAPP_TIMEOUT_SECS",
+            "TESTAPP_FEATURE_FLAG",
+            "TESTAPP_ALLOWED_ORIGINS",
+        ]);
+        std::env::set_var("TESTAPP_API_KEY", "sk_live_123");
+
+        let settings = DeriveSettingsFixture::load().unwrap();
+        assert_eq!(settings.api_key, "sk_live_123");
+        assert_eq!(settings.base_url, "https://api.example.com");
+        assert_eq!(settings.timeout_secs, 30);
+        assert_eq!(settings.feature_flag, None);
+        assert_eq!(settings.allowed_origins, None);
+    }
+
+    #[test]
+    fn derive_settings_env_vars_override_defaults_and_parse_every_type() {
+        let _guard = EnvGuard::new(vec![
+            "TESTAPP_API_KEY",
+            "TESTAPP_BASE_URL",
+            "TESTAPP_TIMEOUT_SECS",
+            "TESTAPP_FEATURE_FLAG",
+            "TESTAPP_ALLOWED_ORIGINS",
+        ]);
+        std::env::set_var("TESTAPP_API_KEY", "sk_live_456");
+        std::env::set_var("TESTAPP_BASE_URL", "https://staging.example.com");
+        std::env::set_var("TESTAPP_TIMEOUT_SECS", "90");
+        std::env::set_var("TESTAPP_FEATURE_FLAG", "true");
+        std::env::set_var("TESTAPP_ALLOWED_ORIGINS", "a.com, b.com,c.com");
+
+        let settings = DeriveSettingsFixture::load().unwrap();
+        assert_eq!(settings.api_key, "sk_live_456");
+        assert_eq!(settings.base_url, "https://staging.example.com");
+        assert_eq!(settings.timeout_secs, 90);
+        assert_eq!(settings.feature_flag, Some(true));
+        assert_eq!(
+            settings.allowed_origins,
+            Some(vec!["a.com".to_string(), "b.com".to_string(), "c.com".to_string()])
+        );
+    }
+
+    #[test]
+    fn derive_settings_invalid_value_is_a_distinct_error_from_missing() {
+        let _guard = EnvGuard::new(vec![
+            "TESTAPP_API_KEY",
+            "TESTAPP_BASE_URL",
+            "TESTAPP_TIMEOUT_SECS",
+            "TESTAPP_FEATURE_FLAG",
+            "TESTAPP_ALLOWED_ORIGINS",
+        ]);
+        std::env::set_var("TESTAPP_API_KEY", "sk_live_789");
+        std::env::set_var("TESTAPP_TIMEOUT_SECS", "not-a-number");
+
+        let err = DeriveSettingsFixture::load().unwrap_err();
+        match err {
+            SettingsError::InvalidValue {
+                field, env_var, ..
+            } => {
+                assert_eq!(field, "timeout_secs");
+                assert_eq!(env_var, "TESTAPP_TIMEOUT_SECS");
+            }
+            other => panic!("expected InvalidValue, got {other:?}"),
+        }
     }
 
     #[test]
