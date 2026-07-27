@@ -693,10 +693,20 @@ double-checked to exist and are *not* relisted here.
   across runs (recurring-task tests never cleared `djangors_recurring_task`). Fixed with a shared
   per-crate async mutex plus proper per-test cleanup; confirmed stable across repeated full-
   workspace runs that previously failed 3-4 different tests nondeterministically each time.
-- [ ] **Migration rollback + typed `Operation` variants.** `Operation` currently has only
-  `CreateTable`; `AddColumn` is generated via ad-hoc string formatting in `djangors-cli`'s
-  `makemigrations`, bypassing the typed model entirely, and there is no rollback/down-migration
-  capability and no column-drop/alter-type/rename support at all.
+- [x] **Migration rollback + typed `Operation` variants** — **done (11.1, commit `c6e7e0e`).**
+  Fixed the real, confirmed bug where `dj migrate` only ever checked a single hardcoded
+  `'0001_initial'` flag and never read/applied any `migrations/NNNN_*.sql` file from disk (every
+  `ALTER TABLE ADD COLUMN` migration `makemigrations` ever generated was dead code, never
+  executed). Added real per-file migration history tracking, new typed `Operation` variants
+  (`AddColumn`/`DropColumn`/`AlterColumnType`/`RenameColumn`/`DropTable`) with `reverse()`/
+  `to_down_sql()`, and `dj migrate --rollback [N]`. The codex dispatch's core engine was solid but
+  skipped all required tests and its "real Postgres tests passing" self-report didn't correspond
+  to any actual test code — wrote the 4 required DB-backed tests myself, which surfaced 2 more
+  real bugs: `dj migrate` called `introspect_models()` unconditionally even on the new file-based
+  path that doesn't need it, and `rollback_from_dir` queried "most recently applied" globally
+  across the whole shared tracking table instead of scoping to the target migrations directory
+  (caught via a real, reproducible test failure). Verified end-to-end via the real `dj` binary
+  against a scratch project, not just library tests.
 - [ ] **Model-level signals** (`post_save`/`pre_save`/`post_delete`/`pre_delete`) — no dispatch
   mechanism hookable from the model save/delete paths exists yet.
 - [ ] **`bulk_create`** — `bulk_update` exists; there is no bulk-insert path.
@@ -717,9 +727,13 @@ double-checked to exist and are *not* relisted here.
   `TestDatabase` explicitly does not roll back per test (its own doc comment says so: ORM
   querysets require `&Database` and execute directly through the pool) and there's no fixtures
   loader.
-- [ ] **`CHANGELOG.md`** — never existed; needs authoring from real git history.
-- [ ] **crates.io publish prep + actual publish** — workspace is still `0.0.1`, several crate
-  descriptions literally say `"(placeholder release)"`, no `publish` field set, no git tags.
+- [x] **`CHANGELOG.md`** — **done (commit `ea252fe`).** Written directly from real git history,
+  grouped by phase.
+- [ ] **crates.io publish prep + actual publish** — **prep done (commit `59b07ee`):** added the
+  real `LICENSE-MIT`/`LICENSE-APACHE` texts (the workspace claimed `MIT OR Apache-2.0` since day
+  one but neither license file ever existed), bumped `0.0.1` → `0.1.0` workspace-wide, stripped
+  the `"(placeholder release)"` suffix from 6 crate descriptions. **Actual `cargo publish` still
+  not run** — a real, live action against an external account, needs an explicit go-ahead first.
 - [ ] **Deploy three example apps live** (1.0 Definition of Done) — not yet true even with the new
   marketing site up; only the marketing site itself is live so far.
 - [ ] Third-party **security audit** — carried over from Phase 10, still genuinely blocked on a
