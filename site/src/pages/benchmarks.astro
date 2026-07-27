@@ -1,0 +1,6 @@
+---
+import { marked } from 'marked'; import Layout from '../layouts/Layout.astro'; import '../styles/global.css';
+import markdown from '../content/benchmarks.md?raw';
+const html = marked.parse(markdown);
+---
+<Layout title="Djangors Benchmarks"><article class="markdown"><button class="copy" data-markdown={markdown}>Copy as Markdown</button><Fragment set:html={html} /></article></Layout>

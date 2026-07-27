@@ -1,0 +1,24 @@
+<script>
+  const copy = async (button: HTMLElement) => {
+    await navigator.clipboard.writeText(button.dataset.markdown ?? '');
+    button.textContent = 'Copied';
+    setTimeout(() => (button.textContent = 'Copy as Markdown'), 1400);
+  };
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const button = target.closest<HTMLElement>('[data-markdown]');
+    if (button) copy(button);
+  });
+</script>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" /><meta name="viewport" content="width=device-width" />
+    <title>{Astro.props.title ?? 'Djangors — The Django of Rust'}</title>
+    <meta name="description" content="The Django of Rust." />
+    <link rel="icon" href="/favicon.ico" sizes="any" /><link rel="icon" href="/favicon-32x32.png" type="image/png" sizes="32x32" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+  </head>
+  <body><header><a href="/"><img src="/logo.svg" alt="Djangors" /></a><nav><a href="/compare">Compare</a><a href="/benchmarks">Benchmarks</a><a href="/docs/">Docs</a><a class="github" href="https://github.com/Chidi09/djangors">GitHub ↗</a></nav></header><main><slot /></main><footer>Djangors · The Django of Rust</footer></body>
+</html>

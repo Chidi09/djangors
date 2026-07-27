@@ -1,0 +1,14 @@
+---
+import { marked } from 'marked';
+import Layout from '../layouts/Layout.astro';
+import '../styles/global.css';
+import markdown from '../content/README.md?raw';
+// The README's own leading block (logo image, centered title, tagline, nav links, up to the
+// first `---`) duplicates what the hand-built hero above already shows, including an <img
+// src="assets/logo.svg"> that 404s once served from the site root. Render only what follows the
+// first horizontal rule on the page; the "Copy as Markdown"/.md endpoint still serve the full,
+// untrimmed README verbatim.
+const bodyMarkdown = markdown.split(/^---$/m).slice(1).join('\n---\n') || markdown;
+const html = marked.parse(bodyMarkdown);
+---
+<Layout><section class="hero"><img src="/logo.svg" alt="Djangors logo" /><h1>The Django of Rust.</h1><p class="lede">Everything that makes Django pleasant — the ORM, migrations, the admin, forms, auth, the batteries, the docs, the tutorial — with Rust's speed, safety, and single-binary deploys.</p><div class="actions"><a class="button" href="https://github.com/Chidi09/djangors">View on GitHub ↗</a><a class="outline" href="/docs/">Read the docs</a></div></section><article class="markdown"><button class="copy" data-markdown={markdown}>Copy as Markdown</button><Fragment set:html={html} /></article></Layout>
