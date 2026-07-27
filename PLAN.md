@@ -693,6 +693,19 @@ double-checked to exist and are *not* relisted here.
   across runs (recurring-task tests never cleared `djangors_recurring_task`). Fixed with a shared
   per-crate async mutex plus proper per-test cleanup; confirmed stable across repeated full-
   workspace runs that previously failed 3-4 different tests nondeterministically each time.
+- [x] **Fix a genuine `FOR UPDATE SKIP LOCKED` double-claim race in `tick_recurring_tasks`** —
+  **done (11.3, commit `f2941ee`).** Found while re-validating the new CircleCI pipeline: two
+  concurrent `tick_recurring_tasks()` calls could both claim and process the exact same due row
+  (reproduced 6/6 under real background CPU load, 0/8+ in isolation — a genuine, load-dependent
+  bug this project's own new CI would have hit intermittently). Root cause: the claim is a
+  sequence of statements (SELECT ... FOR UPDATE SKIP LOCKED, INSERT, UPDATE `next_run_at`), and
+  under READ COMMITTED, SKIP LOCKED only prevents two transactions from locking the *same instant*
+  — it doesn't serialize the whole multi-statement claim-and-advance sequence against a second
+  transaction racing the first. Fixed with a transaction-scoped Postgres advisory lock
+  (`pg_advisory_xact_lock`) around the whole sequence — trades per-row concurrent claiming for
+  full serialization of tick calls, an acceptable cost since this is a periodic scheduler
+  operation, not a high-concurrency hot path. Independently re-verified with 8/8 clean reruns
+  under the same load conditions that previously reproduced the bug.
 - [x] **Migration rollback + typed `Operation` variants** — **done (11.1, commit `c6e7e0e`).**
   Fixed the real, confirmed bug where `dj migrate` only ever checked a single hardcoded
   `'0001_initial'` flag and never read/applied any `migrations/NNNN_*.sql` file from disk (every
