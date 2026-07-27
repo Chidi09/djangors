@@ -707,8 +707,17 @@ double-checked to exist and are *not* relisted here.
   across the whole shared tracking table instead of scoping to the target migrations directory
   (caught via a real, reproducible test failure). Verified end-to-end via the real `dj` binary
   against a scratch project, not just library tests.
-- [ ] **Model-level signals** (`post_save`/`pre_save`/`post_delete`/`pre_delete`) — no dispatch
-  mechanism hookable from the model save/delete paths exists yet.
+- [x] **Model-level signals** (`post_save`/`pre_save`/`post_delete`/`pre_delete`) — **done (11.2,
+  commit `c94832e`).** New `ModelSignal<T>` in `djangors-orm` (a duplicate, not a re-export, of
+  `djangors-core`'s `Signal<T>` pattern - the dependency direction is `djangors-core → djangors-orm`,
+  so `djangors-orm` cannot import from `djangors-core`). Every `#[derive(Model)]` struct gets
+  `pre_save_signal()`/`post_save_signal()`/`pre_delete_signal()`/`post_delete_signal()`, wired into
+  the generated `save()`/`update()`/`delete()` methods. Took two dispatch attempts: the first
+  (codex) correctly refused to fabricate completion when the doc's original `Arc<Self>` payload
+  turned out to still require `Self: Clone` to construct; revised the payload to
+  `Vec<(&'static str, Value)>` built from the already-existing `Model::field_values()` instead,
+  adding zero new trait bounds to any model. Second attempt (opencode, deepseek-v4-flash-free)
+  implemented it correctly, including catching and fixing its own test bug along the way.
 - [x] **`bulk_create`** — **done (commit `23c4aa6`).** `QuerySet::bulk_create(db, items)` issues a
   single multi-row `INSERT ... VALUES (...), (...), ... RETURNING pk`, skipping auto fields the
   same way `insert_raw` already does. Written directly (small, mechanical).
