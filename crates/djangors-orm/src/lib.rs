@@ -15,6 +15,8 @@ pub mod expr;
 pub mod meta;
 /// Type-safe fluent QuerySet query builder.
 pub mod queryset;
+/// Model lifecycle signals.
+pub mod signals;
 
 pub use djangors_db;
 pub use inventory;

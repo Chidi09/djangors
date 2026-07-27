@@ -1515,3 +1515,253 @@ async fn test_file_field_saves_and_reloads_a_real_path_string() {
         .await
         .unwrap();
 }
+
+#[derive(Model, Debug)]
+#[djangors(app = "test_app", table_name = "test_signal_lifecycle")]
+#[allow(dead_code)]
+pub struct SignalLifecycleModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+}
+
+#[tokio::test]
+async fn test_model_lifecycle_signals() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query("DROP TABLE IF EXISTS test_signal_lifecycle")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE test_signal_lifecycle (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // 1. No receivers connected -> save/update/delete must work normally
+    let model = SignalLifecycleModel {
+        id: 0,
+        name: "no-receiver".to_string(),
+    };
+    let saved = model.save(&db).await.unwrap();
+    assert!(saved.id > 0);
+    let mut updated = saved;
+    updated.name = "still-no-receiver".to_string();
+    updated.update(&db).await.unwrap();
+    updated.delete(&db).await.unwrap();
+
+    // 2. pre_save fires before the row exists in the database
+    let pre_save_fired = Arc::new(AtomicBool::new(false));
+    let pre_save_row_count = Arc::new(Mutex::new(-1i64));
+    let cb_db = db.clone();
+    let fired = pre_save_fired.clone();
+    let count = pre_save_row_count.clone();
+    SignalLifecycleModel::pre_save_signal().connect(move |_payload| {
+        let fired = fired.clone();
+        let count = count.clone();
+        let db = cb_db.clone();
+        async move {
+            fired.store(true, Ordering::SeqCst);
+            let c: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_signal_lifecycle")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+            *count.lock().unwrap() = c;
+        }
+    });
+
+    let model2 = SignalLifecycleModel {
+        id: 0,
+        name: "pre-save-test".to_string(),
+    };
+    let _saved2 = model2.save(&db).await.unwrap();
+    assert!(
+        pre_save_fired.load(Ordering::SeqCst),
+        "pre_save signal must fire during save()"
+    );
+    assert_eq!(
+        *pre_save_row_count.lock().unwrap(),
+        0,
+        "row must NOT exist during pre_save callback"
+    );
+
+    // 3. post_save fires with real generated pk and row IS queryable
+    let post_save_fired = Arc::new(AtomicBool::new(false));
+    let post_save_row_count = Arc::new(Mutex::new(-1i64));
+    let cb_db2 = db.clone();
+    let fired2 = post_save_fired.clone();
+    let count2 = post_save_row_count.clone();
+    SignalLifecycleModel::post_save_signal().connect(move |_payload| {
+        let fired2 = fired2.clone();
+        let count2 = count2.clone();
+        let db = cb_db2.clone();
+        async move {
+            fired2.store(true, Ordering::SeqCst);
+            let c: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_signal_lifecycle")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+            *count2.lock().unwrap() = c;
+        }
+    });
+
+    let model3 = SignalLifecycleModel {
+        id: 0,
+        name: "post-save-test".to_string(),
+    };
+    let saved3 = model3.save(&db).await.unwrap();
+    assert!(
+        post_save_fired.load(Ordering::SeqCst),
+        "post_save signal must fire during save()"
+    );
+    assert!(
+        saved3.id > 0,
+        "saved instance must have a real generated pk"
+    );
+    assert!(
+        *post_save_row_count.lock().unwrap() > 0,
+        "row must exist and be queryable during post_save callback"
+    );
+
+    // 4. update() fires pre_save/post_save (not a separate signal pair)
+    let update_pre_fired = Arc::new(AtomicBool::new(false));
+    let update_post_fired = Arc::new(AtomicBool::new(false));
+    let u_pre = update_pre_fired.clone();
+    SignalLifecycleModel::pre_save_signal().connect(move |_payload| {
+        let u_pre = u_pre.clone();
+        async move {
+            u_pre.store(true, Ordering::SeqCst);
+        }
+    });
+    let u_post = update_post_fired.clone();
+    SignalLifecycleModel::post_save_signal().connect(move |_payload| {
+        let u_post = u_post.clone();
+        async move {
+            u_post.store(true, Ordering::SeqCst);
+        }
+    });
+
+    let mut to_update = saved3;
+    to_update.name = "updated".to_string();
+    to_update.update(&db).await.unwrap();
+    assert!(
+        update_pre_fired.load(Ordering::SeqCst),
+        "pre_save must fire during update()"
+    );
+    assert!(
+        update_post_fired.load(Ordering::SeqCst),
+        "post_save must fire during update()"
+    );
+
+    // 5. pre_delete/post_delete fire around delete() with correct row-existence timing
+    let pre_del_fired = Arc::new(AtomicBool::new(false));
+    let pre_del_row_count = Arc::new(Mutex::new(-1i64));
+    let cb_db3 = db.clone();
+    let pdf = pre_del_fired.clone();
+    let pdr = pre_del_row_count.clone();
+    SignalLifecycleModel::pre_delete_signal().connect(move |_payload| {
+        let pdf = pdf.clone();
+        let pdr = pdr.clone();
+        let db = cb_db3.clone();
+        async move {
+            pdf.store(true, Ordering::SeqCst);
+            let c: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_signal_lifecycle")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+            *pdr.lock().unwrap() = c;
+        }
+    });
+
+    let delete_target = SignalLifecycleModel {
+        id: 0,
+        name: "delete-me".to_string(),
+    }
+    .save(&db)
+    .await
+    .unwrap();
+    let delete_id = delete_target.id;
+
+    let post_del_fired = Arc::new(AtomicBool::new(false));
+    let post_del_row_gone = Arc::new(Mutex::new(false));
+    let post_del_fired_clone = post_del_fired.clone();
+    let post_del_row_gone_clone = post_del_row_gone.clone();
+    let cb_db4 = db.clone();
+    SignalLifecycleModel::post_delete_signal().connect(move |_payload| {
+        let pdf2 = post_del_fired_clone.clone();
+        let prg = post_del_row_gone_clone.clone();
+        let db = cb_db4.clone();
+        async move {
+            pdf2.store(true, Ordering::SeqCst);
+            let c: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM test_signal_lifecycle WHERE id = $1")
+                    .bind(delete_id)
+                    .fetch_one(db.pool())
+                    .await
+                    .unwrap();
+            *prg.lock().unwrap() = c == 0;
+        }
+    });
+
+    delete_target.delete(&db).await.unwrap();
+    assert!(pre_del_fired.load(Ordering::SeqCst), "pre_delete must fire");
+    assert!(
+        *pre_del_row_count.lock().unwrap() > 0,
+        "row must still exist during pre_delete"
+    );
+    assert!(
+        post_del_fired.load(Ordering::SeqCst),
+        "post_delete must fire"
+    );
+    assert!(
+        *post_del_row_gone.lock().unwrap(),
+        "specific row must be gone by the time post_delete fires"
+    );
+
+    // 6. A panicking receiver does not break save/update/delete
+    SignalLifecycleModel::pre_save_signal().connect(|_| async move {
+        panic!("intentional panic in pre_save receiver");
+    });
+    SignalLifecycleModel::post_save_signal().connect(|_| async move {
+        panic!("intentional panic in post_save receiver");
+    });
+    SignalLifecycleModel::pre_delete_signal().connect(|_| async move {
+        panic!("intentional panic in pre_delete receiver");
+    });
+    SignalLifecycleModel::post_delete_signal().connect(|_| async move {
+        panic!("intentional panic in post_delete receiver");
+    });
+
+    let panic_saved = SignalLifecycleModel {
+        id: 0,
+        name: "panic-test".to_string(),
+    }
+    .save(&db)
+    .await
+    .unwrap();
+    assert!(
+        panic_saved.id > 0,
+        "save must succeed despite panicking receivers"
+    );
+
+    let mut panic_updated = panic_saved;
+    panic_updated.name = "panic-updated".to_string();
+    panic_updated.update(&db).await.unwrap();
+
+    panic_updated.delete(&db).await.unwrap();
+
+    sqlx::query("DROP TABLE test_signal_lifecycle")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}

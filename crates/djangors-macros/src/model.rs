@@ -638,6 +638,23 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 })
             }
 
+            pub fn pre_save_signal() -> &'static djangors_orm::signals::ModelSignal<djangors_orm::signals::ModelSignalPayload> {
+                static SIGNAL: std::sync::OnceLock<djangors_orm::signals::ModelSignal<djangors_orm::signals::ModelSignalPayload>> = std::sync::OnceLock::new();
+                SIGNAL.get_or_init(djangors_orm::signals::ModelSignal::new)
+            }
+            pub fn post_save_signal() -> &'static djangors_orm::signals::ModelSignal<djangors_orm::signals::ModelSignalPayload> {
+                static SIGNAL: std::sync::OnceLock<djangors_orm::signals::ModelSignal<djangors_orm::signals::ModelSignalPayload>> = std::sync::OnceLock::new();
+                SIGNAL.get_or_init(djangors_orm::signals::ModelSignal::new)
+            }
+            pub fn pre_delete_signal() -> &'static djangors_orm::signals::ModelSignal<djangors_orm::signals::ModelSignalPayload> {
+                static SIGNAL: std::sync::OnceLock<djangors_orm::signals::ModelSignal<djangors_orm::signals::ModelSignalPayload>> = std::sync::OnceLock::new();
+                SIGNAL.get_or_init(djangors_orm::signals::ModelSignal::new)
+            }
+            pub fn post_delete_signal() -> &'static djangors_orm::signals::ModelSignal<djangors_orm::signals::ModelSignalPayload> {
+                static SIGNAL: std::sync::OnceLock<djangors_orm::signals::ModelSignal<djangors_orm::signals::ModelSignalPayload>> = std::sync::OnceLock::new();
+                SIGNAL.get_or_init(djangors_orm::signals::ModelSignal::new)
+            }
+
             /// Construct Self from a database row, reading each field by its column name.
             pub fn from_row(row: &djangors_orm::sqlx::postgres::PgRow) -> Result<Self, djangors_orm::OrmError> {
                 use djangors_orm::sqlx::Row;
@@ -652,11 +669,14 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             /// set to true are ignored during insertion and populated by the database.
             /// Returns a new instance populated from the inserted database row.
             pub async fn save(&self, db: &djangors_orm::djangors_db::Database) -> Result<Self, djangors_orm::OrmError> {
+                Self::pre_save_signal().send(djangors_orm::Model::field_values(self)).await;
                 let sql = #save_sql;
                 let mut query = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(sql));
                 #(#save_bind_stmts)*
                 let row = query.fetch_one(db.pool()).await?;
-                Self::from_row(&row)
+                let saved = Self::from_row(&row)?;
+                Self::post_save_signal().send(djangors_orm::Model::field_values(&saved)).await;
+                Ok(saved)
             }
 
             /// Update an existing row in the database.
@@ -664,6 +684,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             /// Every non-primary-key column is set to the instance's current field values,
             /// matching on the primary key. Returns `OrmError::NotFound` if no row was updated.
             pub async fn update(&self, db: &djangors_orm::djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
+                Self::pre_save_signal().send(djangors_orm::Model::field_values(self)).await;
                 let sql = #update_sql;
                 let mut query = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(sql));
                 #(#update_bind_stmts)*
@@ -673,6 +694,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                         model: Self::meta().struct_name,
                     })
                 } else {
+                    Self::post_save_signal().send(djangors_orm::Model::field_values(self)).await;
                     Ok(())
                 }
             }
@@ -681,6 +703,8 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             ///
             /// Deletes the row matching the primary key. Returns `OrmError::NotFound` if no row was deleted.
             pub async fn delete(&self, db: &djangors_orm::djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
+                let payload = djangors_orm::Model::field_values(self);
+                Self::pre_delete_signal().send(payload.clone()).await;
                 let sql = #delete_sql;
                 let val = #delete_bind;
                 let mut query = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(sql));
@@ -698,6 +722,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                         model: Self::meta().struct_name,
                     })
                 } else {
+                    Self::post_delete_signal().send(payload).await;
                     Ok(())
                 }
             }
