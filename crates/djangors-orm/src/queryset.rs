@@ -235,9 +235,9 @@ impl<T: Model + FromRow> QuerySet<T> {
         };
         let meta = T::meta();
         let col = if let Some(f) = meta.fields.iter().find(|f| f.name == clean_field) {
-            f.column_name.to_string()
+            format!("\"{}\"", f.column_name)
         } else if let Some(r) = meta.relations.iter().find(|r| r.field_name == clean_field) {
-            r.field_name.to_string()
+            format!("\"{}\"", r.field_name)
         } else {
             return Err(OrmError::FieldNotFound {
                 field: clean_field.to_string(),
@@ -281,15 +281,15 @@ impl<T: Model + FromRow> QuerySet<T> {
         include_order: bool,
     ) -> (String, Vec<Value>) {
         let meta = T::meta();
-        let mut sql = format!("SELECT {} FROM {}", select_list, meta.table_name);
+        let mut sql = format!("SELECT {} FROM \"{}\"", select_list, meta.table_name);
         let mut params = Vec::new();
         let mut param_idx = 1;
 
         let field_to_col = |field_name: &str| -> String {
             if let Some(f) = meta.fields.iter().find(|f| f.name == field_name) {
-                f.column_name.to_string()
+                format!("\"{}\"", f.column_name)
             } else if let Some(r) = meta.relations.iter().find(|r| r.field_name == field_name) {
-                r.field_name.to_string()
+                format!("\"{}\"", r.field_name)
             } else {
                 field_name.to_string()
             }
@@ -317,11 +317,11 @@ impl<T: Model + FromRow> QuerySet<T> {
                         (field, false)
                     };
                     let col = if let Some(f) = meta.fields.iter().find(|f| f.name == clean_field) {
-                        f.column_name.to_string()
+                        format!("\"{}\"", f.column_name)
                     } else if let Some(r) =
                         meta.relations.iter().find(|r| r.field_name == clean_field)
                     {
-                        r.field_name.to_string()
+                        format!("\"{}\"", r.field_name)
                     } else {
                         clean_field.to_string()
                     };
@@ -480,9 +480,9 @@ impl<T: Model + FromRow> QuerySet<T> {
         // 2. Build SELECT list and custom SQL.
         let field_to_col = |field_name: &str| -> String {
             if let Some(f) = meta.fields.iter().find(|f| f.name == field_name) {
-                f.column_name.to_string()
+                format!("\"{}\"", f.column_name)
             } else if let Some(r) = meta.relations.iter().find(|r| r.field_name == field_name) {
-                r.field_name.to_string()
+                format!("\"{}\"", r.field_name)
             } else {
                 field_name.to_string()
             }
@@ -612,9 +612,9 @@ impl<T: Model + FromRow> QuerySet<T> {
         // 2. Build the UPDATE SQL statement
         let field_to_col = |field_name: &str| -> String {
             if let Some(f) = meta.fields.iter().find(|f| f.name == field_name) {
-                f.column_name.to_string()
+                format!("\"{}\"", f.column_name)
             } else if let Some(r) = meta.relations.iter().find(|r| r.field_name == field_name) {
-                r.field_name.to_string()
+                format!("\"{}\"", r.field_name)
             } else {
                 field_name.to_string()
             }
@@ -658,7 +658,7 @@ impl<T: Model + FromRow> QuerySet<T> {
             }
         }
 
-        let mut sql = format!("UPDATE {} SET {}", meta.table_name, set_parts.join(", "));
+        let mut sql = format!("UPDATE \"{}\" SET {}", meta.table_name, set_parts.join(", "));
         if !self.filters.is_empty() {
             let combined = Expr::And(self.filters.clone());
             let where_clause =
@@ -734,12 +734,12 @@ impl<T: Model + FromRow> QuerySet<T> {
 
         let sql = if cols.is_empty() {
             format!(
-                "INSERT INTO {} DEFAULT VALUES RETURNING {}",
+                "INSERT INTO \"{}\" DEFAULT VALUES RETURNING \"{}\"",
                 meta.table_name, pk_column
             )
         } else {
             format!(
-                "INSERT INTO {} ({}) VALUES ({}) RETURNING {}",
+                "INSERT INTO \"{}\" ({}) VALUES ({}) RETURNING \"{}\"",
                 meta.table_name,
                 cols.join(", "),
                 placeholders.join(", "),
@@ -837,7 +837,7 @@ impl<T: Model + FromRow> QuerySet<T> {
         }
 
         let sql = format!(
-            "INSERT INTO {} ({}) VALUES {} RETURNING {}",
+            "INSERT INTO \"{}\" ({}) VALUES {} RETURNING \"{}\"",
             meta.table_name,
             cols.join(", "),
             placeholder_groups.join(", "),
@@ -878,7 +878,7 @@ impl<T: Model + FromRow> QuerySet<T> {
             .expect("Primary key field not found");
 
         let sql = format!(
-            "DELETE FROM {} WHERE {} = $1",
+            "DELETE FROM \"{}\" WHERE \"{}\" = $1",
             meta.table_name, pk_field.column_name
         );
         db.record_query();
@@ -971,7 +971,7 @@ impl<T: Model + FromRow> QuerySet<T> {
         let r_pk_col = r_pk_field.column_name;
 
         let r_sql = format!(
-            "SELECT * FROM {} WHERE {} = ANY($1)",
+            "SELECT * FROM \"{}\" WHERE \"{}\" = ANY($1)",
             r_meta.table_name, r_pk_col
         );
 
@@ -1051,7 +1051,7 @@ where
         .collect();
 
     let sql = format!(
-        "SELECT * FROM {} WHERE {} = ANY($1)",
+        "SELECT * FROM \"{}\" WHERE \"{}\" = ANY($1)",
         child_meta.table_name, relation.field_name
     );
     let query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(parent_ids);

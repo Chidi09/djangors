@@ -1923,3 +1923,82 @@ async fn test_modelform_saves_and_updates_a_real_row() {
         .await
         .unwrap();
 }
+
+#[derive(Model, Debug)]
+#[djangors(app = "test_app", table_name = "test_reserved_keyword_model")]
+#[allow(dead_code)]
+pub struct ReservedKeywordTestModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+
+    // `user` and `group` are reserved SQL keywords - filtering, ordering, and
+    // aggregating on a field with this name must not produce a syntax error.
+    // Same landmine class as the identifier-quoting bugs fixed in derive(Model)'s
+    // INSERT/UPDATE SQL and djangors-migrations' CREATE/ALTER TABLE generation.
+    pub user: String,
+
+    #[djangors(default = 0)]
+    pub group: i32,
+}
+
+#[tokio::test]
+async fn test_filter_order_and_aggregate_on_reserved_keyword_field_names() {
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query("DROP TABLE IF EXISTS test_reserved_keyword_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE TABLE test_reserved_keyword_model (
+            id BIGSERIAL PRIMARY KEY,
+            \"user\" TEXT NOT NULL,
+            \"group\" INTEGER NOT NULL
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    sqlx::query("INSERT INTO test_reserved_keyword_model (\"user\", \"group\") VALUES ('alice', 1), ('bob', 2), ('carol', 1)")
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    // filter() on a reserved-keyword field name
+    let filtered = crate::queryset::QuerySet::<ReservedKeywordTestModel>::new()
+        .filter(q!(group = 1))
+        .unwrap()
+        .all(&db)
+        .await
+        .unwrap();
+    assert_eq!(filtered.len(), 2);
+
+    // order_by() on a reserved-keyword field name
+    let ordered = crate::queryset::QuerySet::<ReservedKeywordTestModel>::new()
+        .order_by("user")
+        .unwrap()
+        .all(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        ordered.iter().map(|m| m.user.as_str()).collect::<Vec<_>>(),
+        vec!["alice", "bob", "carol"]
+    );
+
+    // count() with a WHERE clause on a reserved-keyword field
+    let count = crate::queryset::QuerySet::<ReservedKeywordTestModel>::new()
+        .filter(q!(group = 1))
+        .unwrap()
+        .count(&db)
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
+
+    sqlx::query("DROP TABLE test_reserved_keyword_model")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
