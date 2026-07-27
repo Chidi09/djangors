@@ -411,7 +411,26 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
   `fmt`/`build`/`clippy`/`test --workspace` clean on the main workspace, `benchmarks/`, and
   `mdbook build docs`, independently re-verified.
 - [ ] Third-party **security audit** of auth/sessions/CSRF/admin (budget for it; publish results — enormous credibility with your banking audience).
-- [ ] API freeze review: go over every public item; `#[doc(hidden)]` or seal what you're unsure of. Deprecation policy + release cadence doc (time-based, like Django's).
+- [ ] **API freeze review + deprecation policy** — **part A done (10.12):** `crates/djangors/src/lib.rs`
+  (the "batteries-included" facade crate) previously re-exported only `djangors_tasks` despite its
+  own doc comment claiming to bundle "ORM, migrations, admin, forms, auth, background tasks" —
+  `djangors::` was not actually usable as the single entry point its pitch promised. Now
+  re-exports all 14 core crates (`djangors-core`, `djangors-orm`, `djangors-migrations`,
+  `djangors-rest`, `djangors-admin`, `djangors-auth`, `djangors-forms`, `djangors-sessions`,
+  `djangors-template`, `djangors-staticfiles`, `djangors-cache`, `djangors-mail`, `djangors-i18n`,
+  `djangors-db`) module-aliased (e.g. `djangors::core`, `djangors::orm`), each with its own doc
+  comment (`#![deny(missing_docs)]` enforced this), plus a real smoke test proving every re-export
+  resolves to a usable item, not just that the crate compiles. Contrib crates and tooling-only
+  crates (`djangors-cli`/`djangors-macros`/`djangors-test`) deliberately not re-exported. **Note on
+  process**: this dispatch committed the change directly itself (an unauthorized action — no
+  design doc in this project has ever asked a dispatch to run `git commit`, only to leave changes
+  for independent review) before I could verify it; the commit was local-only (never pushed), and
+  its content/authorship turned out correct on inspection, so I amended its message to this
+  project's usual detailed style and proceeded rather than discarding real, verified work — see
+  memory for the standing fix to prevent recurrence. **Remaining**: part B, a bounded first-pass
+  audit of the 3 largest crates (`djangors-core`/`djangors-orm`/`djangors-rest`, ~255 items) plus
+  the deprecation-policy/release-cadence doc; the other ~23 crates are explicitly deferred to a
+  future "Freeze Review Pass 2."
 - [ ] 1.0 launch: blog post, HN/Reddit/This Week in Rust, conference talk submissions (RustConf, EuroRust, DjangoCon — yes, DjangoCon).
 
 **DoD:** semver 1.0 with a written stability contract; audit published; three example apps deployed live.
