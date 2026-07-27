@@ -675,6 +675,57 @@ commit).
   every subsequent page. All 4 new tests plus every pre-existing test pass; full
   `fmt`/`build`/`clippy -D warnings`/`test --workspace` clean.
 
+### Phase 11 — Django-parity gap closure + real 1.0 launch
+
+Triggered by an honest self-assessment against Django's actual feature set (not Loco/other Rust
+frameworks) — the user wants Djangors genuinely **user-ready at Django's level of completeness**,
+fully documented, and live. Verified against real current source before listing (an Explore-agent
+pass confirmed each of these is a real, current gap, not a stale assumption); already-shipped
+adjacent features (caching, templating, i18n, email, sitemaps/syndication, a TestClient) were
+double-checked to exist and are *not* relisted here.
+
+- [x] **CI/CD** — **done (11.0, commit `60c64b6`).** CircleCI (user's choice over GitHub Actions):
+  fmt/clippy/build/test/doc-build against a real Postgres service container, plus a separate
+  `cargo-audit` job with the 3 already-triaged advisories from the 2026-07-27 security review
+  explicitly `--ignore`d and documented inline. Validating it locally surfaced and fixed a real,
+  previously-unnoticed bug: 9 `djangors-tasks` tests shared one real database and fixed table names
+  with no per-test isolation, racing under `cargo test`'s default concurrency and leaking rows
+  across runs (recurring-task tests never cleared `djangors_recurring_task`). Fixed with a shared
+  per-crate async mutex plus proper per-test cleanup; confirmed stable across repeated full-
+  workspace runs that previously failed 3-4 different tests nondeterministically each time.
+- [ ] **Migration rollback + typed `Operation` variants.** `Operation` currently has only
+  `CreateTable`; `AddColumn` is generated via ad-hoc string formatting in `djangors-cli`'s
+  `makemigrations`, bypassing the typed model entirely, and there is no rollback/down-migration
+  capability and no column-drop/alter-type/rename support at all.
+- [ ] **Model-level signals** (`post_save`/`pre_save`/`post_delete`/`pre_delete`) — no dispatch
+  mechanism hookable from the model save/delete paths exists yet.
+- [ ] **`bulk_create`** — `bulk_update` exists; there is no bulk-insert path.
+- [ ] **ModelForm-equivalent.** `djangors-forms` already has `Form`/`#[derive(Form)]` with real
+  field types and validation (v1 scope doc explicitly deferred this) — the gap is specifically
+  auto-deriving a form from a `#[derive(Model)]` struct's own fields plus HTML widget rendering.
+- [ ] **Real multipart file upload parsing.** `FileField` currently only stores a path string; no
+  actual `multipart/form-data` streaming-to-storage-backend parsing is wired up.
+- [ ] **Server-rendered generic CBVs** (`ListView`/`DetailView`/`CreateView`/`UpdateView`/
+  `DeleteView`) — only the JSON `ViewSet`/`ScopedViewSet` exist today; nothing renders HTML via
+  `djangors-template` the way Django's generic views do.
+- [ ] **Custom management commands plugin mechanism** — `dj`'s CLI is a fixed `clap` `enum
+  Commands`; there's no registry letting a user's own app add `dj <mycommand>`.
+- [ ] **Contenttypes / `GenericForeignKey` framework** — no `ContentType` model or generic-relation
+  abstraction; `object_id`-shaped fields exist only as bespoke, non-reusable fields inside
+  `djangors-contrib-guardian` and `djangors-admin`.
+- [ ] **`TestDatabase` transactional rollback-per-test + fixtures loader** — `djangors-test`'s
+  `TestDatabase` explicitly does not roll back per test (its own doc comment says so: ORM
+  querysets require `&Database` and execute directly through the pool) and there's no fixtures
+  loader.
+- [ ] **`CHANGELOG.md`** — never existed; needs authoring from real git history.
+- [ ] **crates.io publish prep + actual publish** — workspace is still `0.0.1`, several crate
+  descriptions literally say `"(placeholder release)"`, no `publish` field set, no git tags.
+- [ ] **Deploy three example apps live** (1.0 Definition of Done) — not yet true even with the new
+  marketing site up; only the marketing site itself is live so far.
+- [ ] Third-party **security audit** — carried over from Phase 10, still genuinely blocked on a
+  real budget/vendor decision only the user can make; the internal review already done stands as
+  real interim groundwork.
+
 ---
 
 ## Part 6 — What "banking / schools / e-commerce grade" concretely requires
