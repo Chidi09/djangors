@@ -709,7 +709,9 @@ double-checked to exist and are *not* relisted here.
   against a scratch project, not just library tests.
 - [ ] **Model-level signals** (`post_save`/`pre_save`/`post_delete`/`pre_delete`) — no dispatch
   mechanism hookable from the model save/delete paths exists yet.
-- [ ] **`bulk_create`** — `bulk_update` exists; there is no bulk-insert path.
+- [x] **`bulk_create`** — **done (commit `23c4aa6`).** `QuerySet::bulk_create(db, items)` issues a
+  single multi-row `INSERT ... VALUES (...), (...), ... RETURNING pk`, skipping auto fields the
+  same way `insert_raw` already does. Written directly (small, mechanical).
 - [ ] **ModelForm-equivalent.** `djangors-forms` already has `Form`/`#[derive(Form)]` with real
   field types and validation (v1 scope doc explicitly deferred this) — the gap is specifically
   auto-deriving a form from a `#[derive(Model)]` struct's own fields plus HTML widget rendering.
