@@ -905,8 +905,20 @@ Sequenced easiest → hardest; tracked as tasks #62–71.
   `HstsLayer`'s deliberately minimal scope. 4 real tests (directive assembly order, the bare
   `upgrade-insecure-requests` flag, report-only header-name switching, and a real tower-service
   request round-trip asserting the actual response header).
-- [ ] **Sentry/observability integration** — no error-tracking hook exists anywhere in the
-  framework; wire the official `sentry` crate into the existing `tracing`-based logging setup.
+- [x] **Sentry/observability integration** — **done.** `sentry-sdk` equivalent: a new opt-in
+  `sentry` Cargo feature on `djangors-core` (`sentry`/`sentry-tracing` crates, matching the
+  existing `redis`-on-`djangors-cache` optional-feature convention — zero cost/deps for anyone who
+  doesn't enable it). `init_production_logging_with_sentry(dsn)` builds Sentry's client together
+  with a layered `tracing_subscriber` (JSON formatting + `sentry_tracing::layer()`) in one call,
+  since `tracing` only allows a single global subscriber — bolting Sentry onto an
+  already-initialized `init_production_logging()` subscriber isn't possible after the fact.
+  `ERROR`-level spans become Sentry events automatically; everything else becomes breadcrumbs.
+  Panics are captured via Sentry's built-in panic integration. An empty/invalid DSN produces a
+  disabled client (the SDK's own cross-language convention) rather than erroring, so it's always
+  safe to call unconditionally from a settings value that may be empty in development. Real test
+  confirms the empty-DSN case is genuinely disabled (`guard.is_enabled() == false`) without
+  reaching the network. Verified both with and without the feature flag; default (no-`sentry`)
+  build unaffected.
 - [ ] **django-axes-style persistent account lockout** — builds on the existing rate-limited login
   with a DB-backed failure counter + lockout window + unlock mechanism.
 - [ ] **PDF generation helper** — `weasyprint` equivalent; needed for report cards/invoices/
