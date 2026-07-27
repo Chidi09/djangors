@@ -85,6 +85,7 @@ mod views;
 #[tokio::main]
 async fn main() -> Result<(), DjangorsError> {
     djangors_core::introspect_models_if_requested();
+    djangors_core::run_management_command_if_requested().await;
     djangors_core::logging::init_dev_logging();
 
     let (settings, warnings) = DjangorsSettings::load()?;

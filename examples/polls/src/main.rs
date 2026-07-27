@@ -1,9 +1,22 @@
 use djangors_core::{Djangors, DjangorsError, DjangorsSettings, Router};
 use polls::urls;
 
+/// Test-only custom management command proving the `dj <name>` plugin mechanism works
+/// end-to-end (Phase 11, item 8) - writes a marker file to the path given as its first
+/// argument. Exercised by `crates/djangors-cli/tests/management_command_e2e.rs`, which
+/// runs the real `dj` binary as a subprocess against this project.
+#[djangors_macros::management_command(name = "e2e_test_marker")]
+async fn e2e_test_marker(args: Vec<String>) {
+    let path = args
+        .first()
+        .expect("e2e_test_marker requires a marker file path argument");
+    std::fs::write(path, "management command ran").expect("failed to write marker file");
+}
+
 #[tokio::main]
 async fn main() -> Result<(), DjangorsError> {
     djangors_core::introspect_models_if_requested();
+    djangors_core::run_management_command_if_requested().await;
     djangors_core::logging::init_dev_logging();
 
     let (settings, warnings) = DjangorsSettings::load()?;

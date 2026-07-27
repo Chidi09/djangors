@@ -953,6 +953,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "inventory",
  "multer",
  "percent-encoding",
  "rand 0.8.7",

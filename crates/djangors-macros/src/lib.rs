@@ -8,6 +8,7 @@ use proc_macro::TokenStream;
 use syn::{parse_macro_input, DeriveInput};
 
 mod form;
+mod management_command;
 mod model;
 mod task;
 
@@ -45,6 +46,30 @@ pub fn derive_form(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn task(attr: TokenStream, item: TokenStream) -> TokenStream {
     task::expand_task(attr.into(), item.into())
+        .unwrap_or_else(|err| err.to_compile_error())
+        .into()
+}
+
+/// Attribute macro for registering custom management commands.
+///
+/// Mirrors the `#[task]` macro structure: generates a wrapper function plus an
+/// `inventory::submit!` block referencing [`djangors_core::ManagementCommandRegistration`].
+///
+/// # Example
+/// ```ignore
+/// #[management_command]
+/// async fn seed_data(args: Vec<String>) {
+///     // custom logic here
+/// }
+///
+/// #[management_command(name = "load")]
+/// async fn load_fixtures(args: Vec<String>) {
+///     // custom logic here
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn management_command(attr: TokenStream, item: TokenStream) -> TokenStream {
+    management_command::expand_management_command(attr.into(), item.into())
         .unwrap_or_else(|err| err.to_compile_error())
         .into()
 }

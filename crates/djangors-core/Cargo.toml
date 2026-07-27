@@ -47,6 +47,7 @@ rand = "0.8.7"
 base64 = "0.22.1"
 djangors-orm = { path = "../djangors-orm", version = "0.1.0" }
 djangors-cache = { path = "../djangors-cache", version = "0.1.0" }
+inventory = "0.3.24"
 
 [dev-dependencies]
 djangors-db = { path = "../djangors-db", version = "0.1.0" }
