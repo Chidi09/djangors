@@ -462,7 +462,7 @@ pub fn check(deploy: bool) -> Result<Vec<String>, String> {
 /// variable (the standard sqlx/Rust ecosystem convention) and runs
 /// [`djangors_migrations::migrate`]. Currently a v1, CreateTable-only
 /// engine — see `docs/design/4.3-migrations.md` for scope.
-pub async fn migrate() {
+pub async fn migrate(rollback: Option<u32>) {
     let db_url = match std::env::var("DATABASE_URL") {
         Ok(url) => url,
         Err(_) => {
@@ -480,14 +480,31 @@ pub async fn migrate() {
         }
     };
 
-    let models = match introspect_models() {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("[dj migrate] introspection failed: {e}");
-            std::process::exit(1);
+    if let Some(count) = rollback {
+        match djangors_migrations::rollback_from_dir(&db, Path::new("migrations"), count).await {
+            Ok(()) => println!("[dj migrate] rollback completed"),
+            Err(e) => {
+                eprintln!("[dj migrate] rollback failed: {e}");
+                std::process::exit(1);
+            }
         }
+        return;
+    }
+    let result = if Path::new("migrations").is_dir() {
+        // The file-based path reads its own SQL straight off disk; it needs no live model
+        // introspection, so a broken/unrelated compile error elsewhere in the project must
+        // not block it.
+        djangors_migrations::migrate_from_dir(&db, Path::new("migrations")).await
+    } else {
+        let models = match introspect_models() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("[dj migrate] introspection failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        migrate_with_plan(&db, &models).await
     };
-    let result = migrate_with_plan(&db, &models).await;
     match result {
         Ok(()) => println!("[dj migrate] migrations applied successfully"),
         Err(e) => {
@@ -534,17 +551,19 @@ pub fn makemigrations(_check: bool) -> Result<(), String> {
         Vec::new()
     };
     let mut sql = Vec::new();
+    let mut down = Vec::new();
     for model in &current {
         let old = previous.iter().find(|m| m.table_name == model.table_name);
         if old.is_none() {
-            sql.push(format!(
-                "{};",
+            let op =
                 djangors_migrations::build_create_plan_from_snapshots(std::slice::from_ref(model))
                     .map_err(|e| e.to_string())?
-                    .first()
-                    .unwrap()
-                    .to_sql()
-            ));
+                    .remove(0);
+            sql.push(format!("{};", op.to_sql()));
+            down.push(
+                op.to_down_sql()
+                    .map_or_else(|| "".to_string(), |s| format!("{};", s)),
+            );
         } else if let Some(old) = old {
             for field in &model.fields {
                 if !old
@@ -559,10 +578,20 @@ pub fn makemigrations(_check: bool) -> Result<(), String> {
                         &field.name,
                     )
                     .map_err(|e| e.to_string())?;
-                    sql.push(format!(
-                        "ALTER TABLE {} ADD COLUMN {} {};",
-                        model.table_name, field.column_name, sql_type
-                    ));
+                    let op = djangors_migrations::Operation::AddColumn {
+                        table_name: model.table_name.clone(),
+                        column: djangors_migrations::ColumnDef {
+                            name: field.column_name.clone(),
+                            nullable: field.nullable,
+                            sql_type,
+                            primary_key: field.primary_key,
+                            unique: field.unique,
+                            default_sql: None,
+                            references: None,
+                        },
+                    };
+                    sql.push(op.to_sql());
+                    down.push(op.to_down_sql().unwrap());
                 }
             }
         }
@@ -590,8 +619,8 @@ pub fn makemigrations(_check: bool) -> Result<(), String> {
         .max()
         .unwrap_or(0)
         + 1;
-    std::fs::write(format!("migrations/{n:04}_auto.sql"), sql.join("\n"))
-        .map_err(|e| e.to_string())?;
+    let body = format!("-- up\n{}\n-- down\n{}", sql.join("\n"), down.join("\n"));
+    std::fs::write(format!("migrations/{n:04}_auto.sql"), body).map_err(|e| e.to_string())?;
     std::fs::write(path, serde_json::to_string_pretty(&current).unwrap())
         .map_err(|e| e.to_string())?;
     println!("[dj makemigrations] generated {n:04}_auto.sql");

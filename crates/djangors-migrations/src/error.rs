@@ -24,4 +24,15 @@ pub enum MigrationError {
     /// A raw SQL query execution error occurred.
     #[error("Query execution error: {0}")]
     Query(#[from] sqlx::Error),
+
+    /// A migration file could not be read.
+    #[error("migration file error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// A migration cannot be safely rolled back.
+    #[error("migration {name} has no down SQL and cannot be rolled back")]
+    NonInvertible {
+        /// Migration filename.
+        name: String,
+    },
 }

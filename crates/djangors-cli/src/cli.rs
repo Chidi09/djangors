@@ -56,7 +56,11 @@ pub enum Commands {
     },
     /// Apply database migrations.
     #[command(name = "migrate")]
-    Migrate,
+    Migrate {
+        /// Roll back the most recent migration, or the last N migrations.
+        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        rollback: Option<u32>,
+    },
     /// Generate new migrations.
     #[command(name = "makemigrations")]
     Makemigrations {

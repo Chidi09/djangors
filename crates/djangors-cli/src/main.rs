@@ -50,8 +50,8 @@ async fn main() {
         Commands::RunWorker { poll_interval_secs } => {
             commands::runworker(poll_interval_secs).await;
         }
-        Commands::Migrate => {
-            commands::migrate().await;
+        Commands::Migrate { rollback } => {
+            commands::migrate(rollback).await;
         }
         Commands::Makemigrations { check } => {
             if let Err(e) = commands::makemigrations(check) {
