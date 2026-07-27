@@ -12,5 +12,7 @@ pub mod database;
 pub mod error;
 
 pub use config::DatabaseConfig;
-pub use database::{isolation_level_sql, BoxFuture, Database, IsolationLevel};
+#[doc(hidden)]
+pub use database::{isolation_level_sql, BoxFuture};
+pub use database::{Database, IsolationLevel};
 pub use error::DbError;

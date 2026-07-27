@@ -459,7 +459,26 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
   by real consumers), and an honest statement that this is pass 1 of N, not a complete contract.
   Full `cargo doc --workspace --no-deps` (zero warnings, `#![deny(missing_docs)]` still enforced),
   `build`/`clippy -D warnings`/`test --workspace` clean, independently re-verified.
-- [ ] 1.0 launch: blog post, HN/Reddit/This Week in Rust, conference talk submissions (RustConf, EuroRust, DjangoCon — yes, DjangoCon).
+
+  Part C / Pass 2 (10.14): the remaining ~22 workspace crates (~272 items — `djangors-admin`,
+  `djangors-auth`, `djangors-cache`, `djangors-cli`, the 7 `djangors-contrib-*` crates,
+  `djangors-db`, `djangors-forms`, `djangors-i18n`, `djangors-macros`, `djangors-mail`,
+  `djangors-migrations`, `djangors-sessions`, `djangors-staticfiles`, `djangors-tasks`,
+  `djangors-template`, `djangors-test`). Real outcome: only `djangors-db` needed changes — 5
+  internal implementation items (`BoxFuture`, `isolation_level_sql`, and the test-observability
+  `record_query`/`query_count`/`reset_query_count` trio added for 10.4's N+1 regression tooling)
+  got `#[doc(hidden)]`; every other crate's public surface was already appropriately scoped, no
+  `pub(crate)` conversions or human-decision flags needed anywhere. **Every crate in the
+  workspace now has a real, deliberate per-item classification** — the API freeze review is
+  complete across all ~26 crates, ~527 items total audited between the two passes. Full
+  `cargo doc --workspace --no-deps` (zero warnings), `build`/`clippy -D warnings`/`test
+  --workspace` clean, independently re-verified; dispatch correctly did not commit/push (the
+  explicit instruction added after 10.12's incident continues to hold).
+- [ ] 1.0 launch: blog post, HN/Reddit/This Week in Rust, conference talk submissions (RustConf,
+  EuroRust, DjangoCon — yes, DjangoCon). **Still genuinely blocked on real human action**
+  (actual publishing, actual conference submissions) — but a real, honest draft announcement
+  exists at `docs/announcements/introducing-djangors.md`, written against the project's actual
+  pre-1.0 state, ready whenever the user decides to publish.
 
 **DoD:** semver 1.0 with a written stability contract; audit published; three example apps deployed live.
 

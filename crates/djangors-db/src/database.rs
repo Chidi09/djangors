@@ -11,6 +11,7 @@ use crate::error::DbError;
 
 /// A pinned, boxed future that sends across threads, used for async callbacks
 /// that borrow the database connection reference.
+#[doc(hidden)]
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// A wrapper around a SQLx PostgreSQL connection pool.
@@ -35,6 +36,7 @@ pub enum IsolationLevel {
 }
 
 /// Helper function to map [`IsolationLevel`] to the corresponding SQL command.
+#[doc(hidden)]
 pub fn isolation_level_sql(level: IsolationLevel) -> &'static str {
     match level {
         IsolationLevel::ReadCommitted => "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
@@ -78,16 +80,19 @@ impl Database {
     }
 
     /// Records one SQL query for test observability.
+    #[doc(hidden)]
     pub fn record_query(&self) {
         self.query_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Returns the number of SQL queries recorded by this database handle.
+    #[doc(hidden)]
     pub fn query_count(&self) -> usize {
         self.query_count.load(Ordering::Relaxed)
     }
 
     /// Resets the recorded SQL query count to zero.
+    #[doc(hidden)]
     pub fn reset_query_count(&self) {
         self.query_count.store(0, Ordering::Relaxed);
     }
