@@ -20,6 +20,7 @@ tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros"] }
 djangors-auth = { path = "../djangors-auth" }
 djangors-orm = { path = "../djangors-orm" }
 djangors-core = { path = "../djangors-core" }
+djangors-tasks = { path = "../djangors-tasks" }
 chrono = { version = "0.4.45", features = ["std", "serde"] }
 toml = "0.8.20"
 serde_json = "1.0.150"

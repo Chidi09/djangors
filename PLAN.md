@@ -475,7 +475,29 @@ User directive: "let's do it all."
   `JsonErrorRenderer` actually overrides `dispatch`/`dispatch_debug`/`dispatch_boxed` respectively
   (debug=true and debug=false both), all passing against real `Router` dispatch, not mocks.
 - [ ] 5. Named, scoped rate limiting per endpoint (only login has this today).
-- [ ] 6. Cron/scheduled background jobs (task queue exists, no scheduler).
+- [x] **6. Cron/scheduled background jobs** — **done (10.7):** new `RecurringTask` model (table
+  `djangors_recurring_task`), `register_recurring(db, task_name, payload, cron_expr)` (validates
+  the cron expression immediately, via the new `cron` crate — the only genuinely new external
+  dependency added this whole roadmap), and `tick_recurring_tasks(db)` using the exact same `FOR
+  UPDATE SKIP LOCKED` claim pattern as the pre-existing `claim_next_task`, enqueuing one
+  `QueuedTask` per due row through the existing `enqueue`/worker machinery (so recurring tasks get
+  identical retry/panic-isolation behavior to one-shot tasks, for free). `next_run_at` advances
+  from the row's own previously recorded value, not `now()`, so a worker that was down doesn't
+  silently skip missed occurrences. `Worker::with_recurring_tick_interval(Duration)` is purely
+  additive (existing `Worker::new`/`run` behavior unchanged for projects not using recurring
+  tasks); new `dj runworker` CLI command replaces the previous "embed `Worker::run()` in your own
+  `main()`" workaround. Full end-to-end composition verified: a recurring task actually executes
+  via the same `Worker`/`claim_next_task` path a one-shot task would. **Took two dispatch rounds**
+  (agy hit a genuine hard quota wall on the first attempt, confirmed via a 1-line log and clean
+  git status, redispatched via codex) **and the codex round again skipped every required test**
+  (the third time this session a dispatch has shipped correct, purely-additive production code but
+  left all required verification tests unwritten) — I wrote the 5 required tests myself directly:
+  a dual-claim concurrency race on `tick_recurring_tasks` (mirroring the project's own
+  pre-existing `test_concurrent_claim_skip_locked`), a deterministic
+  advance-from-previous-not-`now()` test, a disabled-task-never-enqueues test, an
+  invalid-cron-expression-rejected-at-registration test, and a full E2E test proving the recurring
+  and one-shot systems compose. All pass, plus all 7 pre-existing `djangors-tasks` tests
+  unaffected; full `fmt`/`build`/`clippy -D warnings`/`test --workspace` clean.
 - [ ] 7. Pluggable file storage / S3 backend (`djangors-staticfiles` is local-disk-only).
 - [x] **8. Cursor pagination** — **done (10.6/10.6b):** new `QuerySet::after(order_field,
   order_value, pk_field, cursor_pk, descending)` builds a real keyset predicate

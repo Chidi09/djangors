@@ -47,6 +47,13 @@ pub enum Commands {
     /// Open an interactive database shell using psql.
     #[command(name = "dbshell")]
     Dbshell,
+    /// Run the background task worker loop.
+    #[command(name = "runworker")]
+    RunWorker {
+        /// Polling interval in seconds for claiming due tasks.
+        #[arg(long, default_value_t = 1)]
+        poll_interval_secs: u64,
+    },
     /// Apply database migrations.
     #[command(name = "migrate")]
     Migrate,

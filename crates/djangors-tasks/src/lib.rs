@@ -6,6 +6,14 @@ extern crate self as djangors_tasks;
 use djangors_macros::Model;
 use std::future::Future;
 use std::pin::Pin;
+use std::str::FromStr;
+
+fn parse_schedule(expression: &str) -> Result<cron::Schedule, String> {
+    if expression.split_whitespace().count() != 5 {
+        return Err("cron expression must contain exactly five fields".into());
+    }
+    cron::Schedule::from_str(&format!("0 {expression}")).map_err(|e| e.to_string())
+}
 
 pub use djangors_macros::task;
 pub use inventory;
@@ -87,6 +95,27 @@ pub struct QueuedTask {
     pub error_message: Option<String>,
 }
 
+/// Database model representing a task scheduled on a recurring cron expression.
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "djangors_tasks", table_name = "djangors_recurring_task")]
+pub struct RecurringTask {
+    /// Primary key recurring task identifier.
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    /// Name of the registered task handler.
+    pub task_name: String,
+    /// JSON payload parameter string.
+    pub payload: String,
+    /// Standard five-field cron expression.
+    pub cron_expr: String,
+    /// Next scheduled execution timestamp.
+    pub next_run_at: chrono::DateTime<chrono::Utc>,
+    /// Previous scheduled execution timestamp.
+    pub last_run_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Whether this recurring task is active.
+    pub enabled: bool,
+}
+
 /// Creates the database table `djangors_task_queue` if it does not already exist.
 pub async fn create_task_table(db: &djangors_db::Database) -> Result<(), djangors_db::DbError> {
     let sql = r#"
@@ -107,6 +136,71 @@ pub async fn create_task_table(db: &djangors_db::Database) -> Result<(), djangor
         .await
         .map_err(djangors_db::DbError::QueryFailed)?;
     Ok(())
+}
+
+/// Creates the database table for recurring tasks if it does not already exist.
+pub async fn create_recurring_task_table(
+    db: &djangors_db::Database,
+) -> Result<(), djangors_db::DbError> {
+    let sql = r#"CREATE TABLE IF NOT EXISTS djangors_recurring_task (
+        id BIGSERIAL PRIMARY KEY,
+        task_name TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        cron_expr TEXT NOT NULL,
+        next_run_at TIMESTAMPTZ NOT NULL,
+        last_run_at TIMESTAMPTZ,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE
+    );"#;
+    sqlx::query(sql)
+        .execute(db.pool())
+        .await
+        .map_err(djangors_db::DbError::QueryFailed)?;
+    Ok(())
+}
+
+/// Registers a recurring task after immediately validating its standard cron expression.
+pub async fn register_recurring(
+    db: &djangors_db::Database,
+    task_name: &str,
+    payload: &impl serde::Serialize,
+    cron_expr: &str,
+) -> Result<i64, TaskError> {
+    let schedule = parse_schedule(cron_expr)
+        .map_err(|e| TaskError::Serialization(format!("invalid cron expression: {e}")))?;
+    let next_run_at = schedule.upcoming(chrono::Utc).next().ok_or_else(|| {
+        TaskError::Serialization("cron expression has no future occurrence".into())
+    })?;
+    let payload =
+        serde_json::to_string(payload).map_err(|e| TaskError::Serialization(e.to_string()))?;
+    let row = sqlx::query("INSERT INTO djangors_recurring_task (task_name, payload, cron_expr, next_run_at, last_run_at, enabled) VALUES ($1, $2, $3, $4, NULL, TRUE) RETURNING id")
+        .bind(task_name).bind(payload).bind(cron_expr).bind(next_run_at)
+        .fetch_one(db.pool()).await.map_err(djangors_db::DbError::QueryFailed)?;
+    Ok(sqlx::Row::get(&row, "id"))
+}
+
+/// Enqueues due recurring tasks atomically while holding row locks, returning the enqueue count.
+pub async fn tick_recurring_tasks(db: &djangors_db::Database) -> Result<usize, TaskError> {
+    db.transaction(|tx| Box::pin(async move {
+        let now = chrono::Utc::now();
+        let rows = sqlx::query("SELECT id, task_name, payload, cron_expr, next_run_at FROM djangors_recurring_task WHERE enabled = true AND next_run_at <= $1 ORDER BY next_run_at, id FOR UPDATE SKIP LOCKED")
+            .bind(now).fetch_all(&mut *tx).await.map_err(djangors_db::DbError::QueryFailed)?;
+        let mut count = 0;
+        for row in rows {
+            let id: i64 = sqlx::Row::get(&row, "id");
+            let task_name: String = sqlx::Row::get(&row, "task_name");
+            let payload: String = sqlx::Row::get(&row, "payload");
+            let expr: String = sqlx::Row::get(&row, "cron_expr");
+            let previous: chrono::DateTime<chrono::Utc> = sqlx::Row::get(&row, "next_run_at");
+            let schedule = parse_schedule(&expr).map_err(|e| djangors_db::DbError::QueryFailed(sqlx::Error::Protocol(e)))?;
+            let next = schedule.after(&previous).next().ok_or_else(|| djangors_db::DbError::QueryFailed(sqlx::Error::Protocol("cron has no next occurrence".into())))?;
+            sqlx::query("INSERT INTO djangors_task_queue (task_name, payload, status, attempts, max_attempts, created_at, scheduled_at, error_message) VALUES ($1, $2, 'pending', 0, 3, $3, $3, NULL)")
+                .bind(task_name).bind(payload).bind(previous).execute(&mut *tx).await.map_err(djangors_db::DbError::QueryFailed)?;
+            sqlx::query("UPDATE djangors_recurring_task SET last_run_at = $1, next_run_at = $2 WHERE id = $3")
+                .bind(previous).bind(next).bind(id).execute(&mut *tx).await.map_err(djangors_db::DbError::QueryFailed)?;
+            count += 1;
+        }
+        Ok::<usize, djangors_db::DbError>(count)
+    })).await.map_err(TaskError::Db)
 }
 
 /// Enqueues a task for immediate execution.
@@ -227,6 +321,7 @@ async fn mark_task_failed(
 pub struct Worker {
     db: djangors_db::Database,
     poll_interval: std::time::Duration,
+    recurring_tick_interval: Option<std::time::Duration>,
 }
 
 impl Worker {
@@ -235,7 +330,14 @@ impl Worker {
         Self {
             db,
             poll_interval: std::time::Duration::from_secs(1),
+            recurring_tick_interval: None,
         }
+    }
+
+    /// Configures how often due recurring tasks are enqueued.
+    pub fn with_recurring_tick_interval(mut self, interval: std::time::Duration) -> Self {
+        self.recurring_tick_interval = Some(interval);
+        self
     }
 
     /// Configures the polling interval for checking due tasks when idle.
@@ -246,7 +348,14 @@ impl Worker {
 
     /// Runs the worker loop indefinitely, processing tasks as they become due.
     pub async fn run(&self) -> ! {
+        let mut last_recurring_tick = tokio::time::Instant::now();
         loop {
+            if let Some(interval) = self.recurring_tick_interval {
+                if last_recurring_tick.elapsed() >= interval {
+                    let _ = tick_recurring_tasks(&self.db).await;
+                    last_recurring_tick = tokio::time::Instant::now();
+                }
+            }
             match self.run_once().await {
                 Ok(true) => {}
                 Ok(false) => {
@@ -647,6 +756,247 @@ mod tests {
         assert!(err_msg
             .unwrap()
             .contains("Task panicked: simulated task panic!"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_register_recurring_rejects_invalid_cron_expression(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let test_db = match djangors_test::TestDatabase::connect().await {
+            Ok(db) => db,
+            Err(_) => return Ok(()),
+        };
+        let db = test_db.database();
+        create_recurring_task_table(db).await?;
+
+        let bad_syntax = register_recurring(
+            db,
+            "sample_task_fn",
+            &SamplePayload {
+                message: "x".into(),
+            },
+            "not a cron expression",
+        )
+        .await;
+        assert!(matches!(bad_syntax, Err(TaskError::Serialization(_))));
+
+        // Wrong field count (4 instead of the required standard 5).
+        let wrong_fields = register_recurring(
+            db,
+            "sample_task_fn",
+            &SamplePayload {
+                message: "x".into(),
+            },
+            "* * * *",
+        )
+        .await;
+        assert!(matches!(wrong_fields, Err(TaskError::Serialization(_))));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_disabled_recurring_task_never_enqueues() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let test_db = match djangors_test::TestDatabase::connect().await {
+            Ok(db) => db,
+            Err(_) => return Ok(()),
+        };
+        let db = test_db.database();
+        create_recurring_task_table(db).await?;
+        create_task_table(db).await?;
+
+        let name = "sample_task_fn_disabled_test";
+        let recurring_id = register_recurring(
+            db,
+            name,
+            &SamplePayload {
+                message: "disabled".into(),
+            },
+            "*/5 * * * *",
+        )
+        .await?;
+
+        // Mark it disabled and force it overdue.
+        sqlx::query(
+            "UPDATE djangors_recurring_task SET enabled = false, next_run_at = $1 WHERE id = $2",
+        )
+        .bind(chrono::Utc::now() - chrono::Duration::minutes(20))
+        .bind(recurring_id)
+        .execute(db.pool())
+        .await?;
+
+        let enqueued = tick_recurring_tasks(db).await?;
+        assert_eq!(
+            enqueued, 0,
+            "a disabled recurring task must never enqueue, even overdue"
+        );
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM djangors_task_queue WHERE task_name = $1")
+                .bind(name)
+                .fetch_one(db.pool())
+                .await?;
+        assert_eq!(count, 0);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_recurring_task_advances_from_previous_scheduled_time_not_now(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let test_db = match djangors_test::TestDatabase::connect().await {
+            Ok(db) => db,
+            Err(_) => return Ok(()),
+        };
+        let db = test_db.database();
+        create_recurring_task_table(db).await?;
+        create_task_table(db).await?;
+
+        let name = "sample_task_fn_advance_test";
+        let recurring_id = register_recurring(
+            db,
+            name,
+            &SamplePayload {
+                message: "advance".into(),
+            },
+            "*/5 * * * *",
+        )
+        .await?;
+
+        // Force it 20 minutes overdue (well past several missed 5-minute occurrences).
+        let overdue_since = chrono::Utc::now() - chrono::Duration::minutes(20);
+        sqlx::query("UPDATE djangors_recurring_task SET next_run_at = $1 WHERE id = $2")
+            .bind(overdue_since)
+            .bind(recurring_id)
+            .execute(db.pool())
+            .await?;
+
+        let enqueued = tick_recurring_tasks(db).await?;
+        assert_eq!(enqueued, 1);
+
+        let new_next_run_at: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT next_run_at FROM djangors_recurring_task WHERE id = $1")
+                .bind(recurring_id)
+                .fetch_one(db.pool())
+                .await?;
+
+        // If next_run_at had incorrectly been advanced from `now()` instead of the recorded
+        // (overdue) `next_run_at`, the new value would land in the future, close to now() + up
+        // to 5 minutes. Advancing correctly from the overdue timestamp instead catches up from
+        // where it left off, landing well in the past relative to now.
+        assert!(
+            new_next_run_at < chrono::Utc::now(),
+            "next_run_at must advance from the previous overdue schedule, not from now() \
+             (got {new_next_run_at}, which is not in the past as expected)"
+        );
+        assert!(new_next_run_at > overdue_since);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn test_tick_recurring_tasks_dual_claim_race() -> Result<(), Box<dyn std::error::Error>> {
+        let test_db = match djangors_test::TestDatabase::connect().await {
+            Ok(db) => db,
+            Err(_) => return Ok(()),
+        };
+        let db = test_db.database();
+        create_recurring_task_table(db).await?;
+        create_task_table(db).await?;
+
+        let name = "sample_task_fn_race_test";
+        let recurring_id = register_recurring(
+            db,
+            name,
+            &SamplePayload {
+                message: "race".into(),
+            },
+            "*/5 * * * *",
+        )
+        .await?;
+        sqlx::query("UPDATE djangors_recurring_task SET next_run_at = $1 WHERE id = $2")
+            .bind(chrono::Utc::now() - chrono::Duration::minutes(1))
+            .bind(recurring_id)
+            .execute(db.pool())
+            .await?;
+
+        let db1 = db.clone();
+        let db2 = db.clone();
+        let handle1 = tokio::spawn(async move { tick_recurring_tasks(&db1).await });
+        let handle2 = tokio::spawn(async move { tick_recurring_tasks(&db2).await });
+        let (res1, res2) = tokio::join!(handle1, handle2);
+        let enqueued1 = res1??;
+        let enqueued2 = res2??;
+
+        assert_eq!(
+            enqueued1 + enqueued2,
+            1,
+            "exactly one of the two concurrent ticks must enqueue the single due row, never zero or two"
+        );
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM djangors_task_queue WHERE task_name = $1")
+                .bind(name)
+                .fetch_one(db.pool())
+                .await?;
+        assert_eq!(count, 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_recurring_task_end_to_end_enqueue_and_execute(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let test_db = match djangors_test::TestDatabase::connect().await {
+            Ok(db) => db,
+            Err(_) => return Ok(()),
+        };
+        let db = test_db.database();
+        create_recurring_task_table(db).await?;
+        create_task_table(db).await?;
+        sqlx::query("DELETE FROM djangors_task_queue")
+            .execute(db.pool())
+            .await?;
+
+        TEST_TASK_EXECUTED.store(false, Ordering::SeqCst);
+
+        let recurring_id = register_recurring(
+            db,
+            "sample_task_fn",
+            &SamplePayload {
+                message: "hello_tasks".into(),
+            },
+            "*/5 * * * *",
+        )
+        .await?;
+        sqlx::query("UPDATE djangors_recurring_task SET next_run_at = $1 WHERE id = $2")
+            .bind(chrono::Utc::now() - chrono::Duration::minutes(1))
+            .bind(recurring_id)
+            .execute(db.pool())
+            .await?;
+
+        let enqueued = tick_recurring_tasks(db).await?;
+        assert_eq!(enqueued, 1);
+
+        let queued_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM djangors_task_queue WHERE task_name = 'sample_task_fn'",
+        )
+        .fetch_one(db.pool())
+        .await?;
+        assert_eq!(queued_count, 1);
+
+        // Now prove the two systems compose: the existing Worker/claim_next_task machinery
+        // actually picks up and executes the task the recurring tick enqueued.
+        let worker = Worker::new(db.clone());
+        let claimed = worker.run_once().await?;
+        assert!(claimed);
+        assert!(
+            TEST_TASK_EXECUTED.load(Ordering::SeqCst),
+            "the task enqueued by tick_recurring_tasks must actually execute via the normal worker"
+        );
 
         Ok(())
     }

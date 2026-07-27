@@ -497,6 +497,30 @@ pub async fn migrate() {
     }
 }
 
+/// Connects to DATABASE_URL and runs the background task worker.
+pub async fn runworker(poll_interval_secs: u64) {
+    let db_url = match std::env::var("DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            eprintln!("[dj runworker] DATABASE_URL environment variable is not set");
+            std::process::exit(1);
+        }
+    };
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = match djangors_db::Database::connect(&config).await {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("[dj runworker] failed to connect to database: {e}");
+            std::process::exit(1);
+        }
+    };
+    djangors_tasks::Worker::new(db)
+        .with_poll_interval(Duration::from_secs(poll_interval_secs))
+        .with_recurring_tick_interval(Duration::from_secs(poll_interval_secs))
+        .run()
+        .await;
+}
+
 /// Generate new migrations.
 pub fn makemigrations(_check: bool) -> Result<(), String> {
     require_project_root()?;

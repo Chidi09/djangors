@@ -47,6 +47,9 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::RunWorker { poll_interval_secs } => {
+            commands::runworker(poll_interval_secs).await;
+        }
         Commands::Migrate => {
             commands::migrate().await;
         }
