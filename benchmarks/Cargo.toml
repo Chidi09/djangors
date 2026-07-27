@@ -1,0 +1,10 @@
+[package]
+name = "djangors-benchmark-axum"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+axum = "0.8.9"
+tokio = { version = "1.53.0", features = ["macros", "rt-multi-thread"] }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }

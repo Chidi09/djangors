@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/*", "examples/polls", "examples/school", "tools/doc-code-check"]
+exclude = ["benchmarks"]
 
 [workspace.package]
 version = "0.0.1"

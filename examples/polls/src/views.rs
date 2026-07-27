@@ -5,6 +5,10 @@ use djangors_orm::{q, Model};
 
 use crate::models::{Choice, Question};
 
+pub async fn hello(_req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
+    Ok(Response::text(StatusCode::OK, "Hello, world!"))
+}
+
 pub async fn index(req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
     let db = req
         .state::<djangors_db::Database>()

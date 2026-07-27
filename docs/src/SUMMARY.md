@@ -14,6 +14,7 @@
 # Djangors for Django Developers
 
 - [Django Developer Comparison Guide](django-comparison.md)
+- [Honest HTTP Benchmarks](benchmarks.md)
 
 # Topic Guides
 
