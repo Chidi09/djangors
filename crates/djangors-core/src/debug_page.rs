@@ -12,6 +12,7 @@ use hyper::StatusCode;
 /// # Security
 ///
 /// This page contains sensitive details and must only be served when `debug = true`.
+#[doc(hidden)]
 pub fn render_debug_page(error: &DjangorsError, req: &Request) -> Response {
     let status = error.status_code();
 

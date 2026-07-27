@@ -74,6 +74,9 @@ pub use state::AppState;
 pub use hyper::StatusCode;
 
 /// Escapes HTML special characters in string input.
+// FREEZE-REVIEW: This cannot be made `pub(crate)` in this pass because the out-of-scope
+// `djangors-admin` crate still calls it directly in production code; hiding it without first
+// migrating that consumer would break the required workspace build. Revisit in Freeze Review Pass 2.
 pub fn html_escape(input: &str) -> String {
     let mut escaped = String::with_capacity(input.len());
     for c in input.chars() {

@@ -16,6 +16,10 @@
 - [Django Developer Comparison Guide](django-comparison.md)
 - [Honest HTTP Benchmarks](benchmarks.md)
 
+# Project Governance
+
+- [API Stability & Deprecation Policy](api-stability.md)
+
 # Topic Guides
 
 - [Object-Relational Mapping (ORM)](guides/orm.md)

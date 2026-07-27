@@ -411,26 +411,38 @@ Phases are sequential dependencies, not calendar promises. Each phase has a **De
   `fmt`/`build`/`clippy`/`test --workspace` clean on the main workspace, `benchmarks/`, and
   `mdbook build docs`, independently re-verified.
 - [ ] Third-party **security audit** of auth/sessions/CSRF/admin (budget for it; publish results — enormous credibility with your banking audience).
-- [ ] **API freeze review + deprecation policy** — **part A done (10.12):** `crates/djangors/src/lib.rs`
-  (the "batteries-included" facade crate) previously re-exported only `djangors_tasks` despite its
-  own doc comment claiming to bundle "ORM, migrations, admin, forms, auth, background tasks" —
-  `djangors::` was not actually usable as the single entry point its pitch promised. Now
-  re-exports all 14 core crates (`djangors-core`, `djangors-orm`, `djangors-migrations`,
-  `djangors-rest`, `djangors-admin`, `djangors-auth`, `djangors-forms`, `djangors-sessions`,
-  `djangors-template`, `djangors-staticfiles`, `djangors-cache`, `djangors-mail`, `djangors-i18n`,
-  `djangors-db`) module-aliased (e.g. `djangors::core`, `djangors::orm`), each with its own doc
-  comment (`#![deny(missing_docs)]` enforced this), plus a real smoke test proving every re-export
-  resolves to a usable item, not just that the crate compiles. Contrib crates and tooling-only
-  crates (`djangors-cli`/`djangors-macros`/`djangors-test`) deliberately not re-exported. **Note on
-  process**: this dispatch committed the change directly itself (an unauthorized action — no
-  design doc in this project has ever asked a dispatch to run `git commit`, only to leave changes
-  for independent review) before I could verify it; the commit was local-only (never pushed), and
-  its content/authorship turned out correct on inspection, so I amended its message to this
-  project's usual detailed style and proceeded rather than discarding real, verified work — see
-  memory for the standing fix to prevent recurrence. **Remaining**: part B, a bounded first-pass
-  audit of the 3 largest crates (`djangors-core`/`djangors-orm`/`djangors-rest`, ~255 items) plus
-  the deprecation-policy/release-cadence doc; the other ~23 crates are explicitly deferred to a
-  future "Freeze Review Pass 2."
+- [x] **API freeze review + deprecation policy** — **done, pass 1 (10.12 + 10.13).** Part A
+  (10.12): `crates/djangors/src/lib.rs` (the "batteries-included" facade crate) previously
+  re-exported only `djangors_tasks` despite its own doc comment claiming to bundle "ORM,
+  migrations, admin, forms, auth, background tasks" — `djangors::` was not actually usable as the
+  single entry point its pitch promised. Now re-exports all 14 core crates module-aliased (e.g.
+  `djangors::core`, `djangors::orm`), each with its own doc comment, plus a real smoke test
+  proving every re-export resolves to a usable item. **Note on process**: this dispatch committed
+  the change directly itself (an unauthorized action — no design doc in this project has ever
+  asked a dispatch to run `git commit`); the commit was local-only (never pushed) and its
+  content/authorship turned out correct on inspection, so it was amended to this project's usual
+  detailed style rather than discarded — every subsequent dispatch prompt now explicitly forbids
+  committing/pushing (10.13 confirmed this held).
+
+  Part B (10.13): a bounded first-pass audit of the 3 largest crates (`djangors-core` ~160 items,
+  `djangors-orm` ~64, `djangors-rest` ~31 — ~255 total, not the full ~700-1000+ across all ~26
+  workspace crates, which is explicitly deferred to a future "Freeze Review Pass 2"). Real,
+  conservative outcome: `debug_page::render_debug_page` → `#[doc(hidden)]` (security-sensitive,
+  dev-only, previously had zero compiler/doc guard against misuse); `html_escape` → **kept
+  public** with a `// FREEZE-REVIEW:` rationale comment, correctly overriding my own design doc's
+  stale premise that it was internal-only — the dispatch verified for itself that
+  `djangors-admin` (out of scope for this pass) genuinely calls it directly in two real production
+  sites, and declined to break the workspace build rather than following an inaccurate
+  instruction; `prefetch_related` confirmed intentionally public (documented in
+  `docs/src/guides/orm.md`); `signals` deliberately kept open for subscriber-facing lifecycle
+  hooks. ~253 of ~255 items needed no change. New `docs/src/api-stability.md` (written directly,
+  no dispatch needed) covers versioning (SemVer from 1.0, shared workspace version), deprecation
+  mechanics (one full minor cycle with `#[deprecated]` before removal, a `CHANGELOG.md` to be
+  created at the next API-touching release), the existing-but-unpublished 4-6-week release cadence
+  and RFC-for-API-changes process (restated from `PLAN.md`'s own Part 7, now actually discoverable
+  by real consumers), and an honest statement that this is pass 1 of N, not a complete contract.
+  Full `cargo doc --workspace --no-deps` (zero warnings, `#![deny(missing_docs)]` still enforced),
+  `build`/`clippy -D warnings`/`test --workspace` clean, independently re-verified.
 - [ ] 1.0 launch: blog post, HN/Reddit/This Week in Rust, conference talk submissions (RustConf, EuroRust, DjangoCon — yes, DjangoCon).
 
 **DoD:** semver 1.0 with a written stability contract; audit published; three example apps deployed live.
