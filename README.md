@@ -75,7 +75,7 @@ of composable pieces:
 | `djangors-tasks` | A background task queue (`#[task]`, Postgres `SELECT ... FOR UPDATE SKIP LOCKED`, cron-style recurring jobs, a worker loop) |
 | `djangors-pdf` | Typed PDF generation for report cards, invoices, and receipts — headings, text, and tables with automatic page breaks |
 | `djangors-i18n` | Runtime internationalization (Fluent-backed catalogs, locale fallback chain) |
-| `djangors-staticfiles` | Static file collection and serving, a pluggable `Storage` trait (local disk, S3) |
+| `djangors-staticfiles` | Static file collection and serving, a pluggable `Storage` trait (local disk, S3), optional malware/AV scanning of uploaded bytes via `clamd` |
 | `djangors-test` | In-process test client, real per-test database isolation, and a JSON fixtures loader |
 | `djangors-cli` (`dj`) | The `manage.py` equivalent — `new`, `run`, `migrate` (with rollback), `createsuperuser`, `shell` (a real `evcxr` Rust REPL), `dbshell`, `test`, `check --deploy`, and a plugin mechanism for a project's own `dj <custom-command>` |
 | `djangors-contrib-*` | Sitemaps, RSS/Atom syndication, flat pages, redirects, flash messages, object-level permissions (guardian-style), TOTP/2FA, content types / generic foreign keys |

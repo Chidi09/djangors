@@ -1,6 +1,10 @@
 #![deny(missing_docs)]
 //! Static file collection, hashing, and serving for Djangors.
 
+/// Optional malware/virus scanning of uploaded file bytes via a `clamd` daemon.
+/// Requires the `clamav` Cargo feature.
+#[cfg(feature = "clamav")]
+pub mod clamav;
 /// Static file collection and manifest creation.
 pub mod collect;
 /// Static file processing and loading errors.

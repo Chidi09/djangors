@@ -954,8 +954,23 @@ Sequenced easiest → hardest; tracked as tasks #62–71.
   a completely separate PDF implementation from `printpdf`) confirming a real, valid A4 PDF whose
   extracted text matches exactly what was written, in order — not just self-consistency against
   the crate's own output.
-- [ ] **Malware/AV scan hook for uploads** — `clamd` equivalent; an optional scan-on-upload hook
-  for the `Storage` trait or multipart extractor, off by default.
+- [x] **Malware/AV scan hook for uploads** — **done.** `clamd` equivalent — a new
+  `djangors_staticfiles::clamav` module (opt-in `clamav` Cargo feature) implementing `clamd`'s real
+  `INSTREAM` wire protocol directly (a `zINSTREAM\0` handshake, then length-prefixed chunks
+  terminated by a zero-length chunk — simple enough not to need an external crate). Deliberately
+  scans **in-memory bytes** (`ClamAvScanner::scan(&[u8])`), not a file path — `clamd` runs as its
+  own OS user and generally can't read arbitrary application-owned paths (confirmed directly:
+  `clamdscan` against a path-based scan failed with "Permission denied" in this sandbox), and this
+  also means a scan can happen *before* anything is ever written to disk or a `Storage` backend at
+  all. **Installed a real `clamav-daemon` in this sandbox and tested against it live** (not
+  mocked) — confirmed the standard EICAR antivirus test string is correctly flagged
+  (`Eicar-Test-Signature`) and an ordinary file passes clean, both via a raw Python socket script
+  first (to nail down the exact wire protocol) and then via the real Rust client; a third test
+  forces 4-byte chunking specifically to prove the multi-frame `INSTREAM` implementation
+  reassembles correctly, not just a lucky single-write case. 6 tests total (3 pure parsing-logic
+  unit tests + 3 against the real daemon, which skip rather than fail if no `clamd` socket is
+  present — most dev machines and CI won't have one running). Verified both with and without the
+  feature flag; default build unaffected.
 - [ ] **Fix cross-crate test DDL races properly** (task #61) — adopt `djangors-test`'s existing
   `TestDatabase::isolated()` (built in 11.4) broadly in place of the shared `connect()` most
   crates' tests currently use.
