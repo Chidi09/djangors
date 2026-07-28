@@ -181,7 +181,6 @@ pub async fn register_recurring(
 /// Enqueues due recurring tasks atomically while holding row locks, returning the enqueue count.
 pub async fn tick_recurring_tasks(db: &djangors_db::Database) -> Result<usize, TaskError> {
     db.transaction(|tx| Box::pin(async move {
-        let now = chrono::Utc::now();
         // A tick spans several statements (cron evaluation, enqueue, and
         // schedule advancement).  Serialize that claim-and-advance sequence
         // at the database level so READ COMMITTED cannot let another tick
@@ -190,6 +189,10 @@ pub async fn tick_recurring_tasks(db: &djangors_db::Database) -> Result<usize, T
             .execute(&mut *tx)
             .await
             .map_err(djangors_db::DbError::QueryFailed)?;
+        // Captured only after the advisory lock is held, not before: a tick that spent
+        // time waiting on the lock must not compare rows against a stale "now" from
+        // before that wait, or it can re-claim a row the lock-holder just advanced.
+        let now = chrono::Utc::now();
         let rows = sqlx::query("SELECT id, task_name, payload, cron_expr, next_run_at FROM djangors_recurring_task WHERE enabled = true AND next_run_at <= $1 ORDER BY next_run_at, id FOR UPDATE SKIP LOCKED")
             .bind(now).fetch_all(&mut *tx).await.map_err(djangors_db::DbError::QueryFailed)?;
         let mut count = 0;
@@ -200,6 +203,11 @@ pub async fn tick_recurring_tasks(db: &djangors_db::Database) -> Result<usize, T
             let expr: String = sqlx::Row::get(&row, "cron_expr");
             let previous: chrono::DateTime<chrono::Utc> = sqlx::Row::get(&row, "next_run_at");
             let schedule = parse_schedule(&expr).map_err(|e| djangors_db::DbError::QueryFailed(sqlx::Error::Protocol(e)))?;
+            // Advance exactly one step past `previous`, deliberately not catching all the
+            // way up to `now` in one tick: when a schedule has missed several occurrences
+            // (e.g. after downtime), each due occurrence is enqueued by whichever tick
+            // claims it, one at a time, so concurrent/successive ticks share the catch-up
+            // work under SKIP LOCKED rather than one tick enqueueing a whole backlog.
             let next = schedule.after(&previous).next().ok_or_else(|| djangors_db::DbError::QueryFailed(sqlx::Error::Protocol("cron has no next occurrence".into())))?;
             sqlx::query("INSERT INTO djangors_task_queue (task_name, payload, status, attempts, max_attempts, created_at, scheduled_at, error_message) VALUES ($1, $2, 'pending', 0, 3, $3, $3, NULL)")
                 .bind(task_name).bind(payload).bind(previous).execute(&mut *tx).await.map_err(djangors_db::DbError::QueryFailed)?;
@@ -947,17 +955,37 @@ mod tests {
             .await?;
 
         let name = "sample_task_fn_race_test";
+        let cron_expr = "*/5 * * * *";
         let recurring_id = register_recurring(
             db,
             name,
             &SamplePayload {
                 message: "race".into(),
             },
-            "*/5 * * * *",
+            cron_expr,
         )
         .await?;
+        // Overdue by less than one full interval, and aligned to a real schedule boundary
+        // (not an arbitrary offset like "now - 1 minute"): this is the only state
+        // `next_run_at` can actually be in during real operation, since both
+        // `register_recurring` and `tick_recurring_tasks` itself always derive it from
+        // `Schedule::after(...)`. With exactly one genuine occurrence due, exactly one
+        // concurrent tick must claim it.
+        let schedule = parse_schedule(cron_expr)?;
+        let now = chrono::Utc::now();
+        let mut most_recent_boundary = schedule
+            .after(&(now - chrono::Duration::minutes(6)))
+            .next()
+            .expect("cron has a next occurrence");
+        loop {
+            let candidate = schedule.after(&most_recent_boundary).next().expect("cron has a next occurrence");
+            if candidate > now {
+                break;
+            }
+            most_recent_boundary = candidate;
+        }
         sqlx::query("UPDATE djangors_recurring_task SET next_run_at = $1 WHERE id = $2")
-            .bind(chrono::Utc::now() - chrono::Duration::minutes(1))
+            .bind(most_recent_boundary)
             .bind(recurring_id)
             .execute(db.pool())
             .await?;

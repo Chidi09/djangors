@@ -744,6 +744,33 @@ double-checked to exist and are *not* relisted here.
   the newly-confirmed cross-crate table-collision issue is tracked separately (see below) since it's
   a distinct, real bug affecting any crate pair that shares a global table name against the same
   test database, not something specific to background tasks.
+  **Correction (2026-07-28): this conclusion was wrong — `test_tick_recurring_tasks_dual_claim_race`
+  really does have a genuine, deterministic root cause, unrelated to cross-crate load.** Found while
+  investigating an unrelated crates.io republish: running `cargo test -p djangors-tasks --lib`
+  *alone*, with zero cross-crate interference, still failed 3 of 5 consecutive runs with the
+  identical signature (`enqueued1 + enqueued2 == 2`). The `~1/4` recurrence rate that task #60's 520
+  runs happened not to catch is not CPU-load-dependent at all — it's **wall-clock-alignment**-
+  dependent: the test set the row's `next_run_at` to an arbitrary non-boundary value (`now - 1
+  minute`), which is not a state `next_run_at` can ever actually be in during real operation (both
+  `register_recurring` and `tick_recurring_tasks` itself always derive it from
+  `Schedule::after(...)`, so it's always boundary-aligned). Whenever the test happened to run within
+  roughly the first 60 seconds after a real 5-minute cron boundary, the single-step `next` computed
+  from that artificial `previous` would itself still be `<= now`, making a second, concurrent tick
+  see the row as legitimately due again — a real occurrence, correctly shared between two workers per
+  the SKIP LOCKED catch-up-sharing design, not a duplicate of the first. Task #60's 520 verification
+  runs simply never happened to execute inside that ~20%-of-every-5-minutes window. Fixed two things
+  in `tick_recurring_tasks` (`crates/djangors-tasks/src/lib.rs`): captured `now` *after* acquiring the
+  advisory lock instead of before (a tick that waited on the lock must not compare against a stale
+  pre-wait timestamp), and rewrote the test's setup to seed a realistic, boundary-aligned,
+  mildly-overdue `next_run_at` (the true most-recent past cron boundary) instead of an arbitrary
+  offset — matching the only state the row can actually be in during real operation. Deliberately did
+  **not** change the single-step advance-per-tick logic itself: that's the intentional design
+  enabling concurrent/successive ticks to divide up catch-up work one occurrence at a time (verified
+  this is intentional via the neighboring `test_recurring_task_advances_from_previous_scheduled_time_
+  not_now` test, which explicitly asserts a heavily-overdue row stays overdue after one tick). Reran
+  the corrected test 20 consecutive times plus the full `djangors-tasks` suite and the full workspace
+  suite — all clean, and the fix is no longer wall-clock-luck-dependent (verified by re-deriving the
+  boundary math directly, not just by rerunning until it happened to pass).
 - [ ] **Cross-crate test DDL races on shared global table names (found via task #60 investigation,
   2026-07-27)** — different crates' test binaries (e.g. `djangors-admin`, `djangors-auth`) each
   `DROP TABLE IF EXISTS` / `CREATE TABLE` the same globally-named table (`auth_user`) against the

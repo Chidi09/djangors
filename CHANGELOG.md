@@ -207,3 +207,13 @@ to hardest.
 - Homepage gained four new content sections (pillars, get-started, features grid, a real 4-column
   footer with every link verified to resolve), and an em-dash reduction pass across the site copy,
   README, and every doc guide.
+- Corrected an earlier (Phase 11) conclusion that had closed `tick_recurring_tasks`'s dual-claim
+  race as "not a real bug, misattributed to cross-crate test load." It really is a genuine,
+  deterministic bug: whenever a concurrent tick runs within roughly the first 60 seconds after a
+  cron boundary, a single-step schedule advance can land on an occurrence that's still due,
+  wrongly making the earlier fix's 520 clean verification runs a matter of wall-clock luck rather
+  than proof. Captured the tick's `now` after acquiring its advisory lock instead of before, and
+  fixed the regression test's setup to seed a realistic, boundary-aligned overdue value instead of
+  an arbitrary offset. Deliberately preserved the intentional one-occurrence-per-tick catch-up
+  design (multiple concurrent ticks are meant to share backlog work, not each grab everything at
+  once).
