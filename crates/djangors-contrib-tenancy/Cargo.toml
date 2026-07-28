@@ -1,0 +1,26 @@
+[package]
+name = "djangors-contrib-tenancy"
+description = "Multi-tenancy support for Djangors: a Tenant model, membership, and per-request tenant scoping"
+repository = "https://github.com/Chidi09/djangors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+djangors-macros = { path = "../djangors-macros", version = "0.1.0" }
+djangors-orm = { path = "../djangors-orm", version = "0.1.0" }
+djangors-core = { path = "../djangors-core", version = "0.1.0" }
+djangors-db = { path = "../djangors-db", version = "0.1.0" }
+djangors-auth = { path = "../djangors-auth", version = "0.1.0" }
+djangors-rest = { path = "../djangors-rest", version = "0.1.0" }
+chrono = { version = "0.4", features = ["std"] }
+tower = { version = "0.5.3", features = ["util"] }
+hyper = "1.10.1"
+
+[dev-dependencies]
+djangors-test = { path = "../djangors-test", version = "0.1.0" }
+tokio = { version = "1.53.0", features = ["macros", "rt-multi-thread"] }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }
+bytes = "1.12.1"
+http-body-util = "0.1.4"

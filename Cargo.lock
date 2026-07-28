@@ -847,6 +847,7 @@ dependencies = [
  "djangors-auth",
  "djangors-cache",
  "djangors-contrib-payments",
+ "djangors-contrib-tenancy",
  "djangors-core",
  "djangors-db",
  "djangors-forms",
@@ -1065,6 +1066,26 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "djangors-core",
+]
+
+[[package]]
+name = "djangors-contrib-tenancy"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "chrono",
+ "djangors-auth",
+ "djangors-core",
+ "djangors-db",
+ "djangors-macros",
+ "djangors-orm",
+ "djangors-rest",
+ "djangors-test",
+ "http-body-util",
+ "hyper",
+ "sqlx",
+ "tokio",
+ "tower 0.5.3",
 ]
 
 [[package]]

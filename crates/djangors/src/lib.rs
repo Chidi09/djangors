@@ -11,6 +11,8 @@ pub use djangors_auth as auth;
 pub use djangors_cache as cache;
 /// Payment provider integration (Paystack) with idempotent transaction recording.
 pub use djangors_contrib_payments as payments;
+/// Multi-tenancy: tenant model, membership-verified request scoping.
+pub use djangors_contrib_tenancy as tenancy;
 /// Core HTTP types: Router, Request, Response, middleware, and settings.
 pub use djangors_core as core;
 /// Database configuration and connection abstractions.
