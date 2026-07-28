@@ -36,6 +36,42 @@ pub(crate) fn djangors_crates_dir() -> std::path::PathBuf {
         .to_path_buf()
 }
 
+/// How the generated project should depend on `djangors-core`.
+///
+/// `dj new` is compiled both ways: as `cargo run -p djangors-cli` from inside a clone of the
+/// real monorepo (the workflow this project's own contributors and tests use), and as a
+/// standalone `dj` binary from `cargo install djangors-cli` against the published crates.io
+/// package (the workflow every real end user is expected to use, matching `pip install django`).
+/// `CARGO_MANIFEST_DIR` is baked in at compile time either way, but it only points at a real
+/// sibling `crates/` checkout in the first case - from a crates.io install it resolves to the
+/// registry cache, where the actual on-disk directory is named `djangors-core-X.Y.Z` (with the
+/// version suffix), not `djangors-core`, so a path dependency there is always broken. Check at
+/// runtime whether that sibling directory genuinely exists (not just trusting the compile-time
+/// path blindly) and fall back to a real version dependency pinned to this exact `djangors-cli`
+/// build's own version - since every crate in the workspace shares one version number, that pin
+/// is always the right one.
+pub(crate) enum CoreDependency {
+    /// A contributor running from inside the cloned monorepo: pick up local changes immediately.
+    Path(std::path::PathBuf),
+    /// A real end user's `cargo install djangors-cli`: pin to the matching published version.
+    Version(&'static str),
+}
+
+pub(crate) fn resolve_core_dependency() -> CoreDependency {
+    resolve_core_dependency_at(djangors_crates_dir())
+}
+
+/// The testable half of [`resolve_core_dependency`]: takes the candidate crates directory as a
+/// parameter instead of hardcoding the compile-time path, so both branches (a real sibling
+/// checkout present vs. absent) can be exercised directly against a real temp directory.
+fn resolve_core_dependency_at(crates_dir: std::path::PathBuf) -> CoreDependency {
+    if crates_dir.join("djangors-core").join("Cargo.toml").is_file() {
+        CoreDependency::Path(crates_dir)
+    } else {
+        CoreDependency::Version(env!("CARGO_PKG_VERSION"))
+    }
+}
+
 pub(crate) fn require_project_root() -> Result<(), String> {
     if !Path::new("Cargo.toml").is_file() || !Path::new("djangors.toml").is_file() {
         return Err("not a Djangors project (expected Cargo.toml and djangors.toml)".into());
@@ -57,8 +93,12 @@ pub fn new(name: &str) -> Result<(), String> {
         return Err(format!("destination '{name}' already exists"));
     }
 
-    let crates_dir = djangors_crates_dir();
-    let crates_dir_str = crates_dir.to_string_lossy();
+    let djangors_core_dep = match resolve_core_dependency() {
+        CoreDependency::Path(crates_dir) => {
+            format!("{{ path = \"{}/djangors-core\" }}", crates_dir.to_string_lossy())
+        }
+        CoreDependency::Version(version) => format!("\"{version}\""),
+    };
 
     let cargo_toml = format!(
         r#"[package]
@@ -72,7 +112,7 @@ name = "{crate_name}"
 path = "src/main.rs"
 
 [dependencies]
-djangors-core = {{ path = "{crates_dir_str}/djangors-core" }}
+djangors-core = {djangors_core_dep}
 tokio = {{ version = "1", features = ["full"] }}
 tower = {{ version = "0.5", features = ["util"] }}
 "#
@@ -908,6 +948,56 @@ mod tests {
 
     static DB_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static FS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    // Regression tests for a real bug: `dj new`, when compiled as a standalone `cargo install
+    // djangors-cli` from crates.io (not run from inside the cloned monorepo), used to bake in a
+    // path dependency on a sibling `djangors-core` directory that only exists in a workspace
+    // checkout - the generated project's `cargo build` failed immediately with a genuine
+    // "No such file or directory". Reproduced live: packaged djangors-cli with `cargo package`
+    // (the exact manifest crates.io would serve, path deps already stripped by cargo itself),
+    // installed it, ran `dj new` from that binary, and confirmed the generated project builds
+    // and serves real HTTP traffic end-to-end.
+    #[test]
+    fn test_resolve_core_dependency_uses_path_when_sibling_checkout_exists() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "dj_test_resolve_core_dep_path_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(temp_dir.join("djangors-core")).unwrap();
+        std::fs::write(
+            temp_dir.join("djangors-core").join("Cargo.toml"),
+            "[package]\nname = \"djangors-core\"\n",
+        )
+        .unwrap();
+
+        match resolve_core_dependency_at(temp_dir.clone()) {
+            CoreDependency::Path(p) => assert_eq!(p, temp_dir),
+            CoreDependency::Version(v) => panic!("expected Path, got Version({v})"),
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_resolve_core_dependency_falls_back_to_version_when_no_sibling_checkout() {
+        // A registry cache / packaged-crate directory never has an unversioned `djangors-core`
+        // sibling (real on-disk names are always `djangors-core-X.Y.Z`), so this must fall back
+        // to a version pin rather than generating a path that can never resolve.
+        let temp_dir = std::env::temp_dir().join(format!(
+            "dj_test_resolve_core_dep_version_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        match resolve_core_dependency_at(temp_dir.clone()) {
+            CoreDependency::Version(v) => assert_eq!(v, env!("CARGO_PKG_VERSION")),
+            CoreDependency::Path(p) => panic!("expected Version, got Path({})", p.display()),
+        }
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
