@@ -1062,6 +1062,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "djangors-deploy"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "djangors-forms"
 version = "0.1.0"
 dependencies = [

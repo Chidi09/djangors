@@ -999,11 +999,35 @@ Sequenced easiest → hardest; tracked as tasks #62–71.
   as direct evidence of real serialization (whichever suite has to wait takes ~39-40s instead of
   ~17-23s, every round). **Remaining, not attempted here**: other crates/table-name pairs that
   might share the same class of risk — the primitive is now available for any of them.
-- [ ] **`dj deploy`** — multi-provider deployment (VPS/SSH, Render, Railway, GCP, AWS), porting the
-  `DeployProvider` trait architecture from a separate project's `crush-deploy` crate
-  (`provision`/`deploy`/`destroy`/`status`/`logs`), decoupled from that project's own container
-  runtime, plus a Render provider written from the real REST API knowledge gained deploying
-  `djangors-polls` this session.
+- [x] **`dj deploy`** — **first slice done, deliberately left to grow rather than gold-plated.** New
+  `djangors-deploy` crate: a `DeployProvider` async trait (`provision`/`deploy`/`status`/`logs`/
+  `destroy`) adapted from a separate project's `crush-deploy` architecture but redesigned around
+  `DeploySpec`/`DeploymentInfo`/`DeployStatus`/`DeployError`, since `crush-deploy`'s exact signature
+  assumes an image-tar-upload model that doesn't fit a GitOps PaaS like Render. Two providers ship:
+  `RenderProvider` (drives Render's REST API directly — `/v1/postgres`, `/v1/services` with a Docker
+  `serviceDetails`, deploy-trigger + poll loop, `/v1/logs`, destroy — every request shape validated
+  against the real API earlier this session deploying `djangors-polls` live) and `SshProvider` (shells
+  out to the system `ssh` binary via `tokio::process::Command` rather than adding a native
+  `ssh2`/libssh2 dependency — the exact `pkg-config`/native-build pain already hit deploying to
+  Render — clones/hard-resets the target repo on the remote host and runs the same
+  Dockerfile-based `docker build`/`docker run` flow Render uses). Every value interpolated into a
+  remote shell command goes through a `shell_quote()` POSIX-escaping helper plus a `validate_slug()`
+  guard on `project_name` as defense in depth; a dedicated test
+  (`shell_quote_neutralizes_every_dangerous_character`) proves `$(...)`, backticks, semicolons, and
+  embedded quotes are all neutralized. **Verified:** `cargo build`/`test`/`clippy -p djangors-deploy`
+  all clean; a real SSH round-trip against this sandbox's own Hetzner VPS (`ssh -i <throwaway
+  keypair> localhost "whoami && docker --version"`) confirmed the `ssh`-shell-out approach actually
+  works end-to-end for command execution. **Not done, and deliberately deferred:** a full live
+  provision→deploy→status→logs→destroy run of `SshProvider` was blocked by this VPS's system
+  Postgres only accepting connections from `127.0.0.1`/`::1` (a shared service other projects here
+  depend on — not modified), so a deployed container reached via the Docker bridge gateway can't
+  reach it without either a throwaway database container or a host-network change; no automated test
+  exists yet for `RenderProvider` (API-shape-correct by inspection and prior live use, not covered by
+  an automated test); no `dj deploy` CLI subcommand wired into `djangors-cli` yet; Railway/GCP/AWS
+  providers not started. Test SSH keypair and `~/.ssh/authorized_keys` modification from this
+  exploration were cleaned up/restored before moving on. Picking back up here means: a disposable
+  Postgres container for the SSH smoke test, a `RenderProvider` test (mockable via a local HTTP
+  server), and the CLI wiring.
 - [ ] **`djangors-contrib-payments`** — a `PaymentProvider` trait (Paystack first) with an
   idempotency-key-first `Transaction` model and per-provider webhook signature verification.
   Highest-care item on this list — real money correctness.
