@@ -10,6 +10,7 @@ await mkdir(publicDir, { recursive: true });
 await cp(join(root, 'README.md'), join(content, 'README.md'));
 await cp(join(root, 'docs/src/django-comparison.md'), join(content, 'django-comparison.md'));
 await cp(join(root, 'docs/src/benchmarks.md'), join(content, 'benchmarks.md'));
+await cp(join(root, 'CHANGELOG.md'), join(content, 'CHANGELOG.md'));
 
 const docs = [];
 async function walk(dir) {
