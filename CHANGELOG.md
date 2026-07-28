@@ -172,6 +172,15 @@ to hardest.
   a client-supplied tenant header alone), and a one-line `tenant_scope()` helper reusing
   `djangors-rest`'s existing `Scoped`/`ScopedViewSet` enforcement mechanism. Design doc:
   `docs/design/12.1-multi-tenancy.md`.
-- Workspace version bumped `0.1.0` → `0.2.0` to reflect this phase; republishing the updated
-  crates (and publishing `djangors-pdf`/`djangors-deploy`/`djangors-contrib-payments`/
-  `djangors-contrib-tenancy` for the first time) is the next step, tracked in `PLAN.md`.
+- Workspace version bumped `0.1.0` → `0.2.0` and all 32 crates published for real, including
+  `djangors-pdf`/`djangors-deploy`/`djangors-contrib-payments`/`djangors-contrib-tenancy` for the
+  first time — independently verified live on crates.io, not just attempted. Found and fixed a
+  real bug along the way: 13 crates had internal *dev*-dependencies pinned with both `path` and
+  `version` (a leftover from the version-bump script not distinguishing `[dependencies]` from
+  `[dev-dependencies]`), which made publishing circular for crates with a mutual dev-dependency on
+  each other — fixed by keeping only `path` on internal dev-dependencies, which cargo correctly
+  drops from the published manifest entirely.
+- Also covered every Phase 12 feature in the mdBook doc site for the first time (new guides:
+  settings, PDF, payments, multi-tenancy; extended auth/security/deployment guides) — the doc site
+  previously had zero mention of anything in this phase. Every code example genuinely compiles,
+  verified via `doc-code-check`.

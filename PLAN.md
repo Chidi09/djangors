@@ -864,9 +864,20 @@ double-checked to exist and are *not* relisted here.
   `djangors-pdf` (created mid-Phase-12) was never published at all. Workspace version bumped
   `0.1.0` → `0.2.0` (task #72) to prepare a republish covering every crate, including the four
   never-published ones from this phase (`djangors-pdf`/`djangors-deploy`/
-  `djangors-contrib-payments`/`djangors-contrib-tenancy`). **Actual `cargo publish` for `0.2.0`
-  not yet run** — a real, live action against an external account, needs an explicit go-ahead
-  first.
+  `djangors-contrib-payments`/`djangors-contrib-tenancy`). **`cargo publish` for `0.2.0` run for
+  real and independently verified — done.** Found and fixed a real bug before publishing could
+  succeed: 13 crates had internal *dev*-dependencies (e.g. `djangors-auth`'s dev-dependency on
+  `djangors-test`) pinned with both `path` AND `version`, left over from the earlier blanket
+  version-bump script not distinguishing `[dependencies]` from `[dev-dependencies]`. This makes
+  `cargo publish` require the dev-dependency to already resolve against crates.io, which is
+  circular when publishing in dependency order (djangors-core and djangors-macros have a mutual
+  dev-dependency on each other, for instance) — fixed by stripping `version` from internal
+  dev-dependencies, keeping only `path` (a dev-dependency declared this way is dropped from the
+  published manifest entirely, which is correct: it's irrelevant to a downstream consumer, only
+  used for this workspace's own `cargo test`). Published in real dependency-topological order (32
+  crates), waiting for each crate's crates.io index propagation before publishing the next
+  dependent one. **Independently verified all 32 crates are genuinely live at `0.2.0`** via direct
+  crates.io API requests per crate (not trusted from the publish script's own log) — 0 missing.
 - [ ] **Deploy three example apps live** (1.0 Definition of Done) — not yet true even with the new
   marketing site up; only the marketing site itself is live so far.
 - [ ] Third-party **security audit** — carried over from Phase 10, still genuinely blocked on a
