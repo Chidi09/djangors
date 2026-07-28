@@ -18,5 +18,5 @@ djangors-db = { path = "../djangors-db", version = "0.2.0" }
 tokio = { version = "1.53.0", features = ["rt"] }
 
 [dev-dependencies]
-djangors-macros = { path = "../djangors-macros", version = "0.2.0" }
+djangors-macros = { path = "../djangors-macros" }
 tokio = { version = "1.53.0", features = ["rt", "macros"] }

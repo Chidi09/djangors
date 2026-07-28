@@ -23,9 +23,9 @@ djangors-macros = { path = "../djangors-macros", version = "0.2.0" }
 percent-encoding = "2.3.2"
 
 [dev-dependencies]
-djangors-test = { path = "../djangors-test", version = "0.2.0" }
-djangors-sessions = { path = "../djangors-sessions", version = "0.2.0" }
-djangors-macros = { path = "../djangors-macros", version = "0.2.0" }
+djangors-test = { path = "../djangors-test" }
+djangors-sessions = { path = "../djangors-sessions" }
+djangors-macros = { path = "../djangors-macros" }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros"] }
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }
 chrono = { version = "0.4.45", features = ["std", "serde"] }
