@@ -184,3 +184,26 @@ to hardest.
   settings, PDF, payments, multi-tenancy; extended auth/security/deployment guides). The doc site
   previously had zero mention of anything in this phase. Every code example genuinely compiles,
   verified via `doc-code-check`.
+
+### Phase 12.1: dj new fix, 0.2.1 republish, and site polish
+- Found and fixed a real bug in `dj new`: it located the sibling `djangors-core` crate via
+  `env!("CARGO_MANIFEST_DIR")`, which only resolves correctly when `djangors-cli` is built from
+  inside the cloned monorepo. Anyone who installed via `cargo install djangors-cli` from crates.io
+  got a generated project with an unresolvable path dependency, and `cargo build` failed
+  immediately. Fixed with a runtime check: use a path dependency when a sibling checkout exists,
+  otherwise fall back to a real version dependency on the published crate.
+- Workspace version bumped `0.2.0` to `0.2.1` and all 32 crates republished to ship the fix.
+  Independently verified live on crates.io per crate, then re-verified end to end against the real
+  registry (not the local `cargo package` simulation used during development): fresh
+  `cargo install djangors-cli --version 0.2.1`, `dj new`, `cargo build`, and real HTTP requests to
+  the generated project's `/` and `/healthz`, all green.
+- mdBook docs pages gained the Copy-as-Markdown button (it previously only worked on the marketing
+  site's own pages), and the button's contrast was fixed on both to meet WCAG AA (it was
+  effectively invisible in dark mode due to an inherited low-contrast color).
+- Marketing site SEO: real per-page meta descriptions (previously one generic line reused
+  site-wide), Open Graph/Twitter Card tags, JSON-LD structured data, a sitemap, and `robots.txt`.
+  The `site` canonical was also pointed at the framework's actual live URL, `djangors.vercel.app`
+  (it had been set to `djangors.dev`, a domain that was never registered).
+- Homepage gained four new content sections (pillars, get-started, features grid, a real 4-column
+  footer with every link verified to resolve), and an em-dash reduction pass across the site copy,
+  README, and every doc guide.

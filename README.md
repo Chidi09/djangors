@@ -37,7 +37,7 @@ good enough.
 contrib batteries, a REST framework, real-time/SSE, background tasks, payments, multi-tenancy) is
 built and tested; see [`PLAN.md`](PLAN.md) for the full phase-by-phase roadmap and what's done vs.
 remaining. All 32 crates are published on
-[crates.io](https://crates.io/search?q=djangors) at `0.2.0`, including this phase's four new
+[crates.io](https://crates.io/search?q=djangors) at `0.2.1`, including this phase's four new
 crates (`djangors-pdf`/`djangors-deploy`/`djangors-contrib-payments`/`djangors-contrib-tenancy`).
 
 ## Why Rust instead of Python for this?

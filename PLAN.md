@@ -854,7 +854,7 @@ double-checked to exist and are *not* relisted here.
   persistent database) is untouched — this is additive, not breaking.
 - [x] **`CHANGELOG.md`** — **done (commit `ea252fe`).** Written directly from real git history,
   grouped by phase.
-- [ ] **crates.io publish prep + actual publish** — **prep done (commit `59b07ee`):** added the
+- [x] **crates.io publish prep + actual publish** — **prep done (commit `59b07ee`):** added the
   real `LICENSE-MIT`/`LICENSE-APACHE` texts (the workspace claimed `MIT OR Apache-2.0` since day
   one but neither license file ever existed), bumped `0.0.1` → `0.1.0` workspace-wide, stripped
   the `"(placeholder release)"` suffix from 6 crate descriptions. **Publish itself later ran
@@ -878,6 +878,20 @@ double-checked to exist and are *not* relisted here.
   crates), waiting for each crate's crates.io index propagation before publishing the next
   dependent one. **Independently verified all 32 crates are genuinely live at `0.2.0`** via direct
   crates.io API requests per crate (not trusted from the publish script's own log) — 0 missing.
+  **Found a real bug in this shipped `0.2.0`**: answering the user's own question — how does a
+  user use djangors from scratch if they have Rust installed, instead of cloning the repo — proved
+  `dj new` was broken for real crates.io installs. It located the sibling `djangors-core` crate via
+  `env!("CARGO_MANIFEST_DIR")`, a compile-time constant that only resolves correctly when
+  `djangors-cli` is built inside the cloned monorepo; a real `cargo install djangors-cli` build
+  resolves it to the cargo registry cache instead, where the directory is suffixed with a version
+  (`djangors-core-0.2.0`, not `djangors-core`), so the generated path dependency could never
+  resolve and `cargo build` failed immediately on every new project. Fixed with a runtime
+  directory-existence check (path dependency if a sibling checkout exists, otherwise a real version
+  dependency on the published crate). Since crates.io versions are immutable, shipping the fix
+  required a new version: workspace bumped `0.2.0` → `0.2.1`, all 32 crates republished and
+  independently verified live again — 0 missing. Verified the fix against the real live registry,
+  not just a local simulation: fresh `cargo install djangors-cli --version 0.2.1`, `dj new`,
+  `cargo build`, and real HTTP requests to the generated project's `/`/`/healthz` — all green.
 - [ ] **Deploy three example apps live** (1.0 Definition of Done) — not yet true even with the new
   marketing site up; only the marketing site itself is live so far.
 - [ ] Third-party **security audit** — carried over from Phase 10, still genuinely blocked on a
