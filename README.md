@@ -34,9 +34,13 @@ management systems, high-traffic e-commerce — the kind of system where "it usu
 good enough.
 
 **Status**: pre-1.0, under active development. The core (ORM, admin, auth, migrations, CLI,
-contrib batteries, a REST framework, real-time/SSE, background tasks) is built and tested; see
-[`PLAN.md`](PLAN.md) for the full phase-by-phase roadmap and what's done vs. remaining. Not yet
-published to crates.io.
+contrib batteries, a REST framework, real-time/SSE, background tasks, payments, multi-tenancy) is
+built and tested; see [`PLAN.md`](PLAN.md) for the full phase-by-phase roadmap and what's done vs.
+remaining. Most crates are published on [crates.io](https://crates.io/search?q=djangors) at
+`0.1.0`; that snapshot predates this project's Phase 12 hardening pass (see `CHANGELOG.md`) and a
+`0.2.0` republish covering every crate — including four never-published ones
+(`djangors-pdf`/`djangors-deploy`/`djangors-contrib-payments`/`djangors-contrib-tenancy`) — is in
+progress.
 
 ## Why Rust instead of Python for this?
 

@@ -857,8 +857,16 @@ double-checked to exist and are *not* relisted here.
 - [ ] **crates.io publish prep + actual publish** — **prep done (commit `59b07ee`):** added the
   real `LICENSE-MIT`/`LICENSE-APACHE` texts (the workspace claimed `MIT OR Apache-2.0` since day
   one but neither license file ever existed), bumped `0.0.1` → `0.1.0` workspace-wide, stripped
-  the `"(placeholder release)"` suffix from 6 crate descriptions. **Actual `cargo publish` still
-  not run** — a real, live action against an external account, needs an explicit go-ahead first.
+  the `"(placeholder release)"` suffix from 6 crate descriptions. **Publish itself later ran
+  successfully** for essentially every crate that existed at the time, via a long-running
+  background resilient-publish script — confirmed live on crates.io, not just attempted.
+  **Now stale**: that `0.1.0` snapshot predates every Phase 12 fix/feature below, and
+  `djangors-pdf` (created mid-Phase-12) was never published at all. Workspace version bumped
+  `0.1.0` → `0.2.0` (task #72) to prepare a republish covering every crate, including the four
+  never-published ones from this phase (`djangors-pdf`/`djangors-deploy`/
+  `djangors-contrib-payments`/`djangors-contrib-tenancy`). **Actual `cargo publish` for `0.2.0`
+  not yet run** — a real, live action against an external account, needs an explicit go-ahead
+  first.
 - [ ] **Deploy three example apps live** (1.0 Definition of Done) — not yet true even with the new
   marketing site up; only the marketing site itself is live so far.
 - [ ] Third-party **security audit** — carried over from Phase 10, still genuinely blocked on a

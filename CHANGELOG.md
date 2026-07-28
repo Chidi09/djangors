@@ -7,8 +7,9 @@ version number.
 
 ## [Unreleased]
 
-Everything to date. Workspace version is still `0.0.1` — nothing here has been published to
-crates.io yet (tracked in `PLAN.md`, Phase 11).
+Everything to date, through Phase 12. Workspace version is `0.2.0`; most crates were first
+published to crates.io as `0.1.0`, but that snapshot predates every fix and feature in Phase 12
+below — see Phase 12's own publish-status note.
 
 ### Phase 0-1 — Bootstrap and core request/response layer
 - Workspace scaffold: `djangors`, `djangors-core`, `djangors-cli` (`dj` binary), and every
@@ -107,12 +108,70 @@ crates.io yet (tracked in `PLAN.md`, Phase 11).
   (`llms.txt`/`llms-full.txt`, raw `.md` served at every doc URL, an on-page "Copy as Markdown"
   button) and a shipped Claude Code Skill (`.claude/skills/djangors-development/`).
 
-### Phase 11 — Django-parity gap closure (in progress)
+### Phase 11 — Django-parity gap closure
 - CircleCI pipeline (fmt/clippy/build/test/doc-build against a real Postgres service container,
   plus a `cargo-audit` job) — and, while validating it, a real pre-existing test-isolation race
   found and fixed in `djangors-tasks`'s test suite.
-- Remaining items (migration rollback, model signals, `bulk_create`, a `ModelForm` equivalent,
-  real multipart file uploads, server-rendered generic class-based views, a custom management-
-  command plugin mechanism, a contenttypes/`GenericForeignKey` framework, transactional
-  rollback-per-test in `djangors-test`, crates.io publishing, and three live example-app
-  deployments) are tracked in `PLAN.md`.
+- Migration rollback with typed `Operation` variants (`AddColumn`/`DropColumn`/`AlterColumn`/
+  `RenameColumn`) and real down-migrations.
+- Model-level signals (`post_save`/`pre_save`/`post_delete`/`pre_delete`).
+- `bulk_create` and a `ModelForm` equivalent auto-derived from `#[derive(Model)]`.
+- Real `multipart/form-data` file upload parsing (not a stub).
+- Server-rendered generic class-based views (`ListView`/`DetailView`/`CreateView`/`UpdateView`/
+  `DeleteView`).
+- A custom management-command plugin mechanism (`#[management_command]`, `dj <custom-command>`).
+- A contenttypes/`GenericForeignKey` framework.
+- `djangors-test`: transactional rollback-per-test and a JSON fixtures loader.
+- A genuine cross-crate test DDL race (colliding global table names like `auth_user` across
+  `djangors-admin`/`djangors-auth`'s own test suites) found and fixed via a real Postgres
+  session-level advisory lock primitive (`djangors_test::acquire_cross_process_lock`), verified by
+  re-reproducing the original collision as concurrent OS processes before and after the fix.
+- First real production deployment (`djangors-polls` to Render), surfacing and fixing three real
+  bugs along the way: unquoted reserved-keyword SQL identifiers in `derive(Model)`'s generated
+  INSERT/UPDATE, a `dj makemigrations` bug where new models with foreign keys to sibling new
+  models couldn't resolve the relation (planned one model at a time instead of together), and a
+  Docker build missing TLS/`pkg-config`/`libssl-dev`.
+- Most crates first published to crates.io as `0.1.0` (superseded by Phase 12 below — that
+  snapshot predates every fix and feature listed there).
+- **Not done**: the remaining two example-app deployments (only `djangors-polls` is live) and
+  actually republishing the fixed/updated crates (Phase 12 does the fixing; the republish itself
+  is still open, tracked in `PLAN.md`).
+
+### Phase 12 — Post-1.0 hardening
+Compiled after the first real deployment surfaced genuine bugs, and after comparing Djangors
+directly against a real production Django SaaS backend to find concrete gaps. Sequenced easiest
+to hardest.
+- Quoted every remaining raw SQL identifier in `QuerySet` (`.filter()`/`.order_by()`/
+  `bulk_create`/`prefetch_related`/etc.), closing a gap the Phase 11 INSERT/UPDATE fix didn't
+  cover.
+- `#[derive(Settings)]`: a typed, validated app-config macro (the `pydantic-settings`/
+  `django-environ` equivalent) reading `{PREFIX}_{FIELD}` env vars with defaults and
+  `Option<T>` support.
+- A `CspBuilder`/`CspLayer` middleware (the `django-csp` equivalent).
+- Optional Sentry error tracking (`djangors-core`'s `sentry` feature) alongside the existing
+  `tracing`-based logging.
+- A `django-axes`-style persistent, database-backed account lockout (`PersistentLockoutBackend`),
+  distinct from the existing in-memory rate limiter — rejects even correct credentials once
+  locked, and survives process restarts.
+- `djangors-pdf`: typed PDF generation (report cards, invoices, receipts) via a pure-Rust builder
+  API, deliberately not an HTML/Chrome-based renderer (no viable headless-Chrome path in a
+  container deployment).
+- Optional malware/AV scanning of uploaded bytes via `clamd`'s real `INSTREAM` wire protocol
+  (`djangors-staticfiles`'s `clamav` feature), scanning in-memory before anything touches disk.
+- `djangors-deploy`: a `DeployProvider` trait for `dj deploy`, shipping a `RenderProvider` (real
+  REST API) and an `SshProvider` (shells out to the system `ssh`, avoiding a native SSH library
+  dependency) — a first slice, deliberately left to grow (Railway/GCP/AWS not yet implemented, no
+  `dj deploy` CLI subcommand wired in yet).
+- `djangors-contrib-payments`: a `PaymentProvider` trait and `PaystackProvider`, with an
+  idempotency-key-first `Transaction` model (a real DB-level UNIQUE constraint on `reference`, not
+  an application-level check-then-insert) and webhook handling that verifies the HMAC-SHA512
+  signature against the raw body before ever parsing JSON. Real API shapes validated against a
+  working production Paystack integration, not guessed.
+- `djangors-contrib-tenancy`: multi-tenancy support — a `Tenant` model, a `TenantMembership` join
+  model, membership-verified per-request tenant resolution (`TenantResolutionLayer`, never trusts
+  a client-supplied tenant header alone), and a one-line `tenant_scope()` helper reusing
+  `djangors-rest`'s existing `Scoped`/`ScopedViewSet` enforcement mechanism. Design doc:
+  `docs/design/12.1-multi-tenancy.md`.
+- Workspace version bumped `0.1.0` → `0.2.0` to reflect this phase; republishing the updated
+  crates (and publishing `djangors-pdf`/`djangors-deploy`/`djangors-contrib-payments`/
+  `djangors-contrib-tenancy` for the first time) is the next step, tracked in `PLAN.md`.
