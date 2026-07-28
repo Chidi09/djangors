@@ -91,16 +91,17 @@ alone is enough to build a real CRUD app).
 
 ## Quick start
 
+Install Rust if you don't already have it, then the `dj` CLI from crates.io:
+
 ```bash
-git clone https://github.com/Chidi09/djangors.git
-cd djangors
-cargo build --workspace
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # macOS/Linux; on Windows, winget install Rustlang.Rustup
+cargo install djangors-cli
 ```
 
-Scaffold a new project with the `dj` CLI:
+Scaffold a new project and run it:
 
 ```bash
-cargo run -p djangors-cli -- new mysite
+dj new mysite
 cd mysite
 DATABASE_URL="postgres://postgres:postgres@localhost/mysite_dev" cargo run
 ```
@@ -113,6 +114,18 @@ suite, see `tools/doc-code-check`).
 Coming from Django? Start with
 [**Djangors for Django developers**](docs/src/django-comparison.md), a direct, side-by-side
 translation reference.
+
+### Building from source
+
+Contributing to Djangors itself, or want a `dj` build with unreleased fixes? Clone the monorepo
+instead of installing from crates.io:
+
+```bash
+git clone https://github.com/Chidi09/djangors.git
+cd djangors
+cargo build --workspace
+cargo run -p djangors-cli -- new mysite
+```
 
 ## Logging
 
