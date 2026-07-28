@@ -1,6 +1,6 @@
 ---
 name: djangors-development
-description: Use when building, editing, or reviewing code in a Djangors project — a Django-inspired, batteries-included Rust web framework (ORM, migrations, admin, forms, auth, REST framework, background tasks, i18n, static files). Trigger on `#[derive(Model)]`, `djangors-core`/`djangors-orm`/`djangors-rest`/`djangors-admin` in Cargo.toml, the `dj` CLI, or any Rust web project whose structure matches Django's (settings.py-style config, migrations, an admin site, ViewSets).
+description: Use when building, editing, or reviewing code in a Djangors project — a Django-inspired, batteries-included Rust web framework (ORM, migrations, admin, forms, auth, REST framework, background tasks, typed settings, payments, multi-tenancy, PDF generation, i18n, static files). Trigger on `#[derive(Model)]`, `djangors-core`/`djangors-orm`/`djangors-rest`/`djangors-admin`/`djangors-tasks`/`djangors-contrib-*` in Cargo.toml, the `dj` CLI, or any Rust web project whose structure matches Django's (settings.py-style config, migrations, an admin site, ViewSets).
 ---
 
 # Djangors development
@@ -51,6 +51,19 @@ Common attributes: `primary_key`, `auto` (auto-increment), `max_length = N` (Cha
 = "cascade"|"protect"|"set_null"|"restrict"|"do_nothing", related_name = "...")`. `default` on a
 non-string field must be a bare literal (`default = 0`, `default = true`), not a quoted string —
 that parses as text and silently produces the wrong `DefaultValue` variant.
+
+## Saving vs updating
+
+`save()` is INSERT-only — it always creates a new row (`auto` PK columns are DB-generated, so this
+is correct for a fresh instance). Any row you already fetched or previously saved must go through
+`update()` instead, which issues an `UPDATE ... WHERE pk = ...` and returns `OrmError::NotFound` if
+no row matched. There's no automatic new-vs-persisted detection — track it yourself:
+
+```rust
+let post = post.save(&db).await?;   // first time — INSERT, returns the row with its DB-assigned pk
+post.title = "edited".into();
+post.update(&db).await?;            // already exists — UPDATE, calling save() here inserts a duplicate
+```
 
 ## Querying
 
@@ -106,6 +119,53 @@ site.register_with::<Post>(djangors_admin::ModelAdminConfig {
 });
 router.mount("/admin", site.urls())
 ```
+
+## Background tasks
+
+```rust
+#[task]
+async fn send_welcome_email(payload: WelcomePayload) -> Result<(), TaskError> { /* ... */ }
+
+djangors_tasks::enqueue(&db, "send_welcome_email", &WelcomePayload { user_id }).await?;
+djangors_tasks::enqueue_scheduled(&db, "send_welcome_email", &payload, run_at).await?; // future DateTime<Utc>
+
+djangors_tasks::register_recurring(&db, "cleanup_sessions", &payload, "*/5 * * * *").await?; // standard 5-field cron
+```
+
+`tick_recurring_tasks(&db)` (call it from your own scheduler loop) advances a recurring task by
+**exactly one** occurrence per call, not all the way to "now" — a schedule that's missed several
+runs is caught up one occurrence at a time, with concurrent/successive callers each claiming one via
+`SELECT ... FOR UPDATE SKIP LOCKED`. It never dumps a whole backlog of catch-up tasks in one call.
+
+## Typed settings
+
+```rust
+#[derive(djangors_macros::Settings, Debug)]
+#[djangors(prefix = "APP")]
+struct AppSettings {
+    api_key: String,                                          // required; env var APP_API_KEY
+    #[djangors(default = "https://api.example.com".to_string())]
+    base_url: String,                                         // APP_BASE_URL
+    #[djangors(default = 30)]
+    timeout_secs: u64,
+    feature_flag: Option<bool>,                                // unset env var -> None, never an error
+}
+let settings = AppSettings::load()?;
+```
+
+Env vars are `{PREFIX}_{FIELD_NAME}` uppercased (or just `{FIELD_NAME}` with no `prefix`). A
+non-`Option` field with no `#[djangors(default = ...)]` is required — a missing env var is
+`SettingsError::MissingRequired`, not a silent default.
+
+## Other contrib crates
+
+`djangors-contrib-payments` — `PaymentProvider` trait + `PaystackProvider`, an idempotent
+`Transaction` model, `handle_paystack_webhook`; amounts are always integer minor units, never a
+float. `djangors-contrib-tenancy` — `Tenant`/`TenantMembership` models, `TenantResolutionLayer`
+middleware, `tenant_scope()` for `Scoped` impls (see the REST section above). `djangors-pdf` —
+`PdfDocument::new(title)` builder (`.heading()`/`.text()`/`.table()`/`.render()`). `djangors-deploy`
+exists (`DeployProvider`, `RenderProvider`, an SSH provider) but is not yet wired to a `dj deploy`
+CLI subcommand — use the crate directly.
 
 ## Rate limiting, cursor pagination, storage — opt-in, per-endpoint
 
