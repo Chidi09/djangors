@@ -88,6 +88,37 @@ let layer = HostValidationLayer::new(vec!["example.com".to_string(), "api.exampl
 
 ---
 
+## Content Security Policy (`CspBuilder`)
+
+`CspBuilder` (`djangors_core::middleware::CspBuilder`) is the `django-csp` equivalent — a builder
+for the `Content-Security-Policy` response header, with one method per directive:
+
+```rust,compile
+# fn main() {
+use djangors_core::middleware::CspBuilder;
+
+let csp_layer = CspBuilder::new()
+    .default_src(&["'self'"])
+    .script_src(&["'self'", "https://cdn.example.com"])
+    .style_src(&["'self'", "'unsafe-inline'"])
+    .img_src(&["'self'", "data:"])
+    .frame_ancestors(&["'none'"])
+    .upgrade_insecure_requests()
+    .build();
+# let _ = csp_layer;
+# }
+```
+
+Supported directives: `default_src`, `script_src`, `style_src`, `img_src`, `connect_src`,
+`font_src`, `frame_ancestors`, `form_action`, and `object_src` (each taking a source list), plus
+`upgrade_insecure_requests()` (a bare flag, no source list). Call `.report_only(true)` before
+`.build()` to send `Content-Security-Policy-Report-Only` instead of enforcing the policy — useful
+for testing a new policy against real traffic before turning on enforcement. Directive values pass
+through verbatim (no source-keyword validation), matching `HstsLayer`'s own deliberately minimal
+scope — you're responsible for getting the CSP syntax right.
+
+---
+
 ## Signed Cookie Session Store (`SignedCookieStore`)
 
 `SignedCookieStore` (`djangors_sessions::SignedCookieStore`) stores session data in client-side cookies signed with HMAC-SHA256 using `settings.SECRET_KEY`:
@@ -109,3 +140,33 @@ let session_layer = SessionLayer::new(store);
 - **HMAC Signature**: Cookies are encoded as `b64_json.b64_expiry.b64_mac`. Any tampering with payload or expiration invalidates the MAC signature, causing `decode()` to return `None` (clearing session state).
 - **`HttpOnly` & `SameSite=Lax`**: Session cookies are marked `HttpOnly` (inaccessible to client JavaScript) and `SameSite=Lax`.
 - **Session Fixation Prevention (`cycle_key`)**: Calling `session.cycle_key()` during authentication (`login()`) rotates the session key string, preventing session fixation attacks.
+
+---
+
+## Malware/AV Scanning of Uploads (`clamav` feature)
+
+`djangors-staticfiles`'s optional `clamav` Cargo feature (off by default — zero cost/deps unless
+enabled) scans uploaded file bytes against a real `clamd` daemon before they're ever written to
+disk or a `Storage` backend, using `clamd`'s `INSTREAM` wire protocol directly.
+
+```rust,illustrative
+use djangors_staticfiles::clamav::{ClamAvScanner, ScanResult};
+
+async fn scan_upload(bytes: &[u8]) -> Result<(), &'static str> {
+    let scanner = ClamAvScanner::unix("/var/run/clamav/clamd.ctl");
+    match scanner.scan(bytes).await {
+        Ok(ScanResult::Clean) => Ok(()),
+        Ok(ScanResult::Infected(signature)) => {
+            Err(Box::leak(format!("rejected upload: {signature}").into_boxed_str()))
+        }
+        Err(_) => Err("could not reach the malware scanner"),
+    }
+}
+```
+
+`ClamAvScanner::unix(path)` connects over a Unix domain socket (the common case when `clamd` runs
+on the same host); `ClamAvScanner::tcp(host, port)` connects over TCP instead. Scanning happens
+**in-memory** rather than by handing `clamd` a file path — `clamd` runs as its own OS user and
+generally can't read arbitrary application-owned paths, and scanning in-memory bytes also means
+the check can happen before anything touches disk at all. This requires a real `clamd` daemon
+already running and reachable; nothing in this module starts one for you.

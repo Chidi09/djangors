@@ -29,6 +29,11 @@ djangors-contrib-otp = { path = "../../crates/djangors-contrib-otp" }
 djangors-contrib-redirects = { path = "../../crates/djangors-contrib-redirects" }
 djangors-contrib-sitemaps = { path = "../../crates/djangors-contrib-sitemaps" }
 djangors-contrib-syndication = { path = "../../crates/djangors-contrib-syndication" }
+djangors-pdf = { path = "../../crates/djangors-pdf" }
+djangors-contrib-payments = { path = "../../crates/djangors-contrib-payments" }
+djangors-contrib-tenancy = { path = "../../crates/djangors-contrib-tenancy" }
+djangors-deploy = { path = "../../crates/djangors-deploy" }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres", "chrono"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

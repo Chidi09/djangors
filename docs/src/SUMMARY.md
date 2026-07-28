@@ -31,6 +31,10 @@
 - [Deployment](guides/deployment.md)
 - [Security](guides/security.md)
 - [Connection Pool Tuning](guides/pool-tuning.md)
+- [Typed Settings](guides/settings.md)
+- [PDF Generation](guides/pdf.md)
+- [Payments](guides/payments.md)
+- [Multi-tenancy](guides/multi-tenancy.md)
 
 # How-To Guides
 

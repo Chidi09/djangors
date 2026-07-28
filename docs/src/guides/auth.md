@@ -100,6 +100,31 @@ let backend = RateLimitedBackend::default_login_throttle(ModelBackend);
 # }
 ```
 
+### `PersistentLockoutBackend` (the `django-axes` equivalent)
+
+`RateLimitedBackend` throttles the *rate* of attempts, but a correct password made after the
+window resets still succeeds — it doesn't lock the account. `PersistentLockoutBackend` is
+different and complementary: after `max_attempts` consecutive failures, it rejects login attempts
+with `AuthError::AccountLocked { retry_after_secs }` for `lockout_duration` — **even with the
+correct password** — and this state is stored in a real `auth_login_lockout` database table, so it
+survives process restarts and is shared correctly across multiple app instances pointed at the
+same database.
+
+```rust,compile
+# fn main() {
+use djangors_auth::{ModelBackend, PersistentLockoutBackend};
+use std::time::Duration;
+
+// Lock an account for 1 hour after 5 consecutive failed attempts.
+let backend = PersistentLockoutBackend::new(ModelBackend, 5, Duration::from_secs(3600));
+# }
+```
+
+A successful login clears the account's failure streak entirely; an already-expired lockout is
+treated as a fresh streak (starting from 1) rather than continuing to accumulate. The
+`LoginLockout` model (`#[derive(Model)]`, table `auth_login_lockout`) is a normal registered
+model, so `dj makemigrations` picks it up automatically like any other.
+
 ---
 
 ## Session Management (`login` / `logout`)

@@ -75,6 +75,93 @@ dj check --deploy
 
 ---
 
+## Provider-Managed Deployment (`djangors-deploy`)
+
+`djangors-deploy` provides a `DeployProvider` trait — `provision`/`deploy`/`status`/`logs`/
+`destroy` — implemented so far by `RenderProvider` (drives Render's REST API directly) and
+`SshProvider` (a raw VPS reachable over SSH). This is a first slice: no `dj deploy` CLI
+subcommand is wired in yet, and Railway/GCP/AWS providers aren't implemented — using it today
+means calling the trait directly from your own tooling.
+
+```rust,compile
+use djangors_deploy::DeploySpec;
+
+fn spec_example() -> DeploySpec {
+    DeploySpec {
+        project_name: "my-app".to_string(),
+        repo_url: Some("https://github.com/me/my-app.git".to_string()),
+        branch: "main".to_string(),
+        dockerfile_path: "Dockerfile".to_string(),
+        docker_context: ".".to_string(),
+        health_check_path: "/healthz".to_string(),
+        env_vars: vec![("RUST_LOG".to_string(), "info".to_string())],
+        region: None,
+        plan: None,
+        needs_database: true,
+    }
+}
+```
+
+### `RenderProvider`
+
+```rust,illustrative
+use djangors_deploy::{DeployProvider, render::RenderProvider};
+
+async fn deploy_to_render(spec: &djangors_deploy::DeploySpec) -> Result<(), djangors_deploy::DeployError> {
+    let owner_id = RenderProvider::discover_owner_id("rnd_your_api_key").await?;
+    let provider = RenderProvider::new("rnd_your_api_key", owner_id);
+
+    let info = provider.provision(spec).await?;
+    provider.deploy(&info, spec).await?; // polls until live or failed
+    Ok(())
+}
+```
+
+### `SshProvider`
+
+`SshProvider` shells out to the system `ssh` binary (via `tokio::process::Command`) rather than
+adding a native SSH library dependency — the same class of native-dependency build friction this
+project hit once already deploying to a container platform. It clones/hard-resets your repo on
+the remote host and runs the same Dockerfile-based `docker build`/`docker run` flow
+`RenderProvider` uses. Every value interpolated into a remote shell command is POSIX-escaped and
+`project_name` is validated against a safe alphanumeric/-/_ pattern before use, as defense in
+depth.
+
+```rust,illustrative
+use djangors_deploy::{ssh::SshProvider, DeployProvider};
+
+async fn deploy_over_ssh(spec: &djangors_deploy::DeploySpec) -> Result<(), djangors_deploy::DeployError> {
+    let provider = SshProvider::new("203.0.113.10", 22, "deploy", "/home/deploy/.ssh/id_ed25519");
+    let info = provider.provision(spec).await?;
+    provider.deploy(&info, spec).await?;
+    Ok(())
+}
+```
+
+---
+
+## Error Tracking (optional Sentry integration)
+
+`djangors-core`'s optional `sentry` Cargo feature (off by default — zero cost/deps unless
+enabled) wires Sentry into the same `tracing` setup `init_production_logging()` already uses,
+rather than requiring a second, separate logging setup:
+
+```rust,illustrative
+use djangors_core::logging::init_production_logging_with_sentry;
+
+fn main() {
+    // Empty/invalid DSN produces a disabled client (Sentry's own cross-language convention) -
+    // always safe to call unconditionally even with a DSN that may be empty in development.
+    let _guard = init_production_logging_with_sentry("https://key@o0.ingest.sentry.io/0");
+    // ... start the app; the guard must stay alive for the process lifetime.
+}
+```
+
+`ERROR`-level `tracing` spans become Sentry events automatically; everything else becomes
+breadcrumbs, and panics are captured via Sentry's built-in panic integration.
+
+---
+
 ## Graceful Shutdown
 
 `djangors-core` handles process termination signals (`SIGINT` and `SIGTERM`) gracefully via `run_with_shutdown` and `run_service_with_shutdown`:
