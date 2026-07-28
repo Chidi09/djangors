@@ -12,12 +12,12 @@ default = []
 jwt = ["dep:jsonwebtoken"]
 
 [dependencies]
-djangors-orm = { path = "../djangors-orm", version = "0.2.1" }
-djangors-core = { path = "../djangors-core", version = "0.2.1" }
-djangors-db = { path = "../djangors-db", version = "0.2.1" }
-djangors-macros = { path = "../djangors-macros", version = "0.2.1" }
-djangors-auth = { path = "../djangors-auth", version = "0.2.1" }
-djangors-sessions = { path = "../djangors-sessions", version = "0.2.1" }
+djangors-orm = { path = "../djangors-orm", version = "0.2.2" }
+djangors-core = { path = "../djangors-core", version = "0.2.2" }
+djangors-db = { path = "../djangors-db", version = "0.2.2" }
+djangors-macros = { path = "../djangors-macros", version = "0.2.2" }
+djangors-auth = { path = "../djangors-auth", version = "0.2.2" }
+djangors-sessions = { path = "../djangors-sessions", version = "0.2.2" }
 async-trait = "0.1.86"
 rand = "0.8.7"
 serde = { version = "1.0.228", features = ["derive"] }

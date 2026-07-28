@@ -7,9 +7,9 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-auth = { path = "../djangors-auth", version = "0.2.1" }
-djangors-macros = { path = "../djangors-macros", version = "0.2.1" }
-djangors-orm = { path = "../djangors-orm", version = "0.2.1" }
+djangors-auth = { path = "../djangors-auth", version = "0.2.2" }
+djangors-macros = { path = "../djangors-macros", version = "0.2.2" }
+djangors-orm = { path = "../djangors-orm", version = "0.2.2" }
 totp-rs = { version = "5.7.2", features = ["gen_secret", "otpauth"] }
 
 [dev-dependencies]

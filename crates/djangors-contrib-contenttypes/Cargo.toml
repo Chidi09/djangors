@@ -7,9 +7,9 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-db = { path = "../djangors-db", version = "0.2.1" }
-djangors-macros = { path = "../djangors-macros", version = "0.2.1" }
-djangors-orm = { path = "../djangors-orm", version = "0.2.1" }
+djangors-db = { path = "../djangors-db", version = "0.2.2" }
+djangors-macros = { path = "../djangors-macros", version = "0.2.2" }
+djangors-orm = { path = "../djangors-orm", version = "0.2.2" }
 thiserror = "2.0.18"
 
 [dev-dependencies]
