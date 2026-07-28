@@ -85,9 +85,9 @@ impl PdfDocument {
     /// above the bottom margin on the current one.
     fn ensure_space(&mut self, needed_mm: f32) {
         if self.cursor_y_mm - needed_mm < MARGIN_MM {
-            let (page, layer) =
-                self.doc
-                    .add_page(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), "Layer 1");
+            let (page, layer) = self
+                .doc
+                .add_page(Mm(PAGE_WIDTH_MM), Mm(PAGE_HEIGHT_MM), "Layer 1");
             self.current_layer = self.doc.get_page(page).get_layer(layer);
             self.cursor_y_mm = PAGE_HEIGHT_MM - MARGIN_MM;
         }
@@ -146,8 +146,13 @@ impl PdfDocument {
             self.ensure_space(LINE_HEIGHT_MM);
             for (i, cell) in row.iter().enumerate().take(headers.len()) {
                 let x = MARGIN_MM + col_width_mm * i as f32;
-                self.current_layer
-                    .use_text(cell.as_str(), 11.0, Mm(x), Mm(self.cursor_y_mm), &self.font);
+                self.current_layer.use_text(
+                    cell.as_str(),
+                    11.0,
+                    Mm(x),
+                    Mm(self.cursor_y_mm),
+                    &self.font,
+                );
             }
             self.cursor_y_mm -= LINE_HEIGHT_MM;
         }
@@ -178,7 +183,10 @@ mod tests {
         doc.heading("Report Card").text("Student: Jane Doe");
         let bytes = doc.render().unwrap();
 
-        assert!(bytes.starts_with(b"%PDF-"), "must start with a real PDF header");
+        assert!(
+            bytes.starts_with(b"%PDF-"),
+            "must start with a real PDF header"
+        );
         assert!(
             bytes.windows(5).any(|w| w == b"%%EOF"),
             "must end with a real PDF trailer"

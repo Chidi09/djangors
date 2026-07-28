@@ -30,7 +30,12 @@ const REMOTE_BASE_DIR: &str = "/opt/djangors-deploys";
 impl SshProvider {
     /// Creates a provider targeting `user@host:port`, authenticating with the
     /// private key at `key_path`.
-    pub fn new(host: impl Into<String>, port: u16, user: impl Into<String>, key_path: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        host: impl Into<String>,
+        port: u16,
+        user: impl Into<String>,
+        key_path: impl Into<PathBuf>,
+    ) -> Self {
         Self {
             host: host.into(),
             port,

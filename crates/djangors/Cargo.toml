@@ -24,3 +24,4 @@ djangors-i18n = { path = "../djangors-i18n", version = "0.1.0" }
 djangors-db = { path = "../djangors-db", version = "0.1.0" }
 djangors-tasks = { path = "../djangors-tasks", version = "0.1.0" }
 djangors-pdf = { path = "../djangors-pdf", version = "0.1.0" }
+djangors-contrib-payments = { path = "../djangors-contrib-payments", version = "0.1.0" }

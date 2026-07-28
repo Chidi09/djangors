@@ -3500,9 +3500,10 @@ mod tests {
                 ))
                 .await
                 .expect("connect for cross-process lock");
-                let lock = djangors_test::acquire_cross_process_lock(&db, "djangors_test_auth_user_ddl")
-                    .await
-                    .expect("acquire cross-process lock");
+                let lock =
+                    djangors_test::acquire_cross_process_lock(&db, "djangors_test_auth_user_ddl")
+                        .await
+                        .expect("acquire cross-process lock");
                 std::mem::forget(lock);
                 std::mem::forget(db);
             })

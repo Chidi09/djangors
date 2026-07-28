@@ -179,7 +179,10 @@ mod tests {
         // should ever match it.
         let eicar = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
         let result = scanner.scan(eicar).await.unwrap();
-        assert_eq!(result, ScanResult::Infected("Eicar-Test-Signature".to_string()));
+        assert_eq!(
+            result,
+            ScanResult::Infected("Eicar-Test-Signature".to_string())
+        );
     }
 
     #[tokio::test]
@@ -209,6 +212,9 @@ mod tests {
         };
         let eicar = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*";
         let result = scanner.scan(eicar).await.unwrap();
-        assert_eq!(result, ScanResult::Infected("Eicar-Test-Signature".to_string()));
+        assert_eq!(
+            result,
+            ScanResult::Infected("Eicar-Test-Signature".to_string())
+        );
     }
 }

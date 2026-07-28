@@ -15,7 +15,9 @@ use std::fmt;
 pub enum SettingsError {
     /// A field had no `#[djangors(default = ...)]` and wasn't `Option<T>`, but its
     /// environment variable was not set.
-    #[error("missing required setting: environment variable `{env_var}` is not set (field `{field}`)")]
+    #[error(
+        "missing required setting: environment variable `{env_var}` is not set (field `{field}`)"
+    )]
     MissingRequired {
         /// The struct field name.
         field: &'static str,
@@ -460,7 +462,11 @@ mod tests {
         assert_eq!(settings.feature_flag, Some(true));
         assert_eq!(
             settings.allowed_origins,
-            Some(vec!["a.com".to_string(), "b.com".to_string(), "c.com".to_string()])
+            Some(vec![
+                "a.com".to_string(),
+                "b.com".to_string(),
+                "c.com".to_string()
+            ])
         );
     }
 
@@ -478,9 +484,7 @@ mod tests {
 
         let err = DeriveSettingsFixture::load().unwrap_err();
         match err {
-            SettingsError::InvalidValue {
-                field, env_var, ..
-            } => {
+            SettingsError::InvalidValue { field, env_var, .. } => {
                 assert_eq!(field, "timeout_secs");
                 assert_eq!(env_var, "TESTAPP_TIMEOUT_SECS");
             }

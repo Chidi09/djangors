@@ -36,7 +36,9 @@ pub enum AuthError {
     /// process restarts. Distinct from [`AuthError::RateLimited`]: a lockout rejects
     /// *correct* credentials too until it expires, whereas rate limiting only
     /// throttles the rate of attempts.
-    #[error("account locked due to too many failed login attempts, try again in {retry_after_secs}s")]
+    #[error(
+        "account locked due to too many failed login attempts, try again in {retry_after_secs}s"
+    )]
     AccountLocked {
         /// Seconds remaining until the lockout expires.
         retry_after_secs: u64,

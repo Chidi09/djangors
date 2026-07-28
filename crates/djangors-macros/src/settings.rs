@@ -68,7 +68,11 @@ pub fn expand_derive_settings(input: DeriveInput) -> syn::Result<TokenStream> {
         let env_var = if prefix.is_empty() {
             field_name_str.to_uppercase()
         } else {
-            format!("{}_{}", prefix.to_uppercase(), field_name_str.to_uppercase())
+            format!(
+                "{}_{}",
+                prefix.to_uppercase(),
+                field_name_str.to_uppercase()
+            )
         };
 
         let mut default_expr: Option<Expr> = None;

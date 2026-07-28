@@ -658,7 +658,11 @@ impl<T: Model + FromRow> QuerySet<T> {
             }
         }
 
-        let mut sql = format!("UPDATE \"{}\" SET {}", meta.table_name, set_parts.join(", "));
+        let mut sql = format!(
+            "UPDATE \"{}\" SET {}",
+            meta.table_name,
+            set_parts.join(", ")
+        );
         if !self.filters.is_empty() {
             let combined = Expr::And(self.filters.clone());
             let where_clause =

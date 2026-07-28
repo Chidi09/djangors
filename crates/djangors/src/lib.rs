@@ -9,6 +9,8 @@ pub use djangors_admin as admin;
 pub use djangors_auth as auth;
 /// In-memory, database, and Redis cache backends.
 pub use djangors_cache as cache;
+/// Payment provider integration (Paystack) with idempotent transaction recording.
+pub use djangors_contrib_payments as payments;
 /// Core HTTP types: Router, Request, Response, middleware, and settings.
 pub use djangors_core as core;
 /// Database configuration and connection abstractions.
@@ -19,12 +21,12 @@ pub use djangors_forms as forms;
 pub use djangors_i18n as i18n;
 /// Mail messages and delivery backends.
 pub use djangors_mail as mail;
-/// Typed PDF generation for report cards, invoices, and receipts.
-pub use djangors_pdf as pdf;
 /// Database migration operations and planning.
 pub use djangors_migrations as migrations;
 /// ORM models, querysets, expressions, and metadata.
 pub use djangors_orm as orm;
+/// Typed PDF generation for report cards, invoices, and receipts.
+pub use djangors_pdf as pdf;
 /// REST serialization, authentication, and permissions.
 pub use djangors_rest as rest;
 /// Session storage and signed cookie sessions.

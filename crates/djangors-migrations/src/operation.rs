@@ -72,7 +72,7 @@ impl Operation {
                 table_name,
                 columns,
             } => {
-                let col_sqls: Vec<String> = columns.iter().map(|col| column_sql(col)).collect();
+                let col_sqls: Vec<String> = columns.iter().map(column_sql).collect();
                 format!(
                     "CREATE TABLE IF NOT EXISTS \"{}\" (\n    {}\n)",
                     table_name,

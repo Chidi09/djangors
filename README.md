@@ -79,6 +79,7 @@ of composable pieces:
 | `djangors-test` | In-process test client, real per-test database isolation, and a JSON fixtures loader |
 | `djangors-cli` (`dj`) | The `manage.py` equivalent — `new`, `run`, `migrate` (with rollback), `createsuperuser`, `shell` (a real `evcxr` Rust REPL), `dbshell`, `test`, `check --deploy`, and a plugin mechanism for a project's own `dj <custom-command>` |
 | `djangors-deploy` | `DeployProvider` trait for `dj deploy` — ships a Render provider (real REST API) and an SSH/VPS provider (shells out to the system `ssh`); Railway/GCP/AWS not yet implemented |
+| `djangors-contrib-payments` | Payment provider integration (Paystack) with idempotent, DB-constraint-backed transaction recording; amounts always in integer minor units, never a float |
 | `djangors-contrib-*` | Sitemaps, RSS/Atom syndication, flat pages, redirects, flash messages, object-level permissions (guardian-style), TOTP/2FA, content types / generic foreign keys |
 
 Two full example apps exercise the framework end-to-end: `examples/polls` (the tutorial app, mirrors

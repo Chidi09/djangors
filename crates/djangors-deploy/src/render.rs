@@ -75,8 +75,8 @@ impl RenderProvider {
         let resp = req.send().await?;
         let status = resp.status();
         let text = resp.text().await?;
-        let value: Value = serde_json::from_str(&text)
-            .unwrap_or_else(|_| Value::String(text.clone()));
+        let value: Value =
+            serde_json::from_str(&text).unwrap_or_else(|_| Value::String(text.clone()));
         if !status.is_success() {
             return Err(DeployError::Api {
                 status: status.as_u16(),
@@ -244,8 +244,9 @@ impl DeployProvider for RenderProvider {
             .unwrap_or("");
         Ok(match latest {
             "live" => DeployStatus::Live,
-            "build_failed" | "update_failed" | "canceled" | "deactivated"
-            | "pre_deploy_failed" => DeployStatus::Failed(latest.to_string()),
+            "build_failed" | "update_failed" | "canceled" | "deactivated" | "pre_deploy_failed" => {
+                DeployStatus::Failed(latest.to_string())
+            }
             "" => DeployStatus::NotFound,
             _ => DeployStatus::InProgress,
         })

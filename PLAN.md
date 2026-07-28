@@ -1028,9 +1028,62 @@ Sequenced easiest → hardest; tracked as tasks #62–71.
   exploration were cleaned up/restored before moving on. Picking back up here means: a disposable
   Postgres container for the SSH smoke test, a `RenderProvider` test (mockable via a local HTTP
   server), and the CLI wiring.
-- [ ] **`djangors-contrib-payments`** — a `PaymentProvider` trait (Paystack first) with an
-  idempotency-key-first `Transaction` model and per-provider webhook signature verification.
-  Highest-care item on this list — real money correctness.
+- [x] **`djangors-contrib-payments`** — **Paystack done.** A provider-agnostic `PaymentProvider`
+  async trait (`initiate`/`verify`/`verify_webhook_signature`/`refund`) plus `PaystackProvider`, and
+  an idempotency-key-first `Transaction` model (`reference` has a real DB-level UNIQUE constraint,
+  not an application-level check-then-insert, which would race under concurrent webhook
+  redeliveries or double-clicks). Amounts are `i64` minor units (kobo/cents) everywhere, never a
+  float and never `rust_decimal::Decimal` — this satisfies Part 6 item 1's "money is Decimal, never
+  float" principle by a different, equally-correct route: djangors-orm's `#[derive(Model)]`
+  currently has a hard compile error for `Decimal`/`NaiveDate`/`NaiveTime`/`Duration`/`Uuid` fields
+  needing INSERT/UPDATE codegen (a real, tracked gap — see `crates/djangors-macros/src/model.rs`
+  ~L389-402), and integer minor units is the same convention Paystack's and Stripe's own APIs use on
+  the wire anyway, so there's no float-precision problem to solve with Decimal here in the first
+  place. Real Paystack API shapes (not guessed): validated directly against
+  `/root/dev/GoGo/backend/internal/pkg/payment/paystack.go` and its webhook handler — a real,
+  deployed, working Nigerian fintech integration on this same machine — for `initialize`/`verify`/
+  webhook-signature-verification, plus a web search confirming the `refund` endpoint's real
+  `data.transaction.reference` + `data.status` shape (not in the GoGo reference, since that project
+  handles refunds as an internal wallet credit rather than a real Paystack refund call). Webhook
+  handling replicates the exact real order of operations from GoGo's own production handler: read
+  raw body bytes → verify HMAC-SHA512 signature against the *raw* bytes (via `hmac`/`sha2`'s
+  constant-time `verify_slice`, never a manual `==`) *before* parsing any JSON → only then parse →
+  require both `event == "charge.success"` AND `data.status == "success"` → idempotently
+  record/update the transaction. Paystack's `amount` field is a JSON number in some responses and a
+  string in others (a real, confirmed API inconsistency, not a hypothetical) — handled with a custom
+  serde deserializer tested against both shapes.
+
+  Built via this project's dispatch workflow (design-doc-first, independent review after) — first
+  attempt via `agy`/gemini died immediately on a quota wall (confirmed via a real `git status`/`git
+  diff` check showing zero changes, not assumed), `codex` was blocked by this session's own
+  permission classifier on its required `--dangerously-bypass-approvals-and-sandbox` flag (the user
+  chose to skip it rather than force through), so this landed on
+  `opencode run -m opencode/deepseek-v4-flash-free` — which itself first stalled on an
+  over-broad single-shot prompt (read 5 large reference files, produced zero writes, exited clean —
+  a known free-tier failure mode of running out of step budget on reads before ever writing) before
+  succeeding once split into two leaner dispatches with every API fact inlined directly in the
+  prompt instead of pointing at files to go read.
+
+  **Independent review caught one real bug the dispatch's own self-report missed**: `mark_transaction_status`
+  called `Transaction::save()` (djangors-orm's save() is INSERT-only, by convention) on an
+  already-persisted row instead of `update()`, which only surfaced as a real duplicate-key-violation
+  failure once tests were re-run with `DATABASE_URL` actually set — the dispatch's own test run (and
+  my first independent rerun) had silently taken the tests' `TestDatabase::isolated()`-unavailable
+  skip path with no live DB configured, passing trivially without exercising the real update path at
+  all. Fixed directly, then reverified twice against a real live Postgres connection with all 10
+  tests genuinely passing (confirmed via wall-clock timing: ~1.6-1.7s with a real DB vs ~0.03s on
+  the skip path — solid evidence of genuine DB I/O, not just a green checkmark). Also found and
+  fixed, in the same review pass, a pre-existing (unrelated to this dispatch) clippy
+  `redundant_closure` regression in `djangors-migrations/src/operation.rs` blocking the full
+  workspace `-D warnings` gate, and recovered from a genuine disk-space exhaustion (`target/` had
+  grown to 18GB across this session's many builds, filling the VPS to 0 bytes free and causing a
+  real, unrelated Postgres `no space left on device` test failure) via `cargo clean`, freeing 19.4GB.
+
+  **Not done, deliberately deferred**: Stripe/Anchor/Moniepoint providers (Paystack first per the
+  user's own sequencing); no HTTP route/view wiring into any example app (this crate exposes
+  functions an application's own handler calls, matching how `djangors-auth` exposes backends rather
+  than routes — deliberate, not an oversight); no idempotency-key middleware for generic POST APIs
+  (Part 6 item 4 — a separate, broader concern than this crate's own reference-based idempotency).
 - [ ] **Multi-tenancy support** — most architecturally invasive item, cuts across ORM query
   scoping, auth, admin, and migrations. Needs its own design doc before implementation; deliberately
   sequenced last.
