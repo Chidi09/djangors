@@ -3,4 +3,4 @@ import { marked } from 'marked'; import Layout from '../layouts/Layout.astro'; i
 import markdown from '../content/CHANGELOG.md?raw';
 const html = marked.parse(markdown);
 ---
-<Layout title="Djangors — Changelog"><article class="markdown"><button class="copy" data-markdown={markdown}>Copy as Markdown</button><Fragment set:html={html} /></article></Layout>
+<Layout title="Djangors Changelog" description="Every notable change to Djangors, grouped by the phase it shipped under: new crates, features, and fixes, sourced directly from the real project changelog."><article class="markdown"><button class="copy" data-markdown={markdown}>Copy as Markdown</button><Fragment set:html={html} /></article></Layout>

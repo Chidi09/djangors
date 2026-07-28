@@ -24,10 +24,10 @@ let service = ServiceBuilder::new()
 3. **Form Fallback**: If the header is missing or mismatched, `CsrfLayer` sets `CsrfPendingFormCheck` on the request extensions. Form submission handlers verify the `csrfmiddlewaretoken` form body field against the pending token, returning `403 Forbidden` if missing or invalid.
 
 **Production checklist**: `csrf_layer()` defaults to `Secure` **off** on the `csrftoken` cookie, the
-same way `SignedCookieStore::new()` defaults `Secure` off (see below) — this keeps local HTTP
+same way `SignedCookieStore::new()` defaults `Secure` off (see below). This keeps local HTTP
 development working out of the box. In production, enable it the same way the session store does:
 `csrf_layer().with_secure(!settings.debug)`. Both `examples/school` and `examples/polls` wire this
-correctly; if you're copying from an older reference, check that your own `main.rs` does too — an
+correctly; if you're copying from an older reference, check that your own `main.rs` does too. An
 internal security review (2026-07-27) found neither example app had actually done this before,
 despite the session-cookie guidance below already documenting the correct pattern.
 
@@ -90,7 +90,7 @@ let layer = HostValidationLayer::new(vec!["example.com".to_string(), "api.exampl
 
 ## Content Security Policy (`CspBuilder`)
 
-`CspBuilder` (`djangors_core::middleware::CspBuilder`) is the `django-csp` equivalent — a builder
+`CspBuilder` (`djangors_core::middleware::CspBuilder`) is the `django-csp` equivalent: a builder
 for the `Content-Security-Policy` response header, with one method per directive:
 
 ```rust,compile
@@ -112,10 +112,10 @@ let csp_layer = CspBuilder::new()
 Supported directives: `default_src`, `script_src`, `style_src`, `img_src`, `connect_src`,
 `font_src`, `frame_ancestors`, `form_action`, and `object_src` (each taking a source list), plus
 `upgrade_insecure_requests()` (a bare flag, no source list). Call `.report_only(true)` before
-`.build()` to send `Content-Security-Policy-Report-Only` instead of enforcing the policy — useful
-for testing a new policy against real traffic before turning on enforcement. Directive values pass
-through verbatim (no source-keyword validation), matching `HstsLayer`'s own deliberately minimal
-scope — you're responsible for getting the CSP syntax right.
+`.build()` to send `Content-Security-Policy-Report-Only` instead of enforcing the policy. This is
+useful for testing a new policy against real traffic before turning on enforcement. Directive
+values pass through verbatim (no source-keyword validation), matching `HstsLayer`'s own
+deliberately minimal scope, so you're responsible for getting the CSP syntax right.
 
 ---
 
@@ -145,7 +145,7 @@ let session_layer = SessionLayer::new(store);
 
 ## Malware/AV Scanning of Uploads (`clamav` feature)
 
-`djangors-staticfiles`'s optional `clamav` Cargo feature (off by default — zero cost/deps unless
+`djangors-staticfiles`'s optional `clamav` Cargo feature (off by default, so zero cost/deps unless
 enabled) scans uploaded file bytes against a real `clamd` daemon before they're ever written to
 disk or a `Storage` backend, using `clamd`'s `INSTREAM` wire protocol directly.
 
@@ -166,7 +166,7 @@ async fn scan_upload(bytes: &[u8]) -> Result<(), &'static str> {
 
 `ClamAvScanner::unix(path)` connects over a Unix domain socket (the common case when `clamd` runs
 on the same host); `ClamAvScanner::tcp(host, port)` connects over TCP instead. Scanning happens
-**in-memory** rather than by handing `clamd` a file path — `clamd` runs as its own OS user and
-generally can't read arbitrary application-owned paths, and scanning in-memory bytes also means
+**in-memory** rather than by handing `clamd` a file path, since `clamd` runs as its own OS user and
+generally can't read arbitrary application-owned paths. Scanning in-memory bytes also means
 the check can happen before anything touches disk at all. This requires a real `clamd` daemon
 already running and reachable; nothing in this module starts one for you.

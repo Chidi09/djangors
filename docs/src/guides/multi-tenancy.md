@@ -16,11 +16,11 @@ fn describe(tenant: &Tenant, membership: &TenantMembership) -> String {
 }
 ```
 
-`Tenant` is deliberately generic (`name`/`slug`/`is_active`) — it represents a school, a bank
+`Tenant` is deliberately generic (`name`/`slug`/`is_active`). It represents a school, a bank
 branch, or a seller account equally well; your application names its own domain concept on top.
 
 `TenantMembership` links a user to a tenant with a role, and a user may hold **more than one**
-membership (belonging to several tenants) — more general than simply putting a `tenant_id`
+membership (belonging to several tenants). That's more general than simply putting a `tenant_id`
 directly on your user model, and it doesn't require modifying `djangors-auth`'s `User` struct at
 all.
 
@@ -28,7 +28,7 @@ all.
 
 A request's tenant is never trusted from a client-supplied header alone. `TenantResolutionLayer`
 reads the `X-Tenant-Id` header, then verifies the authenticated user actually has a real
-`TenantMembership` row for that tenant before accepting it — a forged or stale header for a
+`TenantMembership` row for that tenant before accepting it. A forged or stale header for a
 tenant the user doesn't belong to is silently rejected (no `CurrentTenant` gets set at all, which
 downstream scoping then treats as unauthorized), never treated as a default/fallback tenant.
 
@@ -52,7 +52,7 @@ struct CurrentUserId(i64);
 ## Scoping a model to the current tenant
 
 `djangors-rest` already ships the enforcement primitive this crate builds on: the `Scoped` trait,
-which `ScopedViewSet<M>` *requires* — a model without a `scope()` implementation simply cannot be
+which `ScopedViewSet<M>` *requires*. A model without a `scope()` implementation simply cannot be
 used with `ScopedViewSet` at all, a compile-time guarantee rather than a convention someone has to
 remember. `tenant_scope()` is a one-line helper for writing that implementation:
 
@@ -82,12 +82,12 @@ impl Scoped for SchoolClass {
 ```
 
 Every `ScopedViewSet::<SchoolClass>` request now only ever sees rows belonging to the current,
-membership-verified tenant — a user for tenant A genuinely cannot see tenant B's classes, list
+membership-verified tenant. A user for tenant A genuinely cannot see tenant B's classes, list
 them, or fetch one by id.
 
 ## What this doesn't cover yet
 
-`djangors-admin` has no tenant-scoping integration yet — an admin user for one tenant can browse
+`djangors-admin` has no tenant-scoping integration yet: an admin user for one tenant can browse
 another tenant's rows in the generated admin UI. This is the design doc's own flagged
 highest-value follow-up, not yet built. Schema-per-tenant/database-per-tenant support,
 subdomain-based tenant resolution (v1 is `X-Tenant-Id`-header only), and automatic Postgres

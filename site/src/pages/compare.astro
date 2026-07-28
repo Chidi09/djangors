@@ -3,4 +3,4 @@ import { marked } from 'marked'; import Layout from '../layouts/Layout.astro'; i
 import markdown from '../content/django-comparison.md?raw';
 const html = marked.parse(markdown);
 ---
-<Layout title="Djangors for Django Developers"><article class="markdown"><button class="copy" data-markdown={markdown}>Copy as Markdown</button><Fragment set:html={html} /></article></Layout>
+<Layout title="Djangors for Django Developers" description="A direct, side-by-side translation guide from Django to Djangors: models, views, admin, forms, auth, and the REST framework, mapped concept for concept."><article class="markdown"><button class="copy" data-markdown={markdown}>Copy as Markdown</button><Fragment set:html={html} /></article></Layout>

@@ -6,7 +6,7 @@ environment variables, without hand-writing `std::env::var(...)` plus manual par
 handling for every field.
 
 This is distinct from `DjangorsSettings` (the framework's own fixed settings struct for things
-like `SECRET_KEY`/`ALLOWED_HOSTS`/`DEBUG`) — `#[derive(Settings)]` is for config your application
+like `SECRET_KEY`/`ALLOWED_HOSTS`/`DEBUG`). `#[derive(Settings)]` is for config your application
 defines itself: a third-party API key, a feature flag, a timeout, anything your own code needs
 at startup.
 
@@ -85,11 +85,11 @@ match err {
 # }
 ```
 
-- **`MissingRequired`** — a field with no `#[djangors(default = ...)]` and not wrapped in
+- **`MissingRequired`**: a field with no `#[djangors(default = ...)]` and not wrapped in
   `Option<T>` had no environment variable set at all.
-- **`InvalidValue`** — the environment variable was set, but its value couldn't be parsed into the
+- **`InvalidValue`**: the environment variable was set, but its value couldn't be parsed into the
   field's declared type (e.g. `MYAPP_TIMEOUT_SECS=not-a-number`).
 
 Call `load()` once at process startup (in `main()`, before the server starts accepting
-connections) and treat any `Err` as a hard failure to boot — the same "fail fast on bad config"
-principle `dj check --deploy` already applies to the framework's own settings.
+connections) and treat any `Err` as a hard failure to boot. This is the same "fail fast on bad
+config" principle `dj check --deploy` already applies to the framework's own settings.

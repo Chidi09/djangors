@@ -7,8 +7,8 @@ can never double-process a charge**.
 
 ## Amounts: integer minor units, never a float
 
-Every amount in this crate is an `i64` in the currency's minor unit — kobo for NGN, cents for
-USD — never `f64` and never `rust_decimal::Decimal`. This is the same convention Paystack's and
+Every amount in this crate is an `i64` in the currency's minor unit (kobo for NGN, cents for
+USD), never `f64` and never `rust_decimal::Decimal`. This is the same convention Paystack's and
 Stripe's own APIs use on the wire, so there's no float-precision problem to solve in the first
 place: `5000` means ₦50.00, not `50.0`.
 
@@ -32,7 +32,7 @@ async fn charge_example(provider: &dyn PaymentProvider) -> Result<InitiateCharge
 ```
 
 Every provider implements four operations: `initiate` (start a charge, get a redirect URL back),
-`verify` (confirm a transaction's real status directly with the provider — never trust a
+`verify` (confirm a transaction's real status directly with the provider; never trust a
 client-side "success" redirect alone), `verify_webhook_signature`, and `refund`.
 
 ## `PaystackProvider`
@@ -51,7 +51,7 @@ fn make_provider(secret_key: &str) -> PaystackProvider {
 
 ## Idempotent transaction recording
 
-`Transaction`'s `reference` column has a real **database-level UNIQUE constraint** — not an
+`Transaction`'s `reference` column has a real **database-level UNIQUE constraint**, not an
 application-level check-then-insert, which would race under a concurrent webhook redelivery or a
 double-clicked "pay now" button. `record_charge_initiated` relies on that constraint directly:
 
@@ -72,11 +72,11 @@ async fn start_checkout(db: &Database, reference: &str) -> Result<Transaction, d
 processing an incoming webhook safely:
 
 1. Verify the `x-paystack-signature` header (HMAC-SHA512, constant-time) against the **raw
-   request body bytes** — before ever parsing any JSON. A bad signature is rejected without the
+   request body bytes**, before ever parsing any JSON. A bad signature is rejected without the
    payload being touched at all.
 2. Only then parse the JSON body.
 3. Require **both** `event == "charge.success"` **and** `data.status == "success"` before
-   treating the charge as confirmed — checking only one of these would be a real security gap.
+   treating the charge as confirmed. Checking only one of these would be a real security gap.
 4. Idempotently record or update the transaction, so a genuine webhook redelivery is a harmless
    no-op, not a duplicate credit.
 
@@ -113,7 +113,7 @@ pub async fn paystack_webhook_view(
 ## Not yet included
 
 Stripe/Anchor/Moniepoint providers, HTTP route wiring into any example app (this crate exposes
-functions your own handler calls — matching how `djangors-auth` exposes backends rather than
-routes, not an oversight), and generic idempotency-key middleware for arbitrary POST APIs (a
+functions your own handler calls, matching how `djangors-auth` exposes backends rather than
+routes; not an oversight), and generic idempotency-key middleware for arbitrary POST APIs (a
 separate, broader concern than this crate's own reference-based idempotency) are all deliberately
 out of scope for this first slice.

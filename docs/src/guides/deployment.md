@@ -77,10 +77,10 @@ dj check --deploy
 
 ## Provider-Managed Deployment (`djangors-deploy`)
 
-`djangors-deploy` provides a `DeployProvider` trait — `provision`/`deploy`/`status`/`logs`/
-`destroy` — implemented so far by `RenderProvider` (drives Render's REST API directly) and
+`djangors-deploy` provides a `DeployProvider` trait (`provision`/`deploy`/`status`/`logs`/
+`destroy`), implemented so far by `RenderProvider` (drives Render's REST API directly) and
 `SshProvider` (a raw VPS reachable over SSH). This is a first slice: no `dj deploy` CLI
-subcommand is wired in yet, and Railway/GCP/AWS providers aren't implemented — using it today
+subcommand is wired in yet, and Railway/GCP/AWS providers aren't implemented. Using it today
 means calling the trait directly from your own tooling.
 
 ```rust,compile
@@ -120,7 +120,7 @@ async fn deploy_to_render(spec: &djangors_deploy::DeploySpec) -> Result<(), djan
 ### `SshProvider`
 
 `SshProvider` shells out to the system `ssh` binary (via `tokio::process::Command`) rather than
-adding a native SSH library dependency — the same class of native-dependency build friction this
+adding a native SSH library dependency, the same class of native-dependency build friction this
 project hit once already deploying to a container platform. It clones/hard-resets your repo on
 the remote host and runs the same Dockerfile-based `docker build`/`docker run` flow
 `RenderProvider` uses. Every value interpolated into a remote shell command is POSIX-escaped and
@@ -142,7 +142,7 @@ async fn deploy_over_ssh(spec: &djangors_deploy::DeploySpec) -> Result<(), djang
 
 ## Error Tracking (optional Sentry integration)
 
-`djangors-core`'s optional `sentry` Cargo feature (off by default — zero cost/deps unless
+`djangors-core`'s optional `sentry` Cargo feature (off by default, so zero cost/deps unless
 enabled) wires Sentry into the same `tracing` setup `init_production_logging()` already uses,
 rather than requiring a second, separate logging setup:
 

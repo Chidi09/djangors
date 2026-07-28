@@ -3,4 +3,4 @@ import { marked } from 'marked'; import Layout from '../layouts/Layout.astro'; i
 import markdown from '../content/benchmarks.md?raw';
 const html = marked.parse(markdown);
 ---
-<Layout title="Djangors Benchmarks"><article class="markdown"><button class="copy" data-markdown={markdown}>Copy as Markdown</button><Fragment set:html={html} /></article></Layout>
+<Layout title="Djangors Benchmarks" description="Honest, oha-driven HTTP benchmarks comparing Djangors against Django/Gunicorn and axum, with the real methodology and numbers behind the claims."><article class="markdown"><button class="copy" data-markdown={markdown}>Copy as Markdown</button><Fragment set:html={html} /></article></Layout>

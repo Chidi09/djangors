@@ -13,12 +13,12 @@ security requirements:
 ## ⚠️ Current integration limitation
 
 `CacheLayer` operates on the raw `hyper::Response<Full<Bytes>>` that comes out of the connection-
-serving loop, not on `djangors_core::Response` — the framework's own `Response` type has no
+serving loop, not on `djangors_core::Response`. The framework's own `Response` type has no
 `extensions_mut()` (or any extensions API at all). This means there is currently **no way for an
-ordinary Djangors view handler to opt a response into caching** — the marker has to be inserted on
+ordinary Djangors view handler to opt a response into caching**. The marker has to be inserted on
 the raw hyper response, which only code operating below the framework's own dispatch layer can do.
 This is the same "primitive exists, framework-level wiring doesn't yet" gap several other Phase 7
-crates (`djangors-contrib-messages`, `-guardian`, `-otp`) document rather than paper over — see
+crates (`djangors-contrib-messages`, `-guardian`, `-otp`) document rather than paper over. See
 those guides/crates' own docs for the same pattern.
 
 `CacheLayer` is still directly usable **today** if you're composing your own `tower::Service` stack
@@ -56,5 +56,5 @@ async fn build_and_call_cached_service() {
 
 Wiring `CacheableResponse` into an ordinary `djangors_core::Router`-based view handler would
 require a core `djangors_core::Response` change (an extensions API, or a dedicated
-`Response::cacheable()` constructor) — not attempted here since it's out of scope for a how-to;
-track it as a real, open Phase-9-discovered gap if you need it.
+`Response::cacheable()` constructor); not attempted here since it's out of scope for a how-to.
+Track it as a real, open Phase-9-discovered gap if you need it.

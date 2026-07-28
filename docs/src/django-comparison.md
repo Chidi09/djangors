@@ -154,7 +154,7 @@ pub async fn article_detail(req: Request, params: PathParams) -> Result<Response
 ### Generic Class-Based Views
 
 For the common list/detail/create/update/delete shape, `djangors-views` mirrors Django's
-`django.views.generic` — the hand-written `article_detail` above could instead be:
+`django.views.generic`. The hand-written `article_detail` above could instead be:
 
 ```rust,illustrative
 use djangors_views::{DetailView, ViewSetConfig};
@@ -301,8 +301,8 @@ In HTML forms:
 </form>
 ```
 
-Adding the CSRF layer — like every Djangors middleware, it's composed via `tower::ServiceBuilder`
-around a `RouterService`, not a method on `Router` itself:
+Adding the CSRF layer works like every Djangors middleware: it's composed via
+`tower::ServiceBuilder` around a `RouterService`, not a method on `Router` itself:
 ```rust,compile
 # fn main() {
 # let router = djangors_core::Router::new();
@@ -359,8 +359,8 @@ pub async fn contact_view(req: Request, _params: PathParams) -> Result<Response,
 
 ### `ModelForm` Parity
 
-`#[derive(Model)]` also generates a `ModelForm` equivalent directly on the model itself — no
-second, hand-written form struct required:
+`#[derive(Model)]` also generates a `ModelForm` equivalent directly on the model itself, so no
+second, hand-written form struct is required:
 
 ```rust,compile
 # use djangors_macros::Model;
@@ -391,7 +391,7 @@ async fn handle_submission(data: &std::collections::HashMap<String, String>) {
 Auto/primary-key fields and `FileField`-kind fields are excluded from the generated form (the
 same way `save()`'s own `INSERT` already skips auto fields). `apply_cleaned_form` applies a
 validated submission onto an *existing* instance for the update path, leaving the primary key
-untouched. HTML widget rendering is not part of this — pair it with `djangors-views`' generic
+untouched. HTML widget rendering is not part of this: pair it with `djangors-views`' generic
 `CreateView`/`UpdateView` (see below) or build your own template.
 
 ---
@@ -430,7 +430,7 @@ use djangors_core::Router;
 // Low-level model serialization
 let json_val = serialize::<Article>(&article_instance);
 
-// High-level ViewSet registration — `ViewSet<M>` has no instance to construct;
+// High-level ViewSet registration. `ViewSet<M>` has no instance to construct;
 // its CRUD handlers are mounted directly as a free function, IsAuthenticated by default.
 let router = viewset_routes::<Article>(Router::new(), "/articles");
 # }

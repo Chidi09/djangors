@@ -1,3 +1,18 @@
+---
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = 'Djangors: The Django of Rust',
+  description = "Djangors is a batteries-included web framework for Rust. It brings Django's ORM, migrations, admin site, forms, auth, REST framework, background tasks, payments, and multi-tenancy to a single static binary with Rust's speed and safety.",
+} = Astro.props;
+
+const canonicalURL = new URL(Astro.url.pathname, Astro.site);
+const ogImageURL = new URL('/android-chrome-512x512.png', Astro.site);
+---
+
 <script>
   const copy = async (button: HTMLElement) => {
     await navigator.clipboard.writeText(button.dataset.markdown ?? '');
@@ -14,11 +29,34 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" /><meta name="viewport" content="width=device-width" />
-    <title>{Astro.props.title ?? 'Djangors — The Django of Rust'}</title>
-    <meta name="description" content="The Django of Rust." />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonicalURL} />
+    <meta name="theme-color" content="#f27822" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Djangors" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonicalURL} />
+    <meta property="og:image" content={ogImageURL} />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImageURL} />
+
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" /><link rel="icon" href="/favicon.ico" sizes="any" /><link rel="icon" href="/favicon-32x32.png" type="image/png" sizes="32x32" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
+    <script type="application/ld+json" set:html={JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'SoftwareSourceCode',
+      name: 'Djangors',
+      description: 'A batteries-included web framework for Rust, bringing Django-style productivity (ORM, migrations, admin, auth, REST framework, background tasks, payments, multi-tenancy) to Rust.',
+      codeRepository: 'https://github.com/Chidi09/djangors',
+      programmingLanguage: 'Rust',
+      license: 'https://github.com/Chidi09/djangors/blob/main/LICENSE-MIT',
+    })} />
   </head>
   <body><header><a href="/"><img src="/logo.svg" alt="Djangors" /></a><nav><a href="/compare">Compare</a><a href="/benchmarks">Benchmarks</a><a href="/changelog">Changelog</a><a href="/docs/">Docs</a><a class="github" href="https://github.com/Chidi09/djangors">GitHub ↗</a></nav></header><main><slot /></main><footer>Djangors · The Django of Rust</footer></body>
 </html>

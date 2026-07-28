@@ -6,8 +6,8 @@
 
 <p align="center">
   <b>The Django of Rust.</b><br>
-  Everything that makes Django pleasant — the ORM, migrations, the admin, forms, auth, the
-  batteries, the docs, the tutorial — with Rust's speed, safety, and single-binary deploys.
+  Everything that makes Django pleasant: the ORM, migrations, the admin, forms, auth, the
+  batteries, the docs, the tutorial. All of it with Rust's speed, safety, and single-binary deploys.
 </p>
 
 <p align="center">
@@ -24,13 +24,13 @@
 Django made building web applications feel obvious: models describe your data, the admin gives you
 a working back office for free, `manage.py` handles the busywork, and the framework has an answer
 for everything from sessions to CSRF to internationalization. Djangors brings that exact experience
-to Rust — batteries included, not a thin HTTP toolkit you have to assemble yourself — while getting
-the wins Rust is actually good at: no null-pointer/type-confusion bugs reaching production, no GC
-pauses, and a `cargo build --release` that produces one static binary you can just copy to a server
-and run.
+to Rust. It's batteries included, not a thin HTTP toolkit you have to assemble yourself, and it also
+gets the wins Rust is actually good at: no null-pointer/type-confusion bugs reaching production, no
+GC pauses, and a `cargo build --release` that produces one static binary you can just copy to a
+server and run.
 
 It's built for the workloads Django gets nervous about at scale: banking backends, school
-management systems, high-traffic e-commerce — the kind of system where "it usually works" isn't
+management systems, high-traffic e-commerce. The kind of system where "it usually works" isn't
 good enough.
 
 **Status**: pre-1.0, under active development. The core (ORM, admin, auth, migrations, CLI,
@@ -43,12 +43,12 @@ crates (`djangors-pdf`/`djangors-deploy`/`djangors-contrib-payments`/`djangors-c
 ## Why Rust instead of Python for this?
 
 - **Compile-time correctness.** A typo'd field name, a wrong type passed to a query, a missing
-  `Result` handled — Django (and Python generally) finds these at runtime, sometimes in production.
+  `Result` handled: Django (and Python generally) finds these at runtime, sometimes in production.
   `rustc` finds them before the code ships.
-- **No GIL, no GC pauses.** Djangors runs on Tokio's async runtime — real concurrency, not
+- **No GIL, no GC pauses.** Djangors runs on Tokio's async runtime: real concurrency, not
   cooperative multitasking behind a global lock.
 - **One binary, not a Python environment.** `cargo build --release` produces a single static
-  executable with everything baked in — no virtualenv, no "works on my machine" dependency drift,
+  executable with everything baked in. No virtualenv, no "works on my machine" dependency drift,
   no separate WSGI/ASGI server + static-file server dance to wire up for production.
 - **Memory safety by construction.** No use-after-free, no data races, enforced by the compiler
   instead of by discipline.
@@ -67,20 +67,20 @@ of composable pieces:
 | `djangors-migrations` | Schema migrations with real per-file history and rollback (`dj migrate --rollback`) |
 | `djangors-auth` | Users, groups, permissions, session-backed auth, password hashing, rate-limited login, persistent account lockout |
 | `djangors-sessions` | Signed-cookie session engine |
-| `djangors-admin` | The auto-generated admin site — changelist, filters, search, bulk actions, inline editing, CSV export, audit log, object history |
+| `djangors-admin` | The auto-generated admin site: changelist, filters, search, bulk actions, inline editing, CSV export, audit log, object history |
 | `djangors-forms` | Form field types and validation, plus the `ModelForm` equivalent auto-derived from `#[derive(Model)]` |
-| `djangors-views` | Server-rendered generic class-based views — `ListView`/`DetailView`/`CreateView`/`UpdateView`/`DeleteView` |
+| `djangors-views` | Server-rendered generic class-based views: `ListView`/`DetailView`/`CreateView`/`UpdateView`/`DeleteView` |
 | `djangors-template` | A Django-template-flavored engine (minijinja-backed) with Django-style filters |
 | `djangors-rest` | A DRF-equivalent: generic serialization, `ViewSet`s, token/JWT auth, permission classes, cursor pagination, rate limiting, OpenAPI 3.1 generation |
 | `djangors-cache` | Cache trait + in-memory/database/Redis backends |
 | `djangors-mail` | Email messages with SMTP/file/in-memory backends |
 | `djangors-tasks` | A background task queue (`#[task]`, Postgres `SELECT ... FOR UPDATE SKIP LOCKED`, cron-style recurring jobs, a worker loop) |
-| `djangors-pdf` | Typed PDF generation for report cards, invoices, and receipts — headings, text, and tables with automatic page breaks |
+| `djangors-pdf` | Typed PDF generation for report cards, invoices, and receipts: headings, text, and tables with automatic page breaks |
 | `djangors-i18n` | Runtime internationalization (Fluent-backed catalogs, locale fallback chain) |
 | `djangors-staticfiles` | Static file collection and serving, a pluggable `Storage` trait (local disk, S3), optional malware/AV scanning of uploaded bytes via `clamd` |
 | `djangors-test` | In-process test client, real per-test database isolation, and a JSON fixtures loader |
-| `djangors-cli` (`dj`) | The `manage.py` equivalent — `new`, `run`, `migrate` (with rollback), `createsuperuser`, `shell` (a real `evcxr` Rust REPL), `dbshell`, `test`, `check --deploy`, and a plugin mechanism for a project's own `dj <custom-command>` |
-| `djangors-deploy` | `DeployProvider` trait for `dj deploy` — ships a Render provider (real REST API) and an SSH/VPS provider (shells out to the system `ssh`); Railway/GCP/AWS not yet implemented |
+| `djangors-cli` (`dj`) | The `manage.py` equivalent: `new`, `run`, `migrate` (with rollback), `createsuperuser`, `shell` (a real `evcxr` Rust REPL), `dbshell`, `test`, `check --deploy`, and a plugin mechanism for a project's own `dj <custom-command>` |
+| `djangors-deploy` | `DeployProvider` trait for `dj deploy`. Ships a Render provider (real REST API) and an SSH/VPS provider (shells out to the system `ssh`); Railway/GCP/AWS not yet implemented |
 | `djangors-contrib-payments` | Payment provider integration (Paystack) with idempotent, DB-constraint-backed transaction recording; amounts always in integer minor units, never a float |
 | `djangors-contrib-tenancy` | Multi-tenancy: a `Tenant` model, membership-verified per-request tenant resolution, and a one-line `Scoped` helper for real cross-tenant row isolation |
 | `djangors-contrib-*` | Sitemaps, RSS/Atom syndication, flat pages, redirects, flash messages, object-level permissions (guardian-style), TOTP/2FA, content types / generic foreign keys |
@@ -105,13 +105,13 @@ cd mysite
 DATABASE_URL="postgres://postgres:postgres@localhost/mysite_dev" cargo run
 ```
 
-Then follow the real, verified [8-part tutorial](docs/src/tutorial/01-requests-and-responses.md) —
-it builds the same polls app Django's own tutorial does, one part at a time, using this exact
+Then follow the real, verified [8-part tutorial](docs/src/tutorial/01-requests-and-responses.md). It
+builds the same polls app Django's own tutorial does, one part at a time, using this exact
 codebase's real APIs (every snippet in it is compiled and checked in the workspace's own test
 suite, see `tools/doc-code-check`).
 
 Coming from Django? Start with
-[**Djangors for Django developers**](docs/src/django-comparison.md) — a direct, side-by-side
+[**Djangors for Django developers**](docs/src/django-comparison.md), a direct, side-by-side
 translation reference.
 
 ## Logging
@@ -119,15 +119,15 @@ translation reference.
 Djangors uses the standard Rust [`tracing`](https://docs.rs/tracing) ecosystem, with two ready-made
 entry points in `djangors-core::logging`:
 
-- **`init_dev_logging()`** — compact, colored console output; call it first thing in `main()` during
+- **`init_dev_logging()`**: compact, colored console output; call it first thing in `main()` during
   development. Respects the standard `RUST_LOG` environment variable (e.g. `RUST_LOG=debug` or
   `RUST_LOG=djangors_core=trace`), defaulting to `info,djangors_core=debug`.
-- **`init_production_logging()`** — structured JSON output instead of colored text, ready to pipe
+- **`init_production_logging()`**: structured JSON output instead of colored text, ready to pipe
   into a log aggregator (Elasticsearch, CloudWatch, Datadog). Same `RUST_LOG` support, defaulting to
   `info,djangors_core=info`.
 
-Since both are built on `tracing`, any `tracing`-instrumented code — including this framework's own
-middleware — shows up automatically once one of them is initialized. It's the closest Djangors
+Since both are built on `tracing`, any `tracing`-instrumented code, including this framework's own
+middleware, shows up automatically once one of them is initialized. It's the closest Djangors
 equivalent to Django's default `runserver` request-logging line.
 
 ```rust
@@ -146,8 +146,8 @@ mdbook serve docs   # live-reloading local preview
 ```
 
 Every Rust code block in the docs is compiled as part of `cargo test --workspace` (see
-`tools/doc-code-check`) — the examples you read are guaranteed to actually work against this exact
-codebase, not just look plausible.
+`tools/doc-code-check`), so the examples you read are guaranteed to actually work against this
+exact codebase, not just look plausible.
 
 ## Roadmap
 
@@ -155,6 +155,5 @@ See [`PLAN.md`](PLAN.md) for the full 10-phase plan, what's done, and what's lef
 
 ## License
 
-Declared as `MIT OR Apache-2.0` in the workspace manifest, but no `LICENSE`/`LICENSE-APACHE`/
-`LICENSE-MIT` file exists at the repo root yet — do not treat this as a finalized, legally binding
-license grant until those files are added.
+Dual-licensed under `MIT OR Apache-2.0`. See [`LICENSE-MIT`](LICENSE-MIT) and
+[`LICENSE-APACHE`](LICENSE-APACHE) for the full license texts.

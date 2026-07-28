@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://djangors.vercel.app/sitemap-index.xml

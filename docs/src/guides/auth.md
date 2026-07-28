@@ -103,10 +103,10 @@ let backend = RateLimitedBackend::default_login_throttle(ModelBackend);
 ### `PersistentLockoutBackend` (the `django-axes` equivalent)
 
 `RateLimitedBackend` throttles the *rate* of attempts, but a correct password made after the
-window resets still succeeds — it doesn't lock the account. `PersistentLockoutBackend` is
+window resets still succeeds. It doesn't lock the account. `PersistentLockoutBackend` is
 different and complementary: after `max_attempts` consecutive failures, it rejects login attempts
-with `AuthError::AccountLocked { retry_after_secs }` for `lockout_duration` — **even with the
-correct password** — and this state is stored in a real `auth_login_lockout` database table, so it
+with `AuthError::AccountLocked { retry_after_secs }` for `lockout_duration`, **even with the
+correct password**. This state is stored in a real `auth_login_lockout` database table, so it
 survives process restarts and is shared correctly across multiple app instances pointed at the
 same database.
 

@@ -24,7 +24,7 @@ request path; it is not an N+1-per-row workload.
 **Correction (independently verified during review, replacing an unsubstantiated claim in an
 earlier draft of this doc)**: the committed raw sweep (all 60 points) shows a **100% success
 rate at every single pool/concurrency combination tested**, including the deliberately undersized
-`max_connections=5` at concurrency 128 — there is no non-`200` status code anywhere in
+`max_connections=5` at concurrency 128. There is no non-`200` status code anywhere in
 `benchmarks/results/admin-sweep-2026-07-27.txt`; the only "errors" oha reports are
 `aborted due to deadline` entries whose count simply tracks the configured concurrency level
 (in-flight requests when the fixed `-z` time window ends), at every pool size equally, which is
@@ -36,12 +36,12 @@ unverified.
 
 To find the actual limits of this setup, three additional real runs were made against a
 purpose-built, far more extreme configuration (`max_connections=1`, well below anything in the
-committed sweep): at concurrency 200, still 100% success — latency grew to a ~3.2s p99 but every
+committed sweep): at concurrency 200, still 100% success. Latency grew to a ~3.2s p99 but every
 request eventually completed; at concurrency 1000, still 100% success on every request that
 finished within the 15s test window (861 of 1861 total; the rest were still queued and correctly
 reported as `aborted due to deadline`, not a connection failure). **The real, verified finding is
 that this workload's contention shows up as growing queueing latency, not outright connection
-failures** — because sqlx's `acquire_timeout` (mapped from `connect_timeout_secs`, default 10s)
+failures**, because sqlx's `acquire_timeout` (mapped from `connect_timeout_secs`, default 10s)
 is generous relative to how quickly this admin path's queries actually complete, even with a
 single connection serving 1,000 concurrent requests. Producing a genuine acquire-timeout failure
 in this environment would need either a much smaller `connect_timeout_secs`, sustained queueing

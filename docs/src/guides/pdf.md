@@ -1,11 +1,11 @@
 # PDF Generation (`djangors-pdf`)
 
-`djangors-pdf` is the Djangors equivalent of `weasyprint` — but built differently on purpose.
+`djangors-pdf` is the Djangors equivalent of `weasyprint`, but built differently on purpose.
 Rather than rendering HTML/CSS through a headless browser engine (a real, heavy runtime
 dependency that's often awkward or impossible to install in a minimal container image),
 `djangors-pdf` is a typed Rust builder API over a pure-Rust PDF backend. There's no Chrome/
 Chromium dependency to ship, and the documents you build are structured (headings, text, tables)
-rather than arbitrary rendered markup — a good fit for the actual common cases: report cards,
+rather than arbitrary rendered markup. That's a good fit for the actual common cases: report cards,
 invoices, and receipts.
 
 ## Basic usage
@@ -32,20 +32,20 @@ let bytes: Vec<u8> = doc.render()?;
 # }
 ```
 
-`render()` consumes the builder and returns the finished PDF as `Vec<u8>` — write it directly to a
+`render()` consumes the builder and returns the finished PDF as `Vec<u8>`. Write it directly to a
 response body, to disk, or through a `Storage` backend (see the ORM/static-files guides).
 
 ## Builder methods
 
-- **`PdfDocument::new(title)`** — starts a new A4 document with the given title.
-- **`.heading(text)`** — a large, bold heading line.
-- **`.text(text)`** — a regular body-text line.
-- **`.spacer(height_mm)`** — vertical whitespace, in millimeters.
-- **`.table(headers, rows)`** — a simple table: a header row plus any number of data rows (each
+- **`PdfDocument::new(title)`**: starts a new A4 document with the given title.
+- **`.heading(text)`**: a large, bold heading line.
+- **`.text(text)`**: a regular body-text line.
+- **`.spacer(height_mm)`**: vertical whitespace, in millimeters.
+- **`.table(headers, rows)`**: a simple table. A header row plus any number of data rows (each
   row is a `Vec<String>` matching the header count).
 
 All of these return `&mut Self`, so calls chain. Content automatically flows onto a new page once
-the current one fills up — you don't need to manage page breaks yourself.
+the current one fills up. You don't need to manage page breaks yourself.
 
 ## Serving a generated PDF
 

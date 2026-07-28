@@ -9,9 +9,9 @@ version number.
 
 Everything to date, through Phase 12. Workspace version is `0.2.0`; most crates were first
 published to crates.io as `0.1.0`, but that snapshot predates every fix and feature in Phase 12
-below — see Phase 12's own publish-status note.
+below. See Phase 12's own publish-status note.
 
-### Phase 0-1 — Bootstrap and core request/response layer
+### Phase 0-1: Bootstrap and core request/response layer
 - Workspace scaffold: `djangors`, `djangors-core`, `djangors-cli` (`dj` binary), and every
   placeholder crate.
 - `djangors-core`: `Request`/`Response`/`Router`/`Handler`, tower middleware layer, a real TCP
@@ -19,7 +19,7 @@ below — see Phase 12's own publish-status note.
   Django-style debug error pages, a typed async signals bus (`request_started`/`request_finished`),
   and a dev/production tracing subscriber.
 
-### Phase 2 — ORM and migrations v1
+### Phase 2: ORM and migrations v1
 - `djangors-db`: sqlx-backed Postgres pool, config, transactions with explicit isolation levels.
 - `djangors-orm`: `ModelMeta`/`FieldMeta`/`RelationMeta`, `#[derive(Model)]` (via
   `djangors-macros`), the `Expr` tree and `q!()` query macro, `QuerySet<T>` execution, model
@@ -28,22 +28,22 @@ below — see Phase 12's own publish-status note.
   a JOIN).
 - `djangors-migrations`: a CreateTable-only v1 engine, wired to `dj migrate`.
 
-### Phase 3 — Templates, forms, static files
+### Phase 3: Templates, forms, static files
 - `djangors-template`: MiniJinja-backed engine with loader precedence.
 - `djangors-forms`: `FormField` trait, `CharField`/`IntegerField`/`BooleanField`/`EmailField`,
   `#[derive(Form)]`.
 - `djangors-staticfiles`: dev serving, `collectstatic`, content-hashed manifest.
 
-### Phase 4 — Sessions, CSRF, and auth
+### Phase 4: Sessions, CSRF, and auth
 - `djangors-sessions`: signed-cookie session engine.
 - CSRF middleware, `ALLOWED_HOSTS`, HSTS, and `Secure` cookie flag support.
 - `djangors-auth`: `User` model with Argon2id password hashing, `AuthBackend`, login/logout, the
   `Auth<U>` extractor, login rate limiting, and audit signals.
-- `djangors-mail` (console backend) + a password-reset flow.
+- `djangors-mail` (console backend) plus a password-reset flow.
 - A fuzz/threat-model/OWASP security review pass, and `examples/polls` as the first real
   end-to-end app (login-gated voting).
 
-### Phase 5 — The admin site
+### Phase 5: The admin site
 - `djangors-admin`: `AdminSite` registry, `is_staff`-gated login, a real `createsuperuser`.
 - Changelist: generic field rendering, sorting, pagination, `list_display`/`search_fields`,
   `list_filter`, bulk delete, `date_hierarchy`, `list_editable`, CSV export.
@@ -57,13 +57,13 @@ below — see Phase 12's own publish-status note.
 - A full audit log (`LogEntry`) with a "Recent actions" panel.
 - `examples/school` as the Phase 5 Definition-of-Done app.
 
-### Phase 6 — Developer experience / CLI
+### Phase 6: Developer experience / CLI
 - `dj new <name>` real project scaffolding, `dj new-app`, `dj run`, `dj check` (`--deploy`),
   `dj makemigrations` preview, `dj dbshell`, `dj test`, `dj shell`.
 - `djangors-test`: a real `TestClient`/`TestDatabase`.
 - Graceful shutdown for `Djangors::run`/`run_service`.
 
-### Phase 7 — Batteries
+### Phase 7: Batteries
 - `djangors-cache` (in-memory/database/Redis-backed `Cache` trait + `CacheLayer` middleware) and a
   complete `djangors-mail` (console/SMTP/file/in-memory backends).
 - `djangors-contrib-messages`, a shared pagination utility, humanize template filters.
@@ -73,14 +73,14 @@ below — see Phase 12's own publish-status note.
 - `djangors-i18n` (Fluent-based `.ftl` catalogs, `Accept-Language` parsing, locale-aware
   formatting) and `djangors-contrib-otp`.
 
-### Phase 8 — REST framework and background jobs
+### Phase 8: REST framework and background jobs
 - `djangors-rest`: serializers, `ViewSet`s, router mounting, session/token/JWT auth and permission
   classes, filtering/ordering, and OpenAPI 3.1 generation.
 - `djangors-core`: Server-Sent Events streaming with in-process broadcast groups.
 - `djangors-tasks`: the `#[task]` macro, a `SKIP LOCKED`-based DB-backed queue, a worker loop, and
   admin integration.
 
-### Phase 9 — Documentation
+### Phase 9: Documentation
 - An 8-part polls tutorial mirroring Django's own.
 - The mdBook docs site (`docs/src/`) with 8 topic guides, a Django-comparison guide, and 6
   how-tos.
@@ -89,7 +89,7 @@ below — see Phase 12's own publish-status note.
   every documentation code block compiled as a real workspace test.
 - The root `README.md`.
 
-### Phase 10 — Hardening, architecture parity, and 1.0 prep
+### Phase 10: Hardening, architecture parity, and 1.0 prep
 - Honest `oha`-driven HTTP benchmarks against Django/Gunicorn and axum.
 - Real migration autogeneration (new-table + new-field diffing against a schema snapshot) and a
   fix to a confirmed `dj migrate` bug found at the time.
@@ -97,21 +97,21 @@ below — see Phase 12's own publish-status note.
   batch eager-loading with N+1 regression tooling, a pluggable/project-customizable global error
   envelope, named+scoped rate limiting per endpoint, cron/scheduled recurring background jobs,
   cursor (keyset) pagination for REST viewsets, a pluggable `Storage` trait with
-  `LocalDiskStorage`, and an `S3Storage` backend + real `FileField`.
+  `LocalDiskStorage`, and an `S3Storage` backend plus a real `FileField`.
 - Load testing `djangors-admin` under concurrency, with a connection-pool tuning guide.
 - A completed `djangors` facade crate, an API freeze review (both passes, all ~29 crates) with a
   published deprecation/stability policy.
-- An internal security review (`cargo-audit` + manual audit) — see
-  `docs/security-review-2026-07-27.md` — that fixed an insecure-by-default cookie gap in both
+- An internal security review (`cargo-audit` plus a manual audit, see
+  `docs/security-review-2026-07-27.md`) that fixed an insecure-by-default cookie gap in both
   example apps. A real third-party audit is still open, pending a budget/vendor decision.
 - The Astro marketing site (`site/`), deployed on Vercel, with AI-agent-friendly markdown
   (`llms.txt`/`llms-full.txt`, raw `.md` served at every doc URL, an on-page "Copy as Markdown"
   button) and a shipped Claude Code Skill (`.claude/skills/djangors-development/`).
 
-### Phase 11 — Django-parity gap closure
+### Phase 11: Django-parity gap closure
 - CircleCI pipeline (fmt/clippy/build/test/doc-build against a real Postgres service container,
-  plus a `cargo-audit` job) — and, while validating it, a real pre-existing test-isolation race
-  found and fixed in `djangors-tasks`'s test suite.
+  plus a `cargo-audit` job). While validating it, found and fixed a real pre-existing
+  test-isolation race in `djangors-tasks`'s test suite.
 - Migration rollback with typed `Operation` variants (`AddColumn`/`DropColumn`/`AlterColumn`/
   `RenameColumn`) and real down-migrations.
 - Model-level signals (`post_save`/`pre_save`/`post_delete`/`pre_delete`).
@@ -131,13 +131,13 @@ below — see Phase 12's own publish-status note.
   INSERT/UPDATE, a `dj makemigrations` bug where new models with foreign keys to sibling new
   models couldn't resolve the relation (planned one model at a time instead of together), and a
   Docker build missing TLS/`pkg-config`/`libssl-dev`.
-- Most crates first published to crates.io as `0.1.0` (superseded by Phase 12 below — that
+- Most crates first published to crates.io as `0.1.0` (superseded by Phase 12 below; that
   snapshot predates every fix and feature listed there).
 - **Not done**: the remaining two example-app deployments (only `djangors-polls` is live) and
   actually republishing the fixed/updated crates (Phase 12 does the fixing; the republish itself
   is still open, tracked in `PLAN.md`).
 
-### Phase 12 — Post-1.0 hardening
+### Phase 12: Post-1.0 hardening
 Compiled after the first real deployment surfaced genuine bugs, and after comparing Djangors
 directly against a real production Django SaaS backend to find concrete gaps. Sequenced easiest
 to hardest.
@@ -151,7 +151,7 @@ to hardest.
 - Optional Sentry error tracking (`djangors-core`'s `sentry` feature) alongside the existing
   `tracing`-based logging.
 - A `django-axes`-style persistent, database-backed account lockout (`PersistentLockoutBackend`),
-  distinct from the existing in-memory rate limiter — rejects even correct credentials once
+  distinct from the existing in-memory rate limiter. It rejects even correct credentials once
   locked, and survives process restarts.
 - `djangors-pdf`: typed PDF generation (report cards, invoices, receipts) via a pure-Rust builder
   API, deliberately not an HTML/Chrome-based renderer (no viable headless-Chrome path in a
@@ -160,27 +160,27 @@ to hardest.
   (`djangors-staticfiles`'s `clamav` feature), scanning in-memory before anything touches disk.
 - `djangors-deploy`: a `DeployProvider` trait for `dj deploy`, shipping a `RenderProvider` (real
   REST API) and an `SshProvider` (shells out to the system `ssh`, avoiding a native SSH library
-  dependency) — a first slice, deliberately left to grow (Railway/GCP/AWS not yet implemented, no
+  dependency). A first slice, deliberately left to grow (Railway/GCP/AWS not yet implemented, no
   `dj deploy` CLI subcommand wired in yet).
 - `djangors-contrib-payments`: a `PaymentProvider` trait and `PaystackProvider`, with an
   idempotency-key-first `Transaction` model (a real DB-level UNIQUE constraint on `reference`, not
   an application-level check-then-insert) and webhook handling that verifies the HMAC-SHA512
   signature against the raw body before ever parsing JSON. Real API shapes validated against a
   working production Paystack integration, not guessed.
-- `djangors-contrib-tenancy`: multi-tenancy support — a `Tenant` model, a `TenantMembership` join
-  model, membership-verified per-request tenant resolution (`TenantResolutionLayer`, never trusts
-  a client-supplied tenant header alone), and a one-line `tenant_scope()` helper reusing
-  `djangors-rest`'s existing `Scoped`/`ScopedViewSet` enforcement mechanism. Design doc:
-  `docs/design/12.1-multi-tenancy.md`.
-- Workspace version bumped `0.1.0` → `0.2.0` and all 32 crates published for real, including
+- `djangors-contrib-tenancy`: multi-tenancy support, including a `Tenant` model, a
+  `TenantMembership` join model, membership-verified per-request tenant resolution
+  (`TenantResolutionLayer`, never trusts a client-supplied tenant header alone), and a one-line
+  `tenant_scope()` helper reusing `djangors-rest`'s existing `Scoped`/`ScopedViewSet` enforcement
+  mechanism. Design doc: `docs/design/12.1-multi-tenancy.md`.
+- Workspace version bumped `0.1.0` to `0.2.0` and all 32 crates published for real, including
   `djangors-pdf`/`djangors-deploy`/`djangors-contrib-payments`/`djangors-contrib-tenancy` for the
-  first time — independently verified live on crates.io, not just attempted. Found and fixed a
+  first time. Independently verified live on crates.io, not just attempted. Found and fixed a
   real bug along the way: 13 crates had internal *dev*-dependencies pinned with both `path` and
   `version` (a leftover from the version-bump script not distinguishing `[dependencies]` from
   `[dev-dependencies]`), which made publishing circular for crates with a mutual dev-dependency on
-  each other — fixed by keeping only `path` on internal dev-dependencies, which cargo correctly
+  each other. Fixed by keeping only `path` on internal dev-dependencies, which cargo correctly
   drops from the published manifest entirely.
 - Also covered every Phase 12 feature in the mdBook doc site for the first time (new guides:
-  settings, PDF, payments, multi-tenancy; extended auth/security/deployment guides) — the doc site
+  settings, PDF, payments, multi-tenancy; extended auth/security/deployment guides). The doc site
   previously had zero mention of anything in this phase. Every code example genuinely compiles,
   verified via `doc-code-check`.

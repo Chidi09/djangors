@@ -31,7 +31,7 @@ pub struct Question {
 }
 
 impl Question {
-    /// Not a framework feature — an ordinary inherent method, exactly like
+    /// Not a framework feature. An ordinary inherent method, exactly like
     /// Django's `was_published_recently()` on the tutorial's `Question` model.
     /// Proves model structs stay plain Rust structs you can add real methods to.
     pub fn was_published_recently(&self) -> bool {
