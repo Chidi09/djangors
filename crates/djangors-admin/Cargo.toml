@@ -23,6 +23,7 @@ djangors-macros = { path = "../djangors-macros", version = "0.1.0" }
 percent-encoding = "2.3.2"
 
 [dev-dependencies]
+djangors-test = { path = "../djangors-test", version = "0.1.0" }
 djangors-sessions = { path = "../djangors-sessions", version = "0.1.0" }
 djangors-macros = { path = "../djangors-macros", version = "0.1.0" }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros"] }

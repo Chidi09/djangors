@@ -971,9 +971,34 @@ Sequenced easiest → hardest; tracked as tasks #62–71.
   unit tests + 3 against the real daemon, which skip rather than fail if no `clamd` socket is
   present — most dev machines and CI won't have one running). Verified both with and without the
   feature flag; default build unaffected.
-- [ ] **Fix cross-crate test DDL races properly** (task #61) — adopt `djangors-test`'s existing
-  `TestDatabase::isolated()` (built in 11.4) broadly in place of the shared `connect()` most
-  crates' tests currently use.
+- [x] **Fix cross-crate test DDL races properly** (task #61) — **done for the concretely-demonstrated
+  case** (`djangors-admin` vs `djangors-auth` on `auth_user`); the general pattern is now a real,
+  reusable, verified primitive any other crate can adopt for its own colliding table names.
+  Considered `TestDatabase::isolated()`'s per-test-database approach first, but it creates a
+  genuinely separate physical Postgres database per test (real overhead across 40+ tests) and each
+  test would need cleanup-on-every-exit-path handling (`isolated()`'s guard can't clean up
+  automatically the way an in-process guard can, since Rust can't run async code in `Drop`) —
+  disproportionate cost for what turned out to need a much lighter fix. Instead added
+  `djangors_test::acquire_cross_process_lock(db, name)`: a real Postgres session-level advisory lock
+  (`pg_advisory_lock`/`pg_advisory_unlock`), which — unlike an in-process
+  `std::sync::Mutex`/`tokio::sync::Mutex` — genuinely coordinates across separate OS processes
+  connected to the same Postgres server. Deliberately holds one dedicated `PoolConnection` for the
+  lock's lifetime rather than using the pool directly (a session-level lock is tied to whichever
+  specific connection acquired it, and a pool hands out an arbitrary free connection per query, so
+  acquiring/releasing through the pool wouldn't reliably lock/unlock the same session). Verified the
+  primitive itself first, in isolation: a real timing-based test using two independent `Database`
+  connections and a `tokio::sync::Barrier` forcing simultaneous acquisition, asserting the full
+  acquire→release sequence for each never interleaves — 10/10 clean runs. Applied to
+  `djangors-admin` (30 call sites) and `djangors-auth` (7 call sites) via a
+  once-per-test-binary-lifetime helper (`tokio::sync::OnceCell` + intentionally leaking both the
+  lock and its connection, since the lock needs to be held for the entire test binary's run, not
+  per-test — `DB_MUTEX` itself already releases and reacquires between tests, which would leave gaps
+  otherwise). **Re-reproduced the exact original collision scenario to confirm the fix**: ran the
+  real compiled `djangors-admin` and `djangors-auth` test binaries as genuinely concurrent OS
+  processes, 3 rounds — 0/3 failures (previously reliably reproducible), with the run timing itself
+  as direct evidence of real serialization (whichever suite has to wait takes ~39-40s instead of
+  ~17-23s, every round). **Remaining, not attempted here**: other crates/table-name pairs that
+  might share the same class of risk — the primitive is now available for any of them.
 - [ ] **`dj deploy`** — multi-provider deployment (VPS/SSH, Render, Railway, GCP, AWS), porting the
   `DeployProvider` trait architecture from a separate project's `crush-deploy` crate
   (`provision`/`deploy`/`destroy`/`status`/`logs`), decoupled from that project's own container

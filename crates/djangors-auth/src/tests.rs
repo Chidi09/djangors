@@ -4,6 +4,30 @@ use djangors_orm::Model;
 
 static DB_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+static CROSS_PROCESS_LOCK: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+/// See the identical helper in `djangors-admin`'s test module for the full
+/// rationale (task #61) - both crates' tests race to DROP/CREATE the same
+/// `auth_user` table, and the same cross-process lock name is used here
+/// deliberately so the two crates' test binaries actually exclude each other,
+/// not just their own internal tests.
+async fn ensure_cross_process_lock_held() {
+    CROSS_PROCESS_LOCK
+        .get_or_init(|| async {
+            let db = djangors_db::Database::connect(&djangors_db::config::DatabaseConfig::new(
+                "postgres://postgres:postgres@localhost/djangors_test",
+            ))
+            .await
+            .expect("connect for cross-process lock");
+            let lock = djangors_test::acquire_cross_process_lock(&db, "djangors_test_auth_user_ddl")
+                .await
+                .expect("acquire cross-process lock");
+            std::mem::forget(lock);
+            std::mem::forget(db);
+        })
+        .await;
+}
+
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "djangors_auth", table_name = "test_auth_user")]
 pub struct TestUser {
@@ -127,6 +151,7 @@ fn test_verify_password_malformed_hash() {
 #[allow(clippy::await_holding_lock)]
 async fn test_user_db_round_trip() {
     let _guard = DB_MUTEX.lock().unwrap();
+    ensure_cross_process_lock_held().await;
     let db_url = "postgres://postgres:postgres@localhost/djangors_test";
     let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
 
@@ -213,6 +238,7 @@ async fn test_user_db_round_trip() {
 #[allow(clippy::await_holding_lock)]
 async fn test_model_backend_authenticate() {
     let _guard = DB_MUTEX.lock().unwrap();
+    ensure_cross_process_lock_held().await;
     let db_url = "postgres://postgres:postgres@localhost/djangors_test";
     let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
     let db = djangors_orm::djangors_db::Database::connect(&config)
@@ -360,6 +386,7 @@ async fn test_logout_session_mechanics() {
 #[allow(clippy::await_holding_lock)]
 async fn test_auth_extractor() {
     let _guard = DB_MUTEX.lock().unwrap();
+    ensure_cross_process_lock_held().await;
     use bytes::Bytes;
     use djangors_core::extract::FromRequest;
     use djangors_core::Request;
@@ -524,6 +551,7 @@ async fn test_auth_extractor() {
 #[allow(clippy::await_holding_lock)]
 async fn test_audit_signals_succeeded_and_failed() {
     let _guard = DB_MUTEX.lock().unwrap();
+    ensure_cross_process_lock_held().await;
     let db_url = "postgres://postgres:postgres@localhost/djangors_test";
     let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
     let db = djangors_orm::djangors_db::Database::connect(&config)
@@ -709,8 +737,10 @@ impl AuthBackend for TestDoubleBackend {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn test_persistent_lockout_backend_locks_even_correct_credentials_and_resets_on_expiry() {
     let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_cross_process_lock_held().await;
     let db_url = "postgres://postgres:postgres@localhost/djangors_test";
     let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
     let db = djangors_orm::djangors_db::Database::connect(&config)
@@ -960,6 +990,7 @@ fn test_password_reset_token_roundtrip_and_invalidation() {
 #[allow(clippy::await_holding_lock)]
 async fn test_db_password_reset_flow() {
     let _guard = DB_MUTEX.lock().unwrap();
+    ensure_cross_process_lock_held().await;
     let db_url = "postgres://postgres:postgres@localhost/djangors_test";
     let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
     let db = djangors_orm::djangors_db::Database::connect(&config)
@@ -1091,6 +1122,7 @@ async fn test_db_password_reset_flow() {
 #[allow(clippy::await_holding_lock)]
 async fn test_permissions_and_groups() {
     let _guard = DB_MUTEX.lock().unwrap();
+    ensure_cross_process_lock_held().await;
     let db_url = "postgres://postgres:postgres@localhost/djangors_test";
     let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
     let db = djangors_orm::djangors_db::Database::connect(&config)

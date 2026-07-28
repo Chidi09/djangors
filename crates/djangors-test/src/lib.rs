@@ -373,6 +373,69 @@ impl Drop for TestDatabase {
     }
 }
 
+/// A held Postgres session-level advisory lock, acquired via
+/// [`acquire_cross_process_lock`]. Released by calling [`CrossProcessLock::release`]
+/// explicitly (Rust can't run async code in `Drop`, so this can't release itself
+/// automatically the way [`TestDatabase`]'s in-process guards can) - an
+/// un-released lock is held until its underlying connection closes, which
+/// happens naturally when the test process exits, but explicit release lets a
+/// long-running process (a real `dj test` run covering many tests) free the
+/// lock promptly instead of holding it for the rest of the run.
+pub struct CrossProcessLock {
+    conn: sqlx::pool::PoolConnection<sqlx::Postgres>,
+    key_name: String,
+}
+
+impl CrossProcessLock {
+    /// Releases the lock. The connection this lock was acquired on must be the
+    /// one that releases it - `pg_advisory_unlock` is a per-session operation,
+    /// not per-pool - which is exactly why this type holds a single dedicated
+    /// [`sqlx::pool::PoolConnection`] instead of borrowing from the pool anew for
+    /// each query the way most of this codebase's other queries do.
+    pub async fn release(mut self) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT pg_advisory_unlock(hashtextextended($1, 0))")
+            .bind(&self.key_name)
+            .execute(&mut *self.conn)
+            .await?;
+        Ok(())
+    }
+}
+
+/// Acquires a Postgres session-level advisory lock keyed by `name`, blocking
+/// until any other session holding the same-named lock releases it.
+///
+/// Unlike an in-process `std::sync::Mutex`/`tokio::sync::Mutex` (which only
+/// coordinates tasks within one compiled test *binary*), this coordinates
+/// across entirely separate OS processes connected to the same
+/// Postgres server - the actual mechanism needed to prevent two different
+/// crates' test binaries (e.g. `djangors-admin` and `djangors-auth`, both racing
+/// to `DROP`/`CREATE` the same `auth_user` table) from colliding when `cargo
+/// test --workspace` runs them as concurrent processes. Confirmed reproducible
+/// without this: running `djangors-admin` and `djangors-auth`'s suites
+/// concurrently produced a real `relation "auth_user" already exists` (42P07)
+/// in one and `relation "auth_user" does not exist` (42P01) in the other.
+///
+/// Deliberately holds a single dedicated connection (via
+/// [`sqlx::Pool::acquire`]) for the lock's entire lifetime rather than using
+/// `db.pool()` directly - a session-level advisory lock is tied to the specific
+/// connection that acquired it, and a connection pool hands out whichever
+/// connection happens to be free for each query, so acquiring/releasing through
+/// the pool directly would not reliably lock/unlock the same session.
+pub async fn acquire_cross_process_lock(
+    db: &Database,
+    name: &str,
+) -> Result<CrossProcessLock, sqlx::Error> {
+    let mut conn = db.pool().acquire().await?;
+    sqlx::query("SELECT pg_advisory_lock(hashtextextended($1, 0))")
+        .bind(name)
+        .execute(&mut *conn)
+        .await?;
+    Ok(CrossProcessLock {
+        conn,
+        key_name: name.to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -669,5 +732,81 @@ mod tests {
         assert_eq!(queried[1].value, 200);
 
         db.cleanup().await.expect("cleanup fixtures db");
+    }
+
+    #[tokio::test]
+    async fn cross_process_lock_genuinely_serializes_two_separate_connections() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        // Two independent Database instances (their own separate connection
+        // pools, matching two separate OS processes at the level that actually
+        // matters here - Postgres session identity) racing for the SAME named
+        // lock. A `tokio::sync::Barrier` forces both to request the lock at the
+        // same instant, matching the rigor used elsewhere in this codebase to
+        // rule out scheduling luck (see djangors-tasks' SKIP LOCKED
+        // investigation) - not just "usually passes in practice".
+        let db_a = Database::connect(&DatabaseConfig::new(url.clone()))
+            .await
+            .expect("connect db_a");
+        let db_b = Database::connect(&DatabaseConfig::new(url))
+            .await
+            .expect("connect db_b");
+
+        let lock_name = format!("test_cross_process_lock_{}", generate_db_name());
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+
+        let events = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<&'static str>::new()));
+
+        let barrier_a = barrier.clone();
+        let events_a = events.clone();
+        let lock_name_a = lock_name.clone();
+        let task_a = tokio::spawn(async move {
+            barrier_a.wait().await;
+            let lock = acquire_cross_process_lock(&db_a, &lock_name_a)
+                .await
+                .unwrap();
+            events_a.lock().await.push("a_acquired");
+            // Hold the lock long enough that, if the other connection were NOT
+            // genuinely blocked, it would race in and acquire during this
+            // window instead of waiting.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            events_a.lock().await.push("a_released");
+            lock.release().await.unwrap();
+        });
+
+        let barrier_b = barrier.clone();
+        let events_b = events.clone();
+        let lock_name_b = lock_name.clone();
+        let task_b = tokio::spawn(async move {
+            barrier_b.wait().await;
+            let lock = acquire_cross_process_lock(&db_b, &lock_name_b)
+                .await
+                .unwrap();
+            events_b.lock().await.push("b_acquired");
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            events_b.lock().await.push("b_released");
+            lock.release().await.unwrap();
+        });
+
+        task_a.await.unwrap();
+        task_b.await.unwrap();
+
+        let log = events.lock().await;
+        // Whichever of A/B actually wins the race for the lock is legitimately
+        // non-deterministic (that's the point - both requested it at the same
+        // instant), but real mutual exclusion means the two connections' held
+        // periods can never overlap: the log must be exactly
+        // [X_acquired, X_released, Y_acquired, Y_released], never anything
+        // where the second acquire appears before the first release.
+        assert_eq!(log.len(), 4, "log: {log:?}");
+        let first = log[0].strip_suffix("_acquired").expect("log: {log:?}");
+        assert_eq!(log[1], format!("{first}_released"), "log: {log:?}");
+        let second = log[2].strip_suffix("_acquired").expect("log: {log:?}");
+        assert_eq!(log[3], format!("{second}_released"), "log: {log:?}");
+        assert_ne!(
+            first, second,
+            "log should show both connections, not the same one twice - log: {log:?}"
+        );
     }
 }

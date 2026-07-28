@@ -3474,6 +3474,41 @@ mod tests {
 
     static DB_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    static CROSS_PROCESS_LOCK: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+
+    /// `DB_MUTEX` only serializes this crate's own tests against each other - it
+    /// says nothing about `cargo test --workspace` running a DIFFERENT crate's
+    /// test binary concurrently as a separate OS process, also racing to
+    /// DROP/CREATE the same `auth_user` table. Confirmed reproducible without
+    /// this: running djangors-admin and djangors-auth's suites concurrently
+    /// produced a real `relation "auth_user" already exists` (42P07) in one and
+    /// `relation "auth_user" does not exist` (42P01) in the other (task #61).
+    ///
+    /// Acquires a cross-process Postgres advisory lock exactly once for this
+    /// entire test binary's lifetime (not per-test - `DB_MUTEX` itself already
+    /// releases and reacquires between tests, which would leave gaps for another
+    /// process to sneak in if this were also scoped per-test) and deliberately
+    /// leaks both the lock and its connection, since a session-level advisory
+    /// lock is released the moment its connection closes - the OS reclaiming
+    /// everything at process exit is the intended release mechanism here, not
+    /// an explicit `.release()` call.
+    async fn ensure_cross_process_lock_held() {
+        CROSS_PROCESS_LOCK
+            .get_or_init(|| async {
+                let db = djangors_db::Database::connect(&djangors_db::config::DatabaseConfig::new(
+                    "postgres://postgres:postgres@localhost/djangors_test",
+                ))
+                .await
+                .expect("connect for cross-process lock");
+                let lock = djangors_test::acquire_cross_process_lock(&db, "djangors_test_auth_user_ddl")
+                    .await
+                    .expect("acquire cross-process lock");
+                std::mem::forget(lock);
+                std::mem::forget(db);
+            })
+            .await;
+    }
+
     #[derive(MacroModel, Debug, Clone)]
     #[djangors(app = "admin_test", table_name = "test_model_a")]
     #[allow(dead_code)]
@@ -3564,6 +3599,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_index_endpoints() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -3713,6 +3749,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_changelist_endpoints() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -4091,6 +4128,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_change_form_endpoints() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -4344,6 +4382,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_delete_endpoints() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -4572,6 +4611,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_list_display_and_search() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -4824,6 +4864,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_list_filter() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -5045,6 +5086,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_part6_3_bulk_delete() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -5322,6 +5364,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_part6_4_date_hierarchy() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -5568,6 +5611,7 @@ mod tests {
     #[tokio::test]
     async fn test_phase5_part6_5_list_editable() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -5885,6 +5929,7 @@ mod tests {
     #[tokio::test]
     async fn test_phase5_part6_6_csv_export() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -6119,6 +6164,7 @@ mod tests {
     #[tokio::test]
     async fn test_phase5_computed_columns() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -6237,6 +6283,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_bulk_action_no_confirm() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -6395,6 +6442,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_bulk_action_with_confirm() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -6564,6 +6612,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_permissions_enforcement() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -6916,6 +6965,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_csrf_token_wiring() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -7133,6 +7183,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_branding_overrides() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -7232,6 +7283,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_audit_log_add_change_delete() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -7392,6 +7444,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_audit_log_bulk_delete_and_list_editable() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -7591,6 +7644,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_admin_index_recent_actions() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -7766,6 +7820,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_fieldsets() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -7860,6 +7915,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_readonly_fields() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -7962,6 +8018,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_raw_id_fields() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -8085,6 +8142,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_transitive_walk_delete() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -8231,6 +8289,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_protect_single_delete_400() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -8366,6 +8425,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_protect_bulk_delete_skip() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -8513,6 +8573,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_base_filter() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -8627,6 +8688,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_extra_route() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -8712,6 +8774,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_history_page() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -8851,6 +8914,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_phase5_groups_permissions_admin_ui() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
@@ -9019,6 +9083,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_audit_diffing_and_history_rendering() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        ensure_cross_process_lock_held().await;
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let config = djangors_db::config::DatabaseConfig::new(db_url);
         let db = djangors_db::Database::connect(&config).await.unwrap();
