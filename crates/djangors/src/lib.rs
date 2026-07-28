@@ -19,6 +19,8 @@ pub use djangors_forms as forms;
 pub use djangors_i18n as i18n;
 /// Mail messages and delivery backends.
 pub use djangors_mail as mail;
+/// Typed PDF generation for report cards, invoices, and receipts.
+pub use djangors_pdf as pdf;
 /// Database migration operations and planning.
 pub use djangors_migrations as migrations;
 /// ORM models, querysets, expressions, and metadata.

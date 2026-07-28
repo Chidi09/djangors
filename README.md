@@ -58,12 +58,12 @@ of composable pieces:
 
 | Crate | What it does |
 |---|---|
-| `djangors-core` | The HTTP kernel: `Request`/`Response`, the `Router`, middleware (CSRF, security headers, HSTS, host validation), sessions-adjacent state, SSE streaming, signals (framework + model lifecycle), real `multipart/form-data` file upload parsing, graceful shutdown |
+| `djangors-core` | The HTTP kernel: `Request`/`Response`, the `Router`, middleware (CSRF, security headers, HSTS, CSP builder, host validation), sessions-adjacent state, SSE streaming, signals (framework + model lifecycle), real `multipart/form-data` file upload parsing, graceful shutdown, optional Sentry error tracking |
 | `djangors-orm` | The ORM: `QuerySet`, filter/order/aggregate expressions, model metadata, `bulk_create` |
-| `djangors-macros` | `#[derive(Model)]` (also generates a `ModelForm` equivalent), `#[task]`, and `#[management_command]` attribute macros |
+| `djangors-macros` | `#[derive(Model)]` (also generates a `ModelForm` equivalent), `#[derive(Settings)]` (typed, validated app config), `#[task]`, and `#[management_command]` attribute macros |
 | `djangors-db` | Connection pooling and config-driven database setup (Postgres) |
 | `djangors-migrations` | Schema migrations with real per-file history and rollback (`dj migrate --rollback`) |
-| `djangors-auth` | Users, groups, permissions, session-backed auth, password hashing, rate-limited login |
+| `djangors-auth` | Users, groups, permissions, session-backed auth, password hashing, rate-limited login, persistent account lockout |
 | `djangors-sessions` | Signed-cookie session engine |
 | `djangors-admin` | The auto-generated admin site — changelist, filters, search, bulk actions, inline editing, CSV export, audit log, object history |
 | `djangors-forms` | Form field types and validation, plus the `ModelForm` equivalent auto-derived from `#[derive(Model)]` |
@@ -73,6 +73,7 @@ of composable pieces:
 | `djangors-cache` | Cache trait + in-memory/database/Redis backends |
 | `djangors-mail` | Email messages with SMTP/file/in-memory backends |
 | `djangors-tasks` | A background task queue (`#[task]`, Postgres `SELECT ... FOR UPDATE SKIP LOCKED`, cron-style recurring jobs, a worker loop) |
+| `djangors-pdf` | Typed PDF generation for report cards, invoices, and receipts — headings, text, and tables with automatic page breaks |
 | `djangors-i18n` | Runtime internationalization (Fluent-backed catalogs, locale fallback chain) |
 | `djangors-staticfiles` | Static file collection and serving, a pluggable `Storage` trait (local disk, S3) |
 | `djangors-test` | In-process test client, real per-test database isolation, and a JSON fixtures loader |

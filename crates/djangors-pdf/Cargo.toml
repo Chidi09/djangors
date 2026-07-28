@@ -1,0 +1,12 @@
+[package]
+name = "djangors-pdf"
+description = "PDF generation for the Djangors web framework"
+repository = "https://github.com/Chidi09/djangors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+printpdf = "0.7"
+thiserror = "2.0.18"

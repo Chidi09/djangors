@@ -938,8 +938,22 @@ Sequenced easiest → hardest; tracked as tasks #62–71.
   lockout as a fresh streak" logic was also accidentally suppressing cleanup on the *success* path,
   since it filtered the row to `None` before the success/failure match ran — caught by the test
   actually asserting the row was gone, not just that login succeeded.
-- [ ] **PDF generation helper** — `weasyprint` equivalent; needed for report cards/invoices/
-  receipts in any real SaaS app. No PDF generation exists in the framework today.
+- [x] **PDF generation helper** — **done, but scoped differently than `weasyprint`.** New
+  `djangors-pdf` crate. Considered a real headless-browser-fidelity HTML+CSS renderer (matching
+  `weasyprint` more literally) but confirmed this sandbox has no viable Chrome/Chromium install
+  path (only a snap-package transitional wrapper, `chromium-browser`, which needs `snapd` — not
+  reliably available in a container/deployment context either), and any deployment would gain an
+  implicit browser-engine runtime dependency either way. Built a typed Rust builder API instead —
+  `PdfDocument::new(title)` then `.heading()`/`.text()`/`.spacer()`/`.table(headers, rows)`, flowing
+  top to bottom across A4 pages with automatic page breaks, `.render() -> Vec<u8>` — matching this
+  framework's own "typed Rust API over stringly-typed magic" philosophy (the same reasoning behind
+  `ModelForm`) rather than an HTML-string-based approach, and with zero external runtime
+  dependency (`printpdf`, pure Rust). Directly serves the actual stated need (report cards,
+  invoices, receipts: structured text and tables) without the Chrome dependency risk. 3 unit tests
+  plus a working doctest; **independently validated with `poppler-utils`** (`pdfinfo`/`pdftotext` —
+  a completely separate PDF implementation from `printpdf`) confirming a real, valid A4 PDF whose
+  extracted text matches exactly what was written, in order — not just self-consistency against
+  the crate's own output.
 - [ ] **Malware/AV scan hook for uploads** — `clamd` equivalent; an optional scan-on-upload hook
   for the `Storage` trait or multipart extractor, off by default.
 - [ ] **Fix cross-crate test DDL races properly** (task #61) — adopt `djangors-test`'s existing
