@@ -10,22 +10,75 @@ import markdown from '../content/README.md?raw';
 // untrimmed README verbatim.
 const bodyMarkdown = markdown.split(/^---$/m).slice(1).join('\n---\n') || markdown;
 const html = marked.parse(bodyMarkdown);
+
+const faq = [
+  {
+    q: 'What is Djangors?',
+    a: "Djangors is a batteries-included web framework for Rust: an ORM with migrations, an auto-generated admin site, forms, authentication, a REST framework, background tasks, payments, and multi-tenancy, all in a single static binary.",
+  },
+  {
+    q: 'Is Djangors "Django for Rust"?',
+    a: "Yes. Djangors brings Django's productivity, its ORM, migrations, admin site, forms, auth, and REST framework, to Rust, while keeping Rust's compile-time safety and performance. The dj CLI mirrors Django's manage.py commands.",
+  },
+  {
+    q: 'Why use Djangors instead of Axum or Actix Web?',
+    a: 'Axum and Actix are HTTP frameworks: you still have to choose and integrate an ORM, migrations, an admin panel, auth, and forms yourself. Djangors ships all of that already built, tested, and integrated together, the way Django does for Python, on top of the same hyper/tower foundation.',
+  },
+  {
+    q: 'Is Djangors production-ready?',
+    a: 'Djangors is pre-1.0 and under active development, but its core, the ORM, admin, auth, migrations, CLI, REST framework, and background tasks, is built and tested. All 32 crates are published on crates.io, and a real production deployment is already live.',
+  },
+  {
+    q: 'Does Djangors run on Windows, macOS, and Linux?',
+    a: 'Yes. Djangors is pure Rust, so it builds and runs anywhere the Rust toolchain does. Install it with cargo install djangors-cli on any of the three.',
+  },
+  {
+    q: 'Is Djangors free and open source?',
+    a: 'Yes, dual-licensed under MIT OR Apache-2.0, the standard choice for Rust projects.',
+  },
+];
+const faqJsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: faq.map(({ q, a }) => ({
+    '@type': 'Question',
+    name: q,
+    acceptedAnswer: { '@type': 'Answer', text: a },
+  })),
+};
 ---
-<Layout description="Djangors is a batteries-included web framework for Rust: the ORM, migrations, admin site, forms, auth, a REST framework, background tasks, payments, and multi-tenancy. Everything that makes Django pleasant, with Rust's speed, safety, and single-binary deploys."><section class="hero"><h1>The Django of Rust.</h1><p class="lede">Everything that makes Django pleasant: the ORM, migrations, the admin, forms, auth, the batteries, the docs, the tutorial. All of it with Rust's speed, safety, and single-binary deploys.</p><div class="actions"><a class="button" href="https://github.com/Chidi09/djangors">View on GitHub ↗</a><a class="outline" href="/docs/">Read the docs</a></div><div class="terminal"><div class="terminal-bar"><span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span><span class="terminal-title">Terminal</span></div><div class="terminal-tabs" role="tablist"><button class="terminal-tab" data-os="mac" aria-selected="true">macOS</button><button class="terminal-tab" data-os="linux" aria-selected="false">Linux</button><button class="terminal-tab" data-os="windows" aria-selected="false">Windows</button></div><pre class="terminal-body" data-os="mac"><span class="prompt">$</span> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+<Layout description="Djangors is a batteries-included web framework for Rust: the ORM, migrations, admin site, forms, auth, a REST framework, background tasks, payments, and multi-tenancy. Everything that makes Django pleasant, with Rust's speed, safety, and single-binary deploys."><section class="hero"><h1>The Django of Rust.</h1><p class="lede">Everything that makes Django pleasant: the ORM, migrations, the admin, forms, auth, the batteries, the docs, the tutorial. All of it with Rust's speed, safety, and single-binary deploys.</p><div class="actions"><a class="button" href="https://github.com/Chidi09/djangors">View on GitHub ↗</a><a class="outline" href="/docs/">Read the docs</a></div><div class="terminal"><div class="terminal-bar"><span class="dot dot-red"></span><span class="dot dot-yellow"></span><span class="dot dot-green"></span><span class="terminal-title">Terminal</span><button class="terminal-copy" type="button">Copy</button></div><div class="terminal-tabs" role="tablist"><button class="terminal-tab" data-os="mac" aria-selected="true">macOS</button><button class="terminal-tab" data-os="linux" aria-selected="false">Linux</button><button class="terminal-tab" data-os="windows" aria-selected="false">Windows</button></div><pre class="terminal-body" data-os="mac" data-copy="curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cargo install djangors-cli
+dj new mysite &amp;&amp; cd mysite
+cargo run"><span class="prompt">$</span> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 <span class="prompt">$</span> cargo install djangors-cli
 <span class="prompt">$</span> dj new mysite &amp;&amp; cd mysite
-<span class="prompt">$</span> cargo run</pre><pre class="terminal-body" data-os="linux" hidden><span class="prompt">$</span> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+<span class="prompt">$</span> cargo run</pre><pre class="terminal-body" data-os="linux" data-copy="curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cargo install djangors-cli
+dj new mysite &amp;&amp; cd mysite
+cargo run" hidden><span class="prompt">$</span> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 <span class="prompt">$</span> cargo install djangors-cli
 <span class="prompt">$</span> dj new mysite &amp;&amp; cd mysite
-<span class="prompt">$</span> cargo run</pre><pre class="terminal-body" data-os="windows" hidden><span class="prompt">PS&gt;</span> winget install Rustlang.Rustup
+<span class="prompt">$</span> cargo run</pre><pre class="terminal-body" data-os="windows" data-copy="winget install Rustlang.Rustup
+cargo install djangors-cli
+dj new mysite; cd mysite
+cargo run" hidden><span class="prompt">PS&gt;</span> winget install Rustlang.Rustup
 <span class="prompt">PS&gt;</span> cargo install djangors-cli
 <span class="prompt">PS&gt;</span> dj new mysite; cd mysite
 <span class="prompt">PS&gt;</span> cargo run</pre></div></section><script>document.querySelectorAll('.terminal').forEach((term) => {
   const tabs = term.querySelectorAll('.terminal-tab');
   const bodies = term.querySelectorAll('.terminal-body');
+  const copyBtn = term.querySelector('.terminal-copy');
   tabs.forEach((tab) => tab.addEventListener('click', () => {
     const os = tab.getAttribute('data-os');
     tabs.forEach((t) => t.setAttribute('aria-selected', String(t === tab)));
     bodies.forEach((b) => { b.hidden = b.getAttribute('data-os') !== os; });
   }));
-});</script><section class="pillars"><div class="pillar"><h3>Compile-time safety</h3><p>A typo'd field name or a wrong type passed to a query is a build failure, not a bug found in production. The ORM's query builder, model metadata, and form validation are all checked by <code>rustc</code> before the code ships.</p></div><div class="pillar"><h3>Actually fast</h3><p>No GIL, no GC pauses. Djangors runs on Tokio's async runtime, and it's backed by honest <code>oha</code>-driven HTTP benchmarks against Django/Gunicorn and axum, not marketing numbers.</p><a href="/benchmarks">See the benchmarks &rarr;</a></div><div class="pillar"><h3>Secure by default</h3><p>CSRF protection, security headers, HSTS, a CSP builder, and HttpOnly signed sessions ship enabled out of the box, backed by a real internal security review.</p><a href="/docs/guides/security.html">Read the security guide &rarr;</a></div></section><section class="get-started"><h2>Get started</h2><div class="get-started-grid"><a class="get-started-card" href="https://github.com/Chidi09/djangors#quick-start"><h3>Install Djangors</h3><p>Clone the repo, scaffold a new project with the <code>dj</code> CLI, and have a running server in minutes.</p></a><a class="get-started-card" href="/docs/tutorial/01-requests-and-responses.html"><h3>Follow the tutorial</h3><p>The real, verified 8-part tutorial builds the same polls app Django's own tutorial does, using this exact codebase's real APIs.</p></a></div></section><section class="features"><h2>What's included</h2><div class="features-grid"><a class="feature-card" href="/docs/guides/orm.html"><h3>ORM</h3><p><code>QuerySet</code>, filter/order/aggregate expressions, and race-safe bulk operations.</p></a><a class="feature-card" href="/docs/guides/admin.html"><h3>Admin site</h3><p>An auto-generated changelist, filters, bulk actions, and a full audit log.</p></a><a class="feature-card" href="/docs/guides/auth.html"><h3>Auth</h3><p>Argon2id password hashing, login rate limiting, and persistent account lockout.</p></a><a class="feature-card" href="/docs/guides/payments.html"><h3>Payments</h3><p>A Paystack integration with idempotent, database-constraint-backed transaction recording.</p></a><a class="feature-card" href="/docs/guides/multi-tenancy.html"><h3>Multi-tenancy</h3><p>Membership-verified per-request tenant scoping that reuses the REST framework's own enforcement.</p></a><a class="feature-card" href="/docs/guides/deployment.html"><h3>Deployment</h3><p><code>dj deploy</code> ships to Render or any VPS over SSH, straight from the CLI.</p></a><a class="feature-card" href="/docs/guides/pdf.html"><h3>PDF generation</h3><p>A typed, pure-Rust builder for report cards, invoices, and receipts. No headless browser required.</p></a><a class="feature-card" href="/docs/guides/settings.html"><h3>Typed settings</h3><p>Validated app configuration loaded from environment variables, checked at startup, not at runtime.</p></a></div></section><article class="markdown"><button class="copy" data-markdown={markdown}>Copy as Markdown</button><Fragment set:html={html} /></article></Layout>
+  copyBtn?.addEventListener('click', async () => {
+    const active = [...bodies].find((b) => !b.hidden);
+    if (!active) return;
+    await navigator.clipboard.writeText(active.getAttribute('data-copy') ?? '');
+    copyBtn.textContent = 'Copied';
+    setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1400);
+  });
+});</script><section class="pillars"><div class="pillar"><h3>Compile-time safety</h3><p>A typo'd field name or a wrong type passed to a query is a build failure, not a bug found in production. The ORM's query builder, model metadata, and form validation are all checked by <code>rustc</code> before the code ships.</p></div><div class="pillar"><h3>Actually fast</h3><p>No GIL, no GC pauses. Djangors runs on Tokio's async runtime, and it's backed by honest <code>oha</code>-driven HTTP benchmarks against Django/Gunicorn and axum, not marketing numbers.</p><a href="/benchmarks">See the benchmarks &rarr;</a></div><div class="pillar"><h3>Secure by default</h3><p>CSRF protection, security headers, HSTS, a CSP builder, and HttpOnly signed sessions ship enabled out of the box, backed by a real internal security review.</p><a href="/docs/guides/security.html">Read the security guide &rarr;</a></div></section><section class="get-started"><h2>Get started</h2><div class="get-started-grid"><a class="get-started-card" href="https://github.com/Chidi09/djangors#quick-start"><h3>Install Djangors</h3><p>Clone the repo, scaffold a new project with the <code>dj</code> CLI, and have a running server in minutes.</p></a><a class="get-started-card" href="/docs/tutorial/01-requests-and-responses.html"><h3>Follow the tutorial</h3><p>The real, verified 8-part tutorial builds the same polls app Django's own tutorial does, using this exact codebase's real APIs.</p></a></div></section><section class="features"><h2>What's included</h2><div class="features-grid"><a class="feature-card" href="/docs/guides/orm.html"><h3>ORM</h3><p><code>QuerySet</code>, filter/order/aggregate expressions, and race-safe bulk operations.</p></a><a class="feature-card" href="/docs/guides/admin.html"><h3>Admin site</h3><p>An auto-generated changelist, filters, bulk actions, and a full audit log.</p></a><a class="feature-card" href="/docs/guides/auth.html"><h3>Auth</h3><p>Argon2id password hashing, login rate limiting, and persistent account lockout.</p></a><a class="feature-card" href="/docs/guides/payments.html"><h3>Payments</h3><p>A Paystack integration with idempotent, database-constraint-backed transaction recording.</p></a><a class="feature-card" href="/docs/guides/multi-tenancy.html"><h3>Multi-tenancy</h3><p>Membership-verified per-request tenant scoping that reuses the REST framework's own enforcement.</p></a><a class="feature-card" href="/docs/guides/deployment.html"><h3>Deployment</h3><p><code>dj deploy</code> ships to Render or any VPS over SSH, straight from the CLI.</p></a><a class="feature-card" href="/docs/guides/pdf.html"><h3>PDF generation</h3><p>A typed, pure-Rust builder for report cards, invoices, and receipts. No headless browser required.</p></a><a class="feature-card" href="/docs/guides/settings.html"><h3>Typed settings</h3><p>Validated app configuration loaded from environment variables, checked at startup, not at runtime.</p></a></div></section><section class="faq"><h2>Frequently asked questions</h2><div class="faq-list">{faq.map(({ q, a }) => <details class="faq-item"><summary>{q}</summary><p>{a}</p></details>)}</div></section><script type="application/ld+json" set:html={JSON.stringify(faqJsonLd)} /><article class="markdown"><button class="copy" data-markdown={markdown}>Copy as Markdown</button><Fragment set:html={html} /></article></Layout>
