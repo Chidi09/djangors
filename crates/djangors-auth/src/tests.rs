@@ -709,6 +709,138 @@ impl AuthBackend for TestDoubleBackend {
 }
 
 #[tokio::test]
+async fn test_persistent_lockout_backend_locks_even_correct_credentials_and_resets_on_expiry() {
+    let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
+    let db = djangors_orm::djangors_db::Database::connect(&config)
+        .await
+        .unwrap();
+
+    djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_user")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_user (
+            id BIGSERIAL PRIMARY KEY,
+            username VARCHAR(150) NOT NULL,
+            email VARCHAR(254) NOT NULL,
+            password TEXT NOT NULL,
+            is_active BOOLEAN NOT NULL,
+            is_staff BOOLEAN NOT NULL,
+            is_superuser BOOLEAN NOT NULL,
+            date_joined TIMESTAMPTZ NOT NULL,
+            last_login TIMESTAMPTZ
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_login_lockout")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    djangors_orm::sqlx::query(
+        "CREATE TABLE auth_login_lockout (
+            id BIGSERIAL PRIMARY KEY,
+            username VARCHAR(150) NOT NULL UNIQUE,
+            failed_attempts INTEGER NOT NULL,
+            first_failed_at TIMESTAMPTZ NOT NULL,
+            locked_until TIMESTAMPTZ
+        )",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let plaintext = "correct_password";
+    let hash = hash_password(plaintext).unwrap();
+    let now = chrono::Utc::now();
+    let user = User {
+        id: 0,
+        username: "lockout_user".to_string(),
+        email: "lockout@example.com".to_string(),
+        password: hash,
+        is_active: true,
+        is_staff: false,
+        is_superuser: false,
+        date_joined: now,
+        last_login: None,
+    };
+    user.save(&db).await.unwrap();
+
+    let backend =
+        PersistentLockoutBackend::new(ModelBackend, 3, std::time::Duration::from_secs(3600));
+
+    // 1st and 2nd failures: wrong password, not yet locked.
+    for _ in 0..2 {
+        let res = backend
+            .authenticate(&db, "lockout_user", "wrong")
+            .await
+            .unwrap();
+        assert!(res.is_none());
+    }
+
+    // 3rd failure crosses max_attempts=3 - now locked.
+    let res = backend
+        .authenticate(&db, "lockout_user", "wrong")
+        .await
+        .unwrap();
+    assert!(res.is_none());
+
+    // Even the CORRECT password is now rejected - this is what distinguishes a
+    // lockout from plain rate limiting.
+    let err = backend
+        .authenticate(&db, "lockout_user", plaintext)
+        .await
+        .unwrap_err();
+    match err {
+        AuthError::AccountLocked { retry_after_secs } => {
+            assert!(retry_after_secs > 0 && retry_after_secs <= 3600);
+        }
+        other => panic!("expected AccountLocked, got {other:?}"),
+    }
+
+    // Simulate the lockout window expiring (avoids a real 1-hour test sleep).
+    djangors_orm::sqlx::query(
+        "UPDATE auth_login_lockout SET locked_until = now() - interval '1 minute' WHERE username = 'lockout_user'",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    // An expired lockout no longer rejects correct credentials, and a successful
+    // login clears the failure streak entirely.
+    let res = backend
+        .authenticate(&db, "lockout_user", plaintext)
+        .await
+        .unwrap();
+    assert!(res.is_some());
+
+    let remaining = LoginLockout::objects()
+        .filter(djangors_orm::q!(username = "lockout_user"))
+        .unwrap()
+        .first(&db)
+        .await
+        .unwrap();
+    assert!(
+        remaining.is_none(),
+        "a successful login must clear the lockout row entirely"
+    );
+
+    djangors_orm::sqlx::query("DROP TABLE auth_login_lockout")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    djangors_orm::sqlx::query("DROP TABLE auth_user")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn test_rate_limited_backend_limits_attempts() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;

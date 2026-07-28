@@ -32,6 +32,15 @@ pub enum AuthError {
     /// Too many failed login attempts within the rate limit window.
     #[error("too many login attempts, try again later")]
     RateLimited,
+    /// The account is locked out after too many failed attempts, persisted across
+    /// process restarts. Distinct from [`AuthError::RateLimited`]: a lockout rejects
+    /// *correct* credentials too until it expires, whereas rate limiting only
+    /// throttles the rate of attempts.
+    #[error("account locked due to too many failed login attempts, try again in {retry_after_secs}s")]
+    AccountLocked {
+        /// Seconds remaining until the lockout expires.
+        retry_after_secs: u64,
+    },
     /// Provided password reset or authentication token is invalid or expired.
     #[error("invalid or expired token")]
     InvalidToken,
@@ -205,6 +214,158 @@ impl<B: AuthBackend + Send + Sync> AuthBackend for RateLimitedBackend<B> {
         }
 
         self.inner.authenticate(db, username, password).await
+    }
+}
+
+/// Persisted per-username login-failure tracking, backing [`PersistentLockoutBackend`].
+/// The `django-axes` equivalent: unlike [`RateLimitedBackend`] (in-memory, per-process,
+/// throttles the *rate* of attempts), this survives process restarts and rejects
+/// *correct* credentials too once `locked_until` is in the future.
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "djangors_auth", table_name = "auth_login_lockout")]
+pub struct LoginLockout {
+    /// Primary key identifier.
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    /// The username this lockout state tracks.
+    #[djangors(max_length = 150, unique)]
+    pub username: String,
+    /// Consecutive failed attempts since the last reset (a successful login, or
+    /// the previous lockout window expiring).
+    pub failed_attempts: i32,
+    /// When the current failure streak started.
+    pub first_failed_at: chrono::DateTime<chrono::Utc>,
+    /// If set and in the future, further attempts (even with correct credentials)
+    /// are rejected with [`AuthError::AccountLocked`] until this time passes.
+    pub locked_until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// A persistent, database-backed account lockout wrapper around an inner
+/// [`AuthBackend`], mirroring `django-axes`. After `max_attempts` consecutive
+/// failures for a username, the account is locked for `lockout_duration` -
+/// during that window, even a request with the *correct* password is rejected
+/// with [`AuthError::AccountLocked`], which [`RateLimitedBackend`] alone does not
+/// do (it only throttles how often attempts are checked at all). State is stored
+/// in the `auth_login_lockout` table via [`LoginLockout`], so it survives process
+/// restarts and is shared correctly across multiple app instances pointed at the
+/// same database - the gap [`RateLimitedBackend`]'s own docs call out as
+/// deliberately out of scope for that simpler, in-memory limiter.
+///
+/// A successful login clears the failure streak. An expired lockout (`locked_until`
+/// in the past) is treated as a fresh window: the next failure starts counting from
+/// 1, not from wherever the previous streak left off.
+pub struct PersistentLockoutBackend<B: AuthBackend> {
+    inner: B,
+    max_attempts: u32,
+    lockout_duration: chrono::Duration,
+}
+
+impl<B: AuthBackend> PersistentLockoutBackend<B> {
+    /// Constructs a persistent lockout wrapper: `max_attempts` consecutive failures
+    /// locks the account for `lockout_duration`.
+    pub fn new(inner: B, max_attempts: u32, lockout_duration: std::time::Duration) -> Self {
+        Self {
+            inner,
+            max_attempts,
+            lockout_duration: chrono::Duration::from_std(lockout_duration)
+                .unwrap_or(chrono::Duration::hours(1)),
+        }
+    }
+
+    /// Constructs a persistent lockout wrapper with `django-axes`'s own common
+    /// default: 5 attempts, 1 hour lockout.
+    pub fn default_lockout(inner: B) -> Self {
+        Self::new(inner, 5, std::time::Duration::from_secs(60 * 60))
+    }
+}
+
+#[async_trait::async_trait]
+impl<B: AuthBackend + Send + Sync> AuthBackend for PersistentLockoutBackend<B> {
+    type User = B::User;
+
+    async fn authenticate(
+        &self,
+        db: &djangors_db::Database,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<Self::User>, AuthError> {
+        let now = chrono::Utc::now();
+        let existing = LoginLockout::objects()
+            .filter(djangors_orm::q!(username = username))?
+            .first(db)
+            .await?;
+
+        // An unexpired lockout rejects the attempt outright, without even calling
+        // the inner backend - correct credentials don't help during a lockout.
+        if let Some(lockout) = &existing {
+            if let Some(locked_until) = lockout.locked_until {
+                if locked_until > now {
+                    let retry_after_secs = (locked_until - now).num_seconds().max(0) as u64;
+                    return Err(AuthError::AccountLocked { retry_after_secs });
+                }
+            }
+        }
+
+        let result = self.inner.authenticate(db, username, password).await;
+
+        // A lockout whose window already expired counts as no active streak for
+        // the purposes of deciding whether to start counting from 1 again - but
+        // a successful login must still clear the row below regardless, so this
+        // is only consulted on the failure branch, not used to gate cleanup.
+        let active_streak = existing
+            .as_ref()
+            .filter(|l| l.locked_until.is_none_or(|u| u > now))
+            .is_some();
+
+        match (&result, existing) {
+            (Ok(Some(_)), Some(lockout)) => {
+                // Successful login clears any existing failure streak, expired or not.
+                lockout.delete(db).await?;
+            }
+            (Ok(Some(_)), None) => {}
+            (Ok(None), Some(mut lockout)) if active_streak => {
+                lockout.failed_attempts += 1;
+                if lockout.failed_attempts as u32 >= self.max_attempts {
+                    lockout.locked_until = Some(now + self.lockout_duration);
+                }
+                lockout.update(db).await?;
+            }
+            (Ok(None), Some(mut lockout)) => {
+                // A row exists but its streak already expired - start a fresh
+                // count-of-1 in place, rather than accumulating onto the old streak
+                // (or trying to INSERT a second row and hitting the UNIQUE
+                // constraint on `username`).
+                lockout.failed_attempts = 1;
+                lockout.first_failed_at = now;
+                lockout.locked_until = if self.max_attempts <= 1 {
+                    Some(now + self.lockout_duration)
+                } else {
+                    None
+                };
+                lockout.update(db).await?;
+            }
+            (Ok(None), None) => {
+                let locked_until = if self.max_attempts <= 1 {
+                    Some(now + self.lockout_duration)
+                } else {
+                    None
+                };
+                let lockout = LoginLockout {
+                    id: 0,
+                    username: username.to_string(),
+                    failed_attempts: 1,
+                    first_failed_at: now,
+                    locked_until,
+                };
+                lockout.save(db).await?;
+            }
+            (Err(_), _) => {
+                // A backend-level error (DB failure, inner rate-limit, etc.) is not
+                // a credential failure - don't count it against the lockout streak.
+            }
+        }
+
+        result
     }
 }
 

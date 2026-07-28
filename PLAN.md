@@ -919,8 +919,25 @@ Sequenced easiest → hardest; tracked as tasks #62–71.
   confirms the empty-DSN case is genuinely disabled (`guard.is_enabled() == false`) without
   reaching the network. Verified both with and without the feature flag; default (no-`sentry`)
   build unaffected.
-- [ ] **django-axes-style persistent account lockout** — builds on the existing rate-limited login
-  with a DB-backed failure counter + lockout window + unlock mechanism.
+- [x] **django-axes-style persistent account lockout** — **done.** `django-axes` equivalent, genuinely
+  distinct from the existing `RateLimitedBackend` (in-memory, per-process, throttles the *rate* of
+  attempts) — a new `PersistentLockoutBackend<B: AuthBackend>` rejects even *correct* credentials
+  once `max_attempts` consecutive failures trip a lockout, persisted in a new `LoginLockout`
+  model/table (`auth_login_lockout`, a real `#[derive(Model)]` struct, so `dj makemigrations`
+  picks it up automatically — confirmed via a real introspection run against `examples/polls`).
+  Survives process restarts and is correctly shared across multiple app instances pointed at the
+  same database, closing the gap `RateLimitedBackend`'s own doc comment explicitly called out as
+  future work. A successful login clears the failure streak entirely; an expired lockout is
+  treated as a fresh streak (starts counting from 1) rather than continuing to accumulate. New
+  `AuthError::AccountLocked { retry_after_secs }` variant, deliberately distinct from
+  `RateLimited` so callers can tell "throttled" from "locked out" apart. One real end-to-end test
+  (real `ModelBackend` + a real seeded user, not a mock): fails 3 times, confirms the *correct*
+  password is then rejected with `AccountLocked`, expires the lockout via direct SQL (avoiding a
+  real 1-hour sleep), then confirms a subsequent correct login both succeeds and fully clears the
+  lockout row. Found and fixed a real bug in the first draft along the way: the "treat an expired
+  lockout as a fresh streak" logic was also accidentally suppressing cleanup on the *success* path,
+  since it filtered the row to `None` before the success/failure match ran — caught by the test
+  actually asserting the row was gone, not just that login succeeded.
 - [ ] **PDF generation helper** — `weasyprint` equivalent; needed for report cards/invoices/
   receipts in any real SaaS app. No PDF generation exists in the framework today.
 - [ ] **Malware/AV scan hook for uploads** — `clamd` equivalent; an optional scan-on-upload hook
