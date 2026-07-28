@@ -10,7 +10,7 @@ const {
 } = Astro.props;
 
 const canonicalURL = new URL(Astro.url.pathname, Astro.site);
-const ogImageURL = new URL('/android-chrome-512x512.png', Astro.site);
+const ogImageURL = new URL('/og.png', Astro.site);
 ---
 
 <script>
@@ -40,7 +40,7 @@ const ogImageURL = new URL('/android-chrome-512x512.png', Astro.site);
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonicalURL} />
     <meta property="og:image" content={ogImageURL} />
-    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageURL} />
