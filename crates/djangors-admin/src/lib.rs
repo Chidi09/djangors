@@ -1,5 +1,12 @@
 #![deny(missing_docs)]
 //! Automatic administration interface for Djangors applications.
+//!
+//! This crate provides a complete database-driven admin interface, mirroring Django's Admin.
+//! Key components:
+//! - [`AdminSite`]: Central registry. Holds registered [`ModelAdmin`]s, configures branding, and mounts admin routes.
+//! - [`ModelAdmin`]: Trait customising lists, forms, validation, and actions for a registered ORM model.
+//! - Dynamic Templates: Core pages are rendered using templates (defined in `ADMIN_TEMPLATES` using `LazyLock`
+//!   and `djangors-template`) with CSRF protection enabled.
 
 use async_trait::async_trait;
 use djangors_auth::{Auth, User};
@@ -1043,8 +1050,11 @@ fn render_form(
 
 /// Central administration site registry managing registered models and admin views.
 pub struct AdminSite {
+    // Thread-safe registry containing all registered model administrations.
     registry: Mutex<Vec<Arc<dyn ModelAdmin>>>,
+    // Custom branding details (headers, titles, logos, accents) applied to the admin site.
     branding: SiteBranding,
+    // Extra user-registered routers to be mounted alongside default admin urls.
     extra_routes: Vec<std::panic::AssertUnwindSafe<Router>>,
 }
 
@@ -1791,16 +1801,27 @@ fn get_month_name(m: u32) -> &'static str {
     }
 }
 
+// Holds the parsed query-state (ordering, search, filter flags, and date-hierarchy parameters)
+// used to filter and paginate model instances displayed on the admin changelist page.
 struct ChangelistQueryState<'a> {
+    // Sorting order parameter parsed from ?o= (e.g. "field" or "-field").
     order: Option<&'a str>,
+    // Search term parsed from ?q=.
     search: Option<&'a str>,
+    // Active boolean filter flags parsed from query fields.
     filters: Vec<(&'static str, bool)>,
+    // Optional year filter for date-hierarchy navigation.
     year: Option<i32>,
+    // Optional month filter for date-hierarchy navigation.
     month: Option<u32>,
+    // Optional day filter for date-hierarchy navigation.
     day: Option<u32>,
+    // Derived UTC timestamp range matching the hierarchical date filter.
     date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
 }
 
+// Parses URL query parameters (ordering, search query, active filters, and date hierarchical
+// parameters) from the incoming request into `ChangelistQueryState`.
 fn parse_changelist_query_state<'a>(
     req: &'a Request,
     admin: &dyn ModelAdmin,
@@ -2122,6 +2143,12 @@ async fn admin_changelist(
         let mut cells = Vec::new();
         for (i, cell) in row.into_iter().enumerate() {
             let col_name = page_data.columns.get(i).copied().unwrap_or("");
+            // Note: We escape cell values here in Rust using `djangors_core::html_escape`
+            // rather than letting minijinja autoescape them. This is because `html_escape`
+            // escapes `/` as `&#x2F;` (uppercase hex), whereas minijinja escapes it as `&#x2f;`
+            // (lowercase hex). The integration tests verify the exact uppercase hex representation
+            // for XSS checks (e.g. testing `</script>`), and would fail if lowercase was emitted.
+            // Correspondingly, the template uses `|safe` to render this pre-escaped value.
             let escaped_value = djangors_core::html_escape(&cell);
             if i == 0 {
                 cells.push(ChangelistCellData {
@@ -2223,6 +2250,8 @@ async fn admin_changelist(
     let search = SearchBoxData {
         visible: search_visible,
         hidden_inputs,
+        // The query string value is also pre-escaped with `djangors_core::html_escape` to preserve
+        // uppercase hex `/` escaping in HTML assertions, matching the cell value escaping strategy.
         q_value: q.map(djangors_core::html_escape).unwrap_or_default(),
     };
 
@@ -3308,6 +3337,10 @@ async fn admin_bulk_delete_post(
 
     let user = require_perm(&req, db, admin.model_meta(), "delete").await?;
 
+    // A HashMap extractor silently drops all but the last value for repeated form keys (every
+    // checked "selected" checkbox shares the name "selected"). This would result in only one
+    // checked row being processed and bulk-deleted. Hence, we extract form parameters as
+    // a Vec<(String, String)> to preserve all occurrences of the "selected" key.
     let Form(pairs) = Form::<Vec<(String, String)>>::from_request(&req).await?;
     let is_confirm = pairs.iter().any(|(k, v)| k == "confirm" && v == "1");
     let mut pks: Vec<i64> = Vec::new();

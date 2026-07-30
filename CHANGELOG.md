@@ -532,3 +532,27 @@ dialects. `makemigrations` is synchronous and never connects, so it infers its d
 Postgres databases and whose isolation relies on Postgres session-level advisory locks.
 
 405 tests pass (401 + 4 new).
+
+### Phase 13.4: Documentation pass
+
+Measured doc-line-to-code-line ratio across every crate and documented the ten thinnest.
+`djangors-admin` was both the largest crate in the workspace and the least documented (9074 code
+lines, 1.5%). Added explanatory comments — the "why", not restatements of the "what" — with
+priority on module headers, private helpers, and non-obvious logic. Several rationales that
+previously existed only in `CHANGELOG.md` or `docs/design/*.md` were brought down to the code they
+describe (the `Vec<(String,String)>`-vs-`HashMap` form-extractor decision, the `html_escape`
+`&#x2F;` vs minijinja `&#x2f;` escaping discrepancy, why `Conn` uses enum dispatch rather than
+generics over `sqlx::Database`).
+
+Constrained to comments only: verified by stripping all comments from both revisions of every
+touched `.rs` file and confirming the remainder was byte-identical. Zero code changed in 13 files.
+
+Eight new topic guides for subsystems that had no prose documentation: `databases.md` (the
+13.1–13.3 dual-backend story, previously undocumented anywhere), `migrations.md`, `tasks.md`,
+`caching.md`, `i18n.md`, `sessions.md`, `static-files.md`, `signals.md`.
+
+**Known limitation:** every Rust block in the new guides is tagged `rust,illustrative`, so none is
+compile-checked by `doc-code-check`. API names were instead verified by hand against real source.
+Promoting the runnable ones to `rust,compile` is follow-up work.
+
+405 tests pass.

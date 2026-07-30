@@ -2,10 +2,13 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse2, ItemFn, LitStr};
 
+// Internal args parsed from the attribute macro, e.g. `#[task(name = "some_custom_name")]`.
 struct TaskArgs {
+    // Optional override for the background task's registered name.
     name: Option<String>,
 }
 
+// Parses attribute arguments for the task macro, expecting only an optional name field.
 fn parse_task_args(attr: TokenStream2) -> syn::Result<TaskArgs> {
     if attr.is_empty() {
         return Ok(TaskArgs { name: None });

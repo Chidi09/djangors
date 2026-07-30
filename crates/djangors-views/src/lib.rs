@@ -1,5 +1,14 @@
 #![deny(missing_docs)]
 //! Server-rendered generic class-based views for Djangors.
+//!
+//! This crate provides reusable, generic views that mimic Django's class-based views:
+//! - [`ListView`]: Displays multiple records of a model.
+//! - [`DetailView`]: Displays a single detailed model instance.
+//! - [`CreateView`]: Handles rendering and submission of forms to create a new model instance.
+//! - [`UpdateView`]: Handles editing and updating an existing model instance.
+//! - [`DeleteView`]: Renders a deletion confirmation page and deletes the object upon POST.
+//!
+//! Each view takes a [`ViewSetConfig`] specifying the engine, template name, and redirect targets.
 
 use djangors_core::extract::{Form, FromRequest};
 use djangors_core::{DjangorsError, PathParams, Request, Response};
@@ -19,6 +28,8 @@ pub struct ViewSetConfig<'a> {
     pub success_url: &'a str,
 }
 
+// Converts a model instance's fields and their values into a JSON object.
+// Used to construct template context where fields are exposed under their string names.
 fn model_context<M: Model>(model: &M) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (name, value) in model.field_values() {
@@ -53,6 +64,8 @@ fn model_context<M: Model>(model: &M) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
+// Formats a `FormErrors` instance into a JSON object suitable for template rendering.
+// Field-specific errors are mapped to their field names, and non-field errors are mapped to `__all__`.
 fn errors_context(errors: &djangors_orm::djangors_forms::FormErrors) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (name, error) in &errors.fields {
@@ -62,6 +75,8 @@ fn errors_context(errors: &djangors_orm::djangors_forms::FormErrors) -> serde_js
     serde_json::Value::Object(map)
 }
 
+// Helper to look up the primary key field name of the model and extract its `i64` value.
+// Fails with an internal error if the primary key field cannot be found or is not an integer.
 fn pk_value<M: Model>(model: &M) -> Result<i64, DjangorsError> {
     let name = M::meta()
         .fields
@@ -80,6 +95,7 @@ fn pk_value<M: Model>(model: &M) -> Result<i64, DjangorsError> {
         .ok_or_else(|| DjangorsError::Internal("Primary key is not an integer".into()))
 }
 
+// Queries the database to retrieve a single model instance matching the `pk` parameter from path parameters.
 async fn find<M: Model + FromRow>(req: &Request, params: &PathParams) -> Result<M, DjangorsError> {
     let db = req.require_state::<djangors_orm::djangors_db::Database>()?;
     let pk: i64 = params.get_as("pk")?;
@@ -103,6 +119,7 @@ async fn find<M: Model + FromRow>(req: &Request, params: &PathParams) -> Result<
         })
 }
 
+// Renders the specified template with the given context and returns a 200 OK HTML response.
 fn render(
     engine: &TemplateEngine,
     name: &str,

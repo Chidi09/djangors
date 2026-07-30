@@ -1,5 +1,15 @@
 #![deny(missing_docs)]
 //! Raw-byte caches, common backends, and explicitly opted-in response caching.
+//!
+//! This crate provides a unified interface for key-value caching:
+//! - [`Cache`]: The core trait defining raw-byte get, set, and delete operations.
+//! - [`CacheExt`]: Extension trait providing higher-level helpers like `get_or_set` and JSON serialization/deserialization.
+//! - Implementations:
+//!   - [`InMemoryCache`]: Fast in-memory backend using Moka cache.
+//!   - [`DatabaseCache`]: SQL-database-backed cache using `djangors_cache_entries` table.
+//!   - `RedisCache`: Distributed backend powered by Redis.
+//! - Tower Middleware: [`CacheLayer`] and [`CacheService`] intercept GET requests, serving and caching responses
+//!   explicitly marked with the [`CacheableResponse`] extension.
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -98,9 +108,12 @@ where
 pub struct InMemoryCache {
     inner: MokaCache<String, MemoryEntry>,
 }
+// Internally wraps cached bytes and their absolute expiration timestamp inside the Moka cache backend.
 #[derive(Clone)]
 struct MemoryEntry {
+    // The raw cached byte payload.
     value: Vec<u8>,
+    // Optional point in time when the entry becomes stale.
     expires_at: Option<std::time::Instant>,
 }
 impl InMemoryCache {
@@ -163,6 +176,8 @@ impl DatabaseCache {
     pub fn new(db: djangors_db::Database) -> Self {
         Self { db }
     }
+    // Lazily ensures that the database cache table `djangors_cache_entries` exists.
+    // This is run before every cache operation to guarantee the table is set up.
     async fn ensure_table(&self) -> Result<(), CacheError> {
         let mut conn = self.db.conn();
         let dialect = conn.dialect();
@@ -312,7 +327,9 @@ pub struct CacheableResponse;
 /// Tower middleware layer for caching responses marked with [`CacheableResponse`].
 #[derive(Clone)]
 pub struct CacheLayer {
+    // The cache implementation where response payloads are stored.
     cache: Arc<dyn Cache>,
+    // Default time-to-live duration for responses cached by this layer.
     ttl: Option<Duration>,
 }
 impl CacheLayer {
@@ -345,8 +362,11 @@ where
 /// Tower service middleware that intercepts GET requests and serves/caches responses.
 #[derive(Clone)]
 pub struct CacheService<S> {
+    // The wrapped inner Tower service.
     inner: S,
+    // The cache backend used to store HTTP responses.
     cache: Arc<dyn Cache>,
+    // Expiration duration applied to newly cached responses.
     ttl: Option<Duration>,
 }
 impl<S> Service<Request<Full<bytes::Bytes>>> for CacheService<S>
@@ -397,10 +417,15 @@ where
         })
     }
 }
+// Internal representation of a cached response, storing status code, headers,
+// and body bytes in a serializable format.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CachedResponse {
+    // The HTTP status code as a raw u16.
     status: u16,
+    // The HTTP headers, stored as name-value byte pairs.
     headers: Vec<(String, Vec<u8>)>,
+    // The raw response body bytes.
     body: Vec<u8>,
 }
 impl CachedResponse {

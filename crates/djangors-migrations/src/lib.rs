@@ -1,6 +1,19 @@
 #![deny(missing_docs)]
 //! Schema migration planning, execution, and SQL DDL generation for Djangors.
-
+//!
+//! # Database Connection Architecture: Enum Dispatch vs Generics
+//! In Djangors, the database connection (`Conn`) and query row (`DbRow`) abstractions are designed using
+//! runtime enum dispatch rather than trait generics (e.g., being generic over `<DB: sqlx::Database>`).
+//! If generics were used, bounds like `DB: Database, for<'r> i64: Decode<'r, DB> + Type<DB>` would have to
+//! propagate through every struct, trait method, derive macro, and downstream application crate.
+//! Instead, `Conn` and `DbRow` wrap driver-specific types internally, resolving dialect differences (Postgres vs SQLite)
+//! via runtime `match` statements in a single unified crate.
+//!
+//! Submodules:
+//! - [`error`]: Migration error types.
+//! - [`operation`]: DDL operation definitions and SQL generation logic.
+//! - [`plan`]: Topological sorting and migration plan building.
+//! - [`type_mapping`]: Mapping of ORM field types to SQL column types.
 /// Migration error types.
 pub mod error;
 /// DDL operation definitions and SQL generation logic.

@@ -1,5 +1,13 @@
 #![deny(missing_docs)]
 //! Background task queue, `#[task]` attribute macro, and worker loop for Djangors.
+//!
+//! This crate provides a distributed background task worker system:
+//! - [`QueuedTask`]: Database model representing an individual task instance queued for execution.
+//! - [`RecurringTask`]: Database model representing a schedule configuration for cron-based recurring tasks.
+//! - [`Worker`]: A worker instance that polls the database queue, claims tasks using database-level
+//!   concurrency controls (e.g. `SKIP LOCKED` or advisory locks), runs them, and handles retries or failures.
+//! - Tasks are registered globally at compile-time using the [`task`] attribute macro, which submits task metadata
+//!   via the `inventory` crate to be discovered by the worker at runtime.
 
 extern crate self as djangors_tasks;
 
@@ -9,6 +17,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::str::FromStr;
 
+// Helper to parse standard 5-field cron expressions. The underlying `cron` crate expects
+// a 6-field expression (with seconds as the first field), so this prefixes "0 " before parsing.
 fn parse_schedule(expression: &str) -> Result<cron::Schedule, String> {
     if expression.split_whitespace().count() != 5 {
         return Err("cron expression must contain exactly five fields".into());
@@ -385,6 +395,7 @@ pub async fn claim_next_task(db: &djangors_db::Database) -> Result<Option<Queued
     Ok(claimed)
 }
 
+// Internally marks a claimed queued task as successfully completed.
 async fn mark_task_completed(db: &djangors_db::Database, task_id: i64) -> Result<(), TaskError> {
     let mut conn = db.conn();
     let p1 = conn.dialect().placeholder(1);
@@ -398,6 +409,8 @@ async fn mark_task_completed(db: &djangors_db::Database, task_id: i64) -> Result
     Ok(())
 }
 
+// Internally updates a claimed queued task after execution failure, either requeueing it as
+// "pending" (if attempts < max_attempts) or permanently marking it as "failed".
 async fn mark_task_failed(
     db: &djangors_db::Database,
     task_id: i64,
@@ -430,8 +443,11 @@ async fn mark_task_failed(
 
 /// Worker that claims and executes background tasks from the queue.
 pub struct Worker {
+    // Database connection pool shared by the worker for query operations.
     db: djangors_db::Database,
+    // Idle sleep duration between query polling passes.
     poll_interval: std::time::Duration,
+    // How frequently this worker will wake up to run the recurring tasks check.
     recurring_tick_interval: Option<std::time::Duration>,
 }
 

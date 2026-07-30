@@ -946,6 +946,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     })
 }
 
+// Extracts the target model type from a field wrapped in `ForeignKey<TargetModel>`.
 fn get_foreign_key_target(ty: &Type) -> Option<&Type> {
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
@@ -961,6 +962,8 @@ fn get_foreign_key_target(ty: &Type) -> Option<&Type> {
     None
 }
 
+// Determines if `ty` is wrapped in `Option<T>`, returning the inner type `T`
+// and a boolean indicating whether it is optional.
 fn resolve_option_type(ty: &Type) -> (&Type, bool) {
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
@@ -976,6 +979,7 @@ fn resolve_option_type(ty: &Type) -> (&Type, bool) {
     (ty, false)
 }
 
+// Safely extracts the last identifier segment of a path type (e.g. the `T` from `std::path::T`).
 fn get_last_path_segment_ident(ty: &Type) -> Option<&Ident> {
     if let Type::Path(type_path) = ty {
         type_path.path.segments.last().map(|seg| &seg.ident)
@@ -984,6 +988,8 @@ fn get_last_path_segment_ident(ty: &Type) -> Option<&Ident> {
     }
 }
 
+// Parses default value expressions (string, integer, float, bool literals, including negative numbers)
+// into token streams corresponding to the `djangors_orm::DefaultValue` enum.
 fn parse_default_value(expr: &syn::Expr) -> syn::Result<proc_macro2::TokenStream> {
     match expr {
         syn::Expr::Lit(syn::ExprLit { lit, .. }) => match lit {
@@ -1037,6 +1043,7 @@ fn parse_default_value(expr: &syn::Expr) -> syn::Result<proc_macro2::TokenStream
     }
 }
 
+// Converts a CamelCase string (such as a struct name) into snake_case.
 fn snake_case(s: &str) -> String {
     let mut result = String::new();
     for (i, c) in s.chars().enumerate() {

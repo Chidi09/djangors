@@ -287,6 +287,18 @@ Then visit http://127.0.0.1:8000/.
 }
 
 /// Create a new app within a project.
+///
+/// # Design Choice: Module over Crate
+/// In `djangors`, the CLI command `dj new` generates a single standalone project crate rather
+/// than a multi-crate workspace. Performing file surgeries automatically on a project's
+/// `Cargo.toml` to dynamically convert a single-crate project into a workspace and configure
+/// dependencies on the fly is highly fragile and prone to breaking user configurations.
+/// Instead, `dj new-app` implements a deliberate design choice: it generates the app as a
+/// sub-module inside the current project's `src/` directory (creating `src/<app_name>/mod.rs`,
+/// `models.rs`, `views.rs`, `admin.rs`). This maps directly to standard Django apps, which are
+/// python subpackages, and allows immediate compilation without needing workspace coordination.
+/// Users are then prompted to perform the simple manual wiring steps (adding `mod <name>;` to
+/// their `src/main.rs` and mounting the routes).
 pub fn new_app(name: &str) -> Result<(), String> {
     require_project_root()?;
     validate_project_name(name)?;
@@ -444,8 +456,18 @@ fn project_mtime(path: &Path) -> SystemTime {
     newest
 }
 
-/// Check externally observable project settings and structure. Model/admin checks are
-/// intentionally unavailable because those registries only exist in the target binary.
+/// Check externally observable project settings and structure.
+///
+/// # Limitations on Introspection
+/// Unlike Django's `manage.py check`, which is generated per-project and runs within
+/// the project's own execution context with direct imports to the project's codebase,
+/// the global `dj` CLI tool is a standalone, compiled binary. It runs externally and
+/// has no generic mechanism to dynamic-link or introspect the user's compiled models,
+/// admin registries, or database schemas.
+/// Therefore, `dj check` is restricted to validation that can be performed externally:
+/// parsing and validating the settings (`djangors.toml`), checking file structure (e.g.
+/// `Cargo.toml` and `src/main.rs`), and checking deployment readiness. Model/admin checks
+/// must run inside the target binary itself.
 pub fn check(deploy: bool) -> Result<Vec<String>, String> {
     require_project_root()?;
     let mut issues = Vec::new();

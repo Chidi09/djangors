@@ -36,6 +36,14 @@
 - [PDF Generation](guides/pdf.md)
 - [Payments](guides/payments.md)
 - [Multi-tenancy](guides/multi-tenancy.md)
+- [Databases and Backends](guides/databases.md)
+- [Schema Migrations](guides/migrations.md)
+- [Background Tasks](guides/tasks.md)
+- [Caching](guides/caching.md)
+- [Internationalization (i18n)](guides/i18n.md)
+- [Sessions and CSRF Protection](guides/sessions.md)
+- [Static Files](guides/static-files.md)
+- [Signals](guides/signals.md)
 
 # How-To Guides
 

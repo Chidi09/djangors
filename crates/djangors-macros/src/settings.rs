@@ -147,6 +147,7 @@ pub fn expand_derive_settings(input: DeriveInput) -> syn::Result<TokenStream> {
     })
 }
 
+// Helper to parse string literal values from syntax expressions, returning compile errors on mismatch.
 fn parse_str_value(expr: &Expr) -> syn::Result<String> {
     if let Expr::Lit(syn::ExprLit {
         lit: syn::Lit::Str(s),

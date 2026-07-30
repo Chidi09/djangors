@@ -1,7 +1,14 @@
 #![deny(missing_docs)]
 //! Session engines for the Djangors web framework.
 //!
-//! Provides signed-cookie session management.
+//! Provides a signed-cookie session engine. Session state is serialized to JSON,
+//! base64-encoded, signed with HMAC-SHA256 using the application's secret key, and
+//! stored directly on the client's browser as a cookie.
+//!
+//! Key components:
+//! - [`Session`]: Thread-safe handle to read, write, and manage request-local session state.
+//! - [`SignedCookieStore`]: Serializes, signs, deserializes, and verifies cookies.
+//! - [`SessionLayer`]: Tower middleware injecting [`Session`] into request extensions and writing updated cookies to response headers.
 
 use base64::Engine;
 use hmac::{Hmac, Mac};
@@ -25,12 +32,16 @@ pub struct Session {
     inner: Arc<Mutex<SessionInner>>,
 }
 
+// Internal session state protected by a Mutex.
 struct SessionInner {
+    // The key-value data map stored in the session.
     data: HashMap<String, Value>,
+    // Flag indicating if any session key-value data was changed or removed during the request.
     modified: bool,
     /// Set by `cycle_key`; on the next encode, forces a fresh session
-    /// identity (not just re-signing the same data).
+    /// identity (not just re-signing the same data) to prevent session fixation attacks.
     cycled: bool,
+    // Flag indicating if this session was newly created during the current request.
     new: bool,
 }
 
@@ -108,6 +119,7 @@ impl Session {
     }
 }
 
+// Generates a random 128-bit session key encoded as a hexadecimal string.
 fn generate_session_key() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
@@ -122,9 +134,13 @@ fn generate_session_key() -> String {
 
 /// A signed cookie store for encoding and decoding session data.
 pub struct SignedCookieStore {
-    key: Vec<u8>,        // from settings.SECRET_KEY, NOT hardcoded, NOT optional
-    cookie_name: String, // default "djangors_sessionid"
-    max_age: Duration,   // default matches Django's 2-week default
+    // Secret key used to sign and verify HMAC-SHA256 signatures. Derived from settings.SECRET_KEY.
+    key: Vec<u8>,
+    // Name of the cookie sent to the client (defaults to "djangors_sessionid").
+    cookie_name: String,
+    // Expiration duration for session cookies (defaults to 2 weeks).
+    max_age: Duration,
+    // Flag indicating whether the cookie should only be sent over HTTPS (sets the Secure flag).
     secure: bool,
 }
 
@@ -238,6 +254,7 @@ impl SignedCookieStore {
     }
 }
 
+// Helper function to extract a specific cookie value by name from the Cookie header map.
 fn extract_session_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
     for cookie_header in headers.get_all(COOKIE) {
         let cookie_str = cookie_header.to_str().ok()?;

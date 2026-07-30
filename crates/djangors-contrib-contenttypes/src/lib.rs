@@ -1,5 +1,11 @@
 #![deny(missing_docs)]
 //! Stable model identities and generic foreign-key pairs for Djangors.
+//!
+//! The contenttypes framework tracks all registered models in the Djangors application
+//! by storing their unique `(app_label, model_name)` pairs in the database. This enables:
+//! - [`ContentType`]: Stably mapped IDs for any model structure registered in the ORM.
+//! - [`GenericForeignKey`]: Dynamic references linking to any row in any database table via a content-type ID and instance ID.
+//! - Synchronization: [`sync_content_types`] iterates over all registered models at runtime to register them in the database.
 
 use djangors_macros::Model;
 use thiserror::Error;

@@ -2,10 +2,13 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{parse2, ItemFn, LitStr};
 
+// Arguments parsed from the management command attribute macro.
 struct MgmtCmdArgs {
+    // Optional override for the management command's name.
     name: Option<String>,
 }
 
+// Parses the macro attribute inputs, validating options like `#[management_command(name = "cmd")]`.
 fn parse_mgmt_cmd_args(attr: TokenStream2) -> syn::Result<MgmtCmdArgs> {
     if attr.is_empty() {
         return Ok(MgmtCmdArgs { name: None });
