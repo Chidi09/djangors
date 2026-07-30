@@ -78,11 +78,32 @@ pub struct Choice {
 Access querysets using `Model::objects()` (or `QuerySet::<T>::new()`).
 
 ### Filtering and Ordering
-- **`.filter(q!(field = value, ...))`**: Applies filter expressions combined with `AND`.
+- **`.filter(q!(field = value, ...))`**: Applies filter expressions combined with `AND`. Accepts a whole `Q`-style tree, so `OR` and `NOT` compose (see [Combining filters](#combining-filters-or-and-not)).
+- **`.exclude(q!(...))`**: The negation of `.filter()` — Django's `.exclude()`.
 - **`.filter_or_icontains(&["field1", "field2"], "term")`**: Generates case-insensitive `ILIKE %term%` queries across specified text fields combined with `OR`.
 - **`.filter_datetime_range(field, gte, lt)`**: Filters datetime fields in the half-open interval `[gte, lt)`.
 - **`.order_by("field")` / `.order_by("-field")`**: Orders results. Prefix `-` means `DESC`.
 - **`.limit(n)` / `.offset(n)`**: Paginates results using standard SQL `LIMIT` and `OFFSET`.
+- **`.debug_sql()` / `.debug_params()`**: The `SELECT` this queryset would run and the parameters it would bind, for debugging and tests — Django's `str(queryset.query)`. Placeholders stay as `$1`, `$2`, … rather than being interpolated, so the output is never a runnable statement.
+
+### Lookup Suffixes
+
+Append a lookup to a field name to change the comparison. Without one, `=` is used.
+
+| Suffix | SQL | Notes |
+| --- | --- | --- |
+| *(none)* / `__eq` | `=` | |
+| `__ne` | `<>` | |
+| `__lt` `__lte` `__gt` `__gte` | `<` `<=` `>` `>=` | |
+| `__contains` / `__icontains` | `LIKE` / `ILIKE` `%v%` | |
+| `__startswith` / `__endswith` | `LIKE 'v%'` / `LIKE '%v'` | |
+| `__iexact` | `ILIKE 'v'` | Case-insensitive, no wildcards |
+| `__in` | `IN (...)` | Takes a `Vec`; an empty one compiles to `FALSE`, never invalid `IN ()` |
+| `__isnull` | `IS NULL` / `IS NOT NULL` | `= false` inverts it; binds no parameter |
+| `__regex` / `__iregex` | `~` / `~*` | POSIX regular expression |
+
+An unrecognised suffix is treated as part of the field name, so a typo surfaces
+as `OrmError::FieldNotFound` rather than silently becoming an equality test.
 
 ### Execution Methods
 - **`.all(db).await`**: Executes select query and returns `Vec<T>`.
@@ -106,6 +127,85 @@ Constructs lookup filter expressions:
 # use djangors_orm::{q, Model};
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 let qs = Question::objects().filter(q!(question_text = "What is your name?"))?;
+# Ok(())
+# }
+```
+
+### Combining filters: OR, AND, NOT
+
+A `q!(...)` produces a value you can combine with `|` (OR), `&` (AND), and `!`
+(NOT), which is how Django's `Q` objects spell the same thing. Successive
+`.filter()` calls are still `AND`ed together.
+
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::{q, Model};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+// WHERE (votes = 0 OR votes > 100) AND NOT (choice_text = 'spam')
+let qs = Choice::objects()
+    .filter(q!(votes = 0i32) | q!(votes__gt = 100i32))?
+    .filter(!q!(choice_text = "spam"))?;
+
+// `.exclude()` is the same as filtering on a negation.
+let qs = Choice::objects().exclude(q!(votes = 0i32))?;
+# let _ = qs;
+# Ok(())
+# }
+```
+
+### Comparing two columns: `q_f!`
+
+Where `q!` compares a column to a bound value, `q_f!` compares two columns on
+the same row — `F()` on the filter side. The lookup suffix rides on the
+left-hand field, as it does in Django.
+
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::{q_f, Model};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+// WHERE "id" <> "votes"  — neither side is a bind parameter.
+let qs = Choice::objects().filter(q_f!(id__ne votes))?;
+# let _ = qs;
+# Ok(())
+# }
+```
+
+### Grouping: `annotate` and `values`
+
+`.annotate()` is Django's `.values(...).annotate(...)`: it groups by the given
+fields and computes aggregates per group, returning `GroupRow`s rather than
+model instances.
+
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::{Model, aggregate::AggExpr};
+# async fn run(db: &djangors_db::Database) -> Result<(), Box<dyn std::error::Error>> {
+let rows = Choice::objects()
+    .annotate(db, &["question"], vec![("total", AggExpr::Sum { field: "votes" })])
+    .await?;
+
+for row in &rows {
+    let question_id = row.key("question");
+    let total = row.get("total");
+    println!("{question_id:?} => {total:?}");
+}
+# Ok(())
+# }
+```
+
+Ordering is dropped for grouped queries, because ordering by a column that is
+not in the `GROUP BY` is not valid SQL; sort the returned rows in Rust instead.
+
+`.values()` and `.values_list()` select a projection instead of whole models,
+which is useful when a table has columns you do not want to pay to fetch:
+
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::Model;
+# async fn run(db: &djangors_db::Database) -> Result<(), Box<dyn std::error::Error>> {
+let rows = Question::objects().values(db, &["id", "question_text"]).await?;
+let ids = Question::objects().values_list(db, "id").await?;
+# let _ = (rows, ids);
 # Ok(())
 # }
 ```

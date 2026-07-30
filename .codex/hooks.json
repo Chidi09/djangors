@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash(git commit*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "npm ci",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "cargo test",
+            "timeout": 300
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "chunk validate",
+            "timeout": 390
+          }
+        ]
+      }
+    ]
+  }
+}

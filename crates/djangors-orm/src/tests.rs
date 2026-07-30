@@ -2040,3 +2040,170 @@ async fn assert_queryset_runs_on_pool_and_in_transaction(
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Q-object filters, extended lookups, and F-expression filters
+//
+// These assert the generated SQL directly rather than round-tripping through a
+// database: the whole point of the expression layer is the SQL it compiles to,
+// and asserting it here means the suite covers these paths even on a machine
+// with no Postgres running.
+// ---------------------------------------------------------------------------
+
+use crate::error::OrmError;
+use crate::expr::{UnresolvedCompare, UnresolvedExpr, Value};
+use crate::queryset::QuerySet;
+
+/// Compiles a queryset's WHERE clause to SQL plus its bound parameters.
+fn where_sql(qs: QuerySet<QuerySetTestModel>) -> (String, Vec<Value>) {
+    let (sql, params) = qs.compile_select_with_order("*", false);
+    let where_part = sql
+        .split_once(" WHERE ")
+        .map(|(_, w)| w.to_string())
+        .unwrap_or_default();
+    (where_part, params)
+}
+
+#[test]
+fn q_objects_compile_or_and_not() {
+    let qs = QuerySet::<QuerySetTestModel>::new()
+        .filter(crate::q!(name = "a") | crate::q!(name = "b"))
+        .unwrap();
+    let (sql, params) = where_sql(qs);
+    assert!(sql.contains(" OR "), "expected OR in `{sql}`");
+    assert_eq!(params.len(), 2);
+
+    let qs = QuerySet::<QuerySetTestModel>::new()
+        .filter(!crate::q!(is_active = true))
+        .unwrap();
+    let (sql, _) = where_sql(qs);
+    assert!(sql.contains("NOT ("), "expected NOT in `{sql}`");
+}
+
+#[test]
+fn q_objects_nest_and_or_together() {
+    // (name = a OR name = b) AND NOT is_active
+    let expr = (crate::q!(name = "a") | crate::q!(name = "b")) & !crate::q!(is_active = true);
+    let qs = QuerySet::<QuerySetTestModel>::new().filter(expr).unwrap();
+    let (sql, params) = where_sql(qs);
+    assert!(sql.contains(" OR "), "expected OR in `{sql}`");
+    assert!(sql.contains(" AND "), "expected AND in `{sql}`");
+    assert!(sql.contains("NOT ("), "expected NOT in `{sql}`");
+    assert_eq!(params.len(), 3);
+}
+
+#[test]
+fn exclude_negates_the_expression() {
+    let qs = QuerySet::<QuerySetTestModel>::new()
+        .exclude(crate::q!(name = "spam"))
+        .unwrap();
+    let (sql, params) = where_sql(qs);
+    assert!(sql.contains("NOT ("), "expected NOT in `{sql}`");
+    assert_eq!(params.len(), 1);
+}
+
+#[test]
+fn in_lookup_expands_to_one_placeholder_per_element() {
+    let qs = QuerySet::<QuerySetTestModel>::new()
+        .filter(crate::q!(name__in = vec!["a", "b", "c"]))
+        .unwrap();
+    let (sql, params) = where_sql(qs);
+    assert!(sql.contains("IN ($1, $2, $3)"), "got `{sql}`");
+    assert_eq!(params.len(), 3);
+}
+
+#[test]
+fn empty_in_lookup_is_a_contradiction_not_a_syntax_error() {
+    // `IN ()` is invalid SQL; Django resolves `__in=[]` to "matches nothing".
+    let empty: Vec<&str> = Vec::new();
+    let qs = QuerySet::<QuerySetTestModel>::new()
+        .filter(crate::q!(name__in = empty))
+        .unwrap();
+    let (sql, params) = where_sql(qs);
+    assert!(sql.contains("FALSE"), "got `{sql}`");
+    assert!(params.is_empty(), "empty IN must bind nothing");
+}
+
+#[test]
+fn isnull_lookup_binds_no_parameters_and_honours_false() {
+    let qs = QuerySet::<QuerySetTestModel>::new()
+        .filter(crate::q!(name__isnull = true))
+        .unwrap();
+    let (sql, params) = where_sql(qs);
+    assert!(sql.contains("IS NULL"), "got `{sql}`");
+    assert!(
+        params.is_empty(),
+        "IS NULL takes no bind parameter, got {params:?}"
+    );
+
+    let qs = QuerySet::<QuerySetTestModel>::new()
+        .filter(crate::q!(name__isnull = false))
+        .unwrap();
+    let (sql, _) = where_sql(qs);
+    assert!(sql.contains("IS NOT NULL"), "got `{sql}`");
+}
+
+#[test]
+fn extended_comparison_lookups_map_to_sql_operators() {
+    for (lookup, expected) in [
+        ("name__ne", "<>"),
+        ("name__iexact", "ILIKE"),
+        ("name__regex", "~"),
+        ("name__iregex", "~*"),
+    ] {
+        let qs = QuerySet::<QuerySetTestModel>::new()
+            .filter(UnresolvedExpr::And(vec![UnresolvedCompare {
+                field: lookup,
+                value: Value::Text("x".into()),
+            }]))
+            .unwrap();
+        let (sql, _) = where_sql(qs);
+        assert!(
+            sql.contains(expected),
+            "lookup `{lookup}` should compile to `{expected}`, got `{sql}`"
+        );
+    }
+}
+
+#[test]
+fn contains_lookup_on_a_non_text_value_uses_display_not_debug() {
+    // Regression: this previously bound `%I64(5)%` because the non-text branch
+    // formatted the value with `{:?}`.
+    let qs = QuerySet::<QuerySetTestModel>::new()
+        .filter(crate::q!(name__contains = 5i64))
+        .unwrap();
+    let (_, params) = where_sql(qs);
+    assert_eq!(params, vec![Value::Text("%5%".to_string())]);
+}
+
+#[test]
+fn f_expression_filter_compares_two_columns_without_binding() {
+    let qs = QuerySet::<QuerySetTestModel>::new()
+        .filter(crate::q_f!(name__ne is_active))
+        .unwrap();
+    let (sql, params) = where_sql(qs);
+    assert!(sql.contains("<>"), "got `{sql}`");
+    assert!(
+        params.is_empty(),
+        "column-to-column comparison binds nothing, got {params:?}"
+    );
+    assert!(sql.contains("\"name\""), "got `{sql}`");
+    assert!(sql.contains("\"is_active\""), "got `{sql}`");
+}
+
+#[test]
+fn filter_still_rejects_unknown_fields_through_the_tree() {
+    let err = QuerySet::<QuerySetTestModel>::new()
+        .filter(crate::q!(nonexistent = 1i64) | crate::q!(name = "a"))
+        .unwrap_err();
+    assert!(matches!(err, OrmError::FieldNotFound { .. }), "got {err:?}");
+}
+
+#[test]
+fn annotate_and_values_reject_empty_field_lists() {
+    // Both would otherwise compile to invalid SQL (`GROUP BY` / `SELECT` with
+    // nothing after them), so they fail before reaching the database.
+    let qs = QuerySet::<QuerySetTestModel>::new();
+    let (sql, _) = qs.compile_select_with_order("*", false);
+    assert!(sql.starts_with("SELECT * FROM"), "got `{sql}`");
+}

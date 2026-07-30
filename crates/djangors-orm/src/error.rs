@@ -21,6 +21,12 @@ pub enum OrmError {
         model: &'static str,
     },
 
+    /// A queryset was built in a way that cannot produce valid SQL — for
+    /// example `annotate` with no group-by field. This is a programming
+    /// mistake, caught before the query reaches the database.
+    #[error("Invalid query: {0}")]
+    InvalidQuery(String),
+
     /// Specified field name was not found on the model metadata.
     #[error("Field {field} not found on model {model}")]
     FieldNotFound {

@@ -631,6 +631,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 djangors_orm::expr::Value::Bool(v) => query.bind(*v),
                 djangors_orm::expr::Value::DateTime(v) => query.bind(*v),
                 djangors_orm::expr::Value::Null => query.bind(None::<#null_bind_tok>),
+                djangors_orm::expr::Value::List(_) => query.bind(None::<#null_bind_tok>),
             };
         }
     });
@@ -665,6 +666,8 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                     djangors_orm::expr::Value::Bool(v) => query.bind(*v),
                     djangors_orm::expr::Value::DateTime(v) => query.bind(*v),
                     djangors_orm::expr::Value::Null => query.bind(None::<#null_bind_tok>),
+                    djangors_orm::expr::Value::List(_) => query.bind(None::<#null_bind_tok>),
+                djangors_orm::expr::Value::List(_) => query.bind(None::<#null_bind_tok>),
                 };
             }
         });
@@ -824,6 +827,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                     djangors_orm::expr::Value::Bool(v) => query.bind(*v),
                     djangors_orm::expr::Value::DateTime(v) => query.bind(*v),
                     djangors_orm::expr::Value::Null => query.bind(None::<i64>),
+                    djangors_orm::expr::Value::List(_) => query.bind(None::<i64>),
                 };
                 let rows_affected = query.execute(db.pool()).await?.rows_affected();
                 if rows_affected == 0 {

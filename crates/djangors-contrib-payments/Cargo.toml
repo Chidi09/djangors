@@ -8,8 +8,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-macros = { path = "../djangors-macros", version = "0.3.0" }
-djangors-orm = { path = "../djangors-orm", version = "0.3.0" }
+djangors-macros = { path = "../djangors-macros", version = "0.4.0" }
+djangors-orm = { path = "../djangors-orm", version = "0.4.0" }
 async-trait = "0.1.86"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0.228", features = ["derive"] }

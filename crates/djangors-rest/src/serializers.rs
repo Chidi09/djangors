@@ -12,19 +12,31 @@ use crate::*;
 pub fn serialize<M: Model>(instance: &M) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (name, value) in instance.field_values() {
-        let json_val = match value {
-            Value::I64(n) => serde_json::Value::Number(n.into()),
-            Value::F64(f) => serde_json::Number::from_f64(f)
-                .map(serde_json::Value::Number)
-                .unwrap_or(serde_json::Value::Null),
-            Value::Text(s) => serde_json::Value::String(s),
-            Value::Bool(b) => serde_json::Value::Bool(b),
-            Value::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
-            Value::Null => serde_json::Value::Null,
-        };
-        map.insert(name.to_string(), json_val);
+        map.insert(name.to_string(), value_to_json(value));
     }
     serde_json::Value::Object(map)
+}
+
+/// Converts a single ORM [`Value`] into JSON.
+///
+/// Split out from [`serialize`] so the list case can recurse; a `Value::List`
+/// only reaches here through a projection such as
+/// [`QuerySet::values`](djangors_orm::queryset::QuerySet::values), not from a
+/// plain model field.
+pub fn value_to_json(value: Value) -> serde_json::Value {
+    match value {
+        Value::I64(n) => serde_json::Value::Number(n.into()),
+        Value::F64(f) => serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        Value::Text(s) => serde_json::Value::String(s),
+        Value::Bool(b) => serde_json::Value::Bool(b),
+        Value::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        Value::Null => serde_json::Value::Null,
+        Value::List(items) => {
+            serde_json::Value::Array(items.into_iter().map(value_to_json).collect())
+        }
+    }
 }
 
 /// Deserializes a JSON object into field values suitable for `QuerySet::insert_raw` / `update`,
@@ -385,6 +397,30 @@ pub trait Serializer<M: Model>: Send + Sync + 'static {
     /// the client sees them all at once.
     fn validate(&self, _values: &[(&'static str, Value)], _errors: &mut ValidationErrors) {}
 
+    /// Render an instance with pre-fetched related objects embedded in place of
+    /// their raw foreign-key ids.
+    ///
+    /// This trait is synchronous, so it cannot itself fetch relations; pair it
+    /// with [`QuerySet::select_related`](djangors_orm::queryset::QuerySet::select_related)
+    /// to load the related rows, then pass them here. Only keys already present
+    /// in the base representation are replaced, so an unknown relation name is
+    /// ignored rather than injecting a field the schema never declared.
+    fn to_representation_nested(
+        &self,
+        instance: &M,
+        related: &RelatedObjects,
+    ) -> serde_json::Value {
+        let mut base = self.to_representation(instance);
+        if let Some(obj) = base.as_object_mut() {
+            for (field, value) in related {
+                if obj.contains_key(*field) {
+                    obj.insert((*field).to_string(), value.clone());
+                }
+            }
+        }
+        base
+    }
+
     /// Render a collection.
     fn to_representation_many(&self, instances: &[M]) -> Vec<serde_json::Value> {
         instances
@@ -550,5 +586,93 @@ impl<M: Model + Send + Sync + 'static> Serializer<M> for ModelSerializer<M> {
         for validator in &self.validators {
             validator.validate(&owned, errors);
         }
+    }
+}
+
+/// Related objects to embed, keyed by the relation's field name on the parent.
+///
+/// The key must match the field name as it appears in the parent's
+/// representation (i.e. the foreign-key field), because
+/// [`Serializer::to_representation_nested`] replaces that key in place.
+pub type RelatedObjects = HashMap<&'static str, serde_json::Value>;
+
+/// Composes two serializers so a relation renders as a nested object instead of
+/// a bare id — DRF's nested serializer.
+///
+/// The relation's rows must already be loaded (via
+/// [`QuerySet::select_related`](djangors_orm::queryset::QuerySet::select_related));
+/// this type decides only how they are *rendered*, never how they are fetched.
+/// When no related instance is supplied, the field keeps its raw id, so a
+/// missing join degrades to the flat representation rather than to `null`.
+///
+/// ```ignore
+/// let serializer = NestedSerializer::new(
+///     ModelSerializer::<Article>::default(),
+///     "author_id",
+///     ModelSerializer::<User>::new(FieldSet::all().excluding(&["password"])),
+/// );
+/// let body = serializer.render(&article, Some(&author));
+/// ```
+pub struct NestedSerializer<M: Model + 'static, R: Model + 'static> {
+    base: Arc<dyn Serializer<M>>,
+    relation: &'static str,
+    inner: Arc<dyn Serializer<R>>,
+}
+
+impl<M: Model + 'static, R: Model + 'static> NestedSerializer<M, R> {
+    /// Embeds `relation` on `base` using `inner` to render the related object.
+    pub fn new<B: Serializer<M>, I: Serializer<R>>(
+        base: B,
+        relation: &'static str,
+        inner: I,
+    ) -> Self {
+        Self {
+            base: Arc::new(base),
+            relation,
+            inner: Arc::new(inner),
+        }
+    }
+
+    /// Renders `instance`, embedding `related` at the configured relation field.
+    pub fn render(&self, instance: &M, related: Option<&R>) -> serde_json::Value {
+        let Some(related) = related else {
+            return self.base.to_representation(instance);
+        };
+        let mut map: RelatedObjects = HashMap::new();
+        map.insert(self.relation, self.inner.to_representation(related));
+        self.base.to_representation_nested(instance, &map)
+    }
+
+    /// Renders a collection of `(instance, related)` pairs, which is exactly the
+    /// shape `select_related` returns.
+    pub fn render_many(&self, rows: &[(M, Option<R>)]) -> Vec<serde_json::Value> {
+        rows.iter()
+            .map(|(instance, related)| self.render(instance, related.as_ref()))
+            .collect()
+    }
+}
+
+impl<M: Model + Send + Sync + 'static, R: Model + Send + Sync + 'static> Serializer<M>
+    for NestedSerializer<M, R>
+{
+    /// Without a related instance to embed there is nothing to nest, so this
+    /// falls through to the base representation. Use
+    /// [`NestedSerializer::render`] when the relation has been loaded.
+    fn to_representation(&self, instance: &M) -> serde_json::Value {
+        self.base.to_representation(instance)
+    }
+
+    fn to_internal_value(
+        &self,
+        data: &serde_json::Value,
+        partial: bool,
+    ) -> Result<Vec<(&'static str, Value)>, ValidationErrors> {
+        // Writes stay flat: a nested payload would need to create or match the
+        // related row, which is a different operation from serializing it.
+        self.base.to_internal_value(data, partial)
+    }
+
+    fn validate(&self, values: &[(&'static str, Value)], errors: &mut ValidationErrors) {
+        self.base.validate(values, errors)
     }
 }

@@ -26,6 +26,7 @@
 - [Templates](guides/templates.md)
 - [Forms](guides/forms.md)
 - [Authentication and Permissions](guides/auth.md)
+- [REST Framework](guides/rest.md)
 - [Admin Site](guides/admin.md)
 - [Testing](guides/testing.md)
 - [Deployment](guides/deployment.md)

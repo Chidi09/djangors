@@ -5,3 +5,82 @@ footer{border-top:1px solid #d0c6b5;padding:2rem 1.5rem;color:#4a4038;font-weigh
 @media(prefers-color-scheme:dark){:root{color:#f5f1e7;background:#201e1e} .markdown th,.markdown td{border-color:#554c45}footer{border-color:#554c45;color:#d8cdc0}.pillar,.get-started-card,.feature-card,.info-card,.faq-item{border-color:#554c45}.footer-bottom{border-color:#554c45}}
 @media(max-width:800px){.pillars,.get-started-grid{grid-template-columns:1fr}.features-grid{grid-template-columns:repeat(2,1fr)}.footer-grid{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:650px){header{align-items:flex-start}nav{gap:.6rem;font-size:.85rem;flex-wrap:wrap;justify-content:flex-end}header img{width:105px}}
+
+/* ── Responsive layer ─────────────────────────────────────────────────────
+   Appended last so these rules win over the base sheet above. The base sheet
+   already collapses .pillars/.get-started-grid/.info-grid and caps the
+   terminal width; what follows fixes what it missed: overflow from long
+   unbreakable strings, a hero that stayed desktop-sized on phones, grids that
+   never reached a single column, and tap targets below the 44px guideline. */
+
+/* Long URLs and inline code in the rendered README are the main source of
+   horizontal page scroll, since they cannot wrap at a space. */
+body { overflow-x: hidden; }
+.markdown, .info-card, .faq-item, .pillar, .feature-card, .get-started-card {
+  overflow-wrap: break-word;
+  word-wrap: break-word;
+}
+.markdown pre, .info-card pre, .terminal-body { max-width: 100%; }
+img, svg, video { max-width: 100%; height: auto; }
+
+/* Keep text from being auto-inflated on iOS when a block is wider than the
+   viewport, which otherwise makes font sizes inconsistent between sections. */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+@media (max-width: 900px) {
+  .features-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 650px) {
+  /* The hero's 5rem top padding costs most of a phone's first screen. */
+  .hero { padding: 2.5rem 0 2.5rem; }
+  h1 {
+    /* The 3rem floor was still ~48px on a 320px screen; with -.07em tracking
+       the headline crowded the edges. */
+    font-size: clamp(2.25rem, 11vw, 3.5rem);
+    letter-spacing: -0.045em;
+    margin: 1rem 0;
+  }
+  .lede { font-size: 1.1rem; }
+  h2 { margin-top: 2rem; }
+  main { padding: 1rem 1.15rem 3rem; }
+
+  /* Full-width, comfortably tappable primary actions. */
+  .actions { gap: .75rem; }
+  .actions .button, .actions .outline {
+    flex: 1 1 100%;
+    text-align: center;
+    padding: .85rem 1rem;
+  }
+
+  /* Two columns at 360px left ~150px per card. */
+  .features-grid, .footer-grid, .get-started-grid { grid-template-columns: 1fr; }
+
+  .feature-card, .pillar, .info-card, .get-started-card { padding: 1.15rem; }
+
+  /* Floated right, this button sat on top of the first markdown heading. */
+  .copy { float: none; display: inline-block; margin-bottom: 1rem; }
+
+  .terminal-body { font-size: .8rem; line-height: 1.75; padding: 1rem; }
+  .terminal-tab { padding: .5rem .7rem; font-size: .8rem; }
+
+  footer { padding: 1.5rem 1.15rem; }
+  .footer-grid { gap: 1.25rem; }
+}
+
+@media (max-width: 480px) {
+  header { padding: 1rem 1.15rem; flex-wrap: wrap; gap: .5rem; }
+  header img { width: 96px; }
+  nav { width: 100%; justify-content: flex-start; gap: .35rem; }
+  /* Roughly a 44px tap target without making the row wrap unpredictably. */
+  nav a { padding: .5rem .35rem; }
+  nav .github { padding: .55rem .85rem; }
+}
+
+/* Pointer-coarse devices get the same target sizing regardless of width, so a
+   small tablet in landscape is not left with 20px links. */
+@media (pointer: coarse) {
+  nav a { min-height: 44px; display: inline-flex; align-items: center; }
+  .terminal-tab, .terminal-copy, .copy, .faq-item summary { min-height: 44px; }
+  .faq-item summary { display: flex; align-items: center; }
+}

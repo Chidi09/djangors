@@ -80,6 +80,11 @@ pub struct ViewSetOptions<M: Model + FromRow> {
     pub serializer: Arc<dyn Serializer<M>>,
     /// Decides the row window and the list envelope.
     pub pagination: Arc<dyn Pagination>,
+    /// Extra query-string filter backends applied to `list`, in order, after
+    /// the [`ViewSetConfig`] allowlist has been applied.
+    pub filter_backends: Vec<Arc<dyn crate::filters::FilterBackend<M>>>,
+    /// Optional per-user/per-IP rate limit applied to every action.
+    pub throttle: Option<crate::throttling::Throttle>,
 }
 
 impl<M> Clone for ViewSetOptions<M>
@@ -91,6 +96,8 @@ where
             config: self.config.clone(),
             serializer: self.serializer.clone(),
             pagination: self.pagination.clone(),
+            filter_backends: self.filter_backends.clone(),
+            throttle: self.throttle.clone(),
         }
     }
 }
@@ -106,6 +113,8 @@ where
             config: ViewSetConfig::default(),
             serializer: Arc::new(ModelSerializer::<M>::default()),
             pagination: Arc::new(PageNumberPagination::default()),
+            filter_backends: Vec::new(),
+            throttle: None,
         }
     }
 }
@@ -137,6 +146,21 @@ where
     /// Replace the field allowlists.
     pub fn with_config(mut self, config: ViewSetConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    /// Append a query-string filter backend.
+    ///
+    /// Backends run in the order added, after the [`ViewSetConfig`] exact-match
+    /// allowlist, and each one narrows the queryset further.
+    pub fn with_filter_backend<B: crate::filters::FilterBackend<M>>(mut self, backend: B) -> Self {
+        self.filter_backends.push(Arc::new(backend));
+        self
+    }
+
+    /// Apply a rate limit to every action on this ViewSet.
+    pub fn with_throttle(mut self, throttle: crate::throttling::Throttle) -> Self {
+        self.throttle = Some(throttle);
         self
     }
 }
@@ -553,6 +577,12 @@ where
         options: &ViewSetOptions<M>,
     ) -> Result<Response, DjangorsError> {
         let config = &options.config;
+        // Throttling runs before any work, so a rejected request costs
+        // nothing beyond the counter read.
+        if let Some(throttle) = &options.throttle {
+            throttle.check(&req).await?;
+        }
+
         let db = req.require_state::<djangors_db::Database>()?;
 
         let per_page = options.pagination.page_size(&req);
@@ -570,6 +600,11 @@ where
                 }
             }
         }
+
+        // 1b. Apply any configured filter backends (lookup suffixes, search,
+        // ordering). These run after the exact-match allowlist so a backend can
+        // narrow further, never widen.
+        qs = crate::filters::apply_backends(&options.filter_backends, &req, qs)?;
 
         // 2. Parse ?ordering=field / ?ordering=-field query params for allowlisted orderable_fields
         let mut cursor_ordering: Option<(&'static str, bool)> = None;
@@ -710,6 +745,12 @@ where
         params: PathParams,
         options: &ViewSetOptions<M>,
     ) -> Result<Response, DjangorsError> {
+        // Throttling runs before any work, so a rejected request costs
+        // nothing beyond the counter read.
+        if let Some(throttle) = &options.throttle {
+            throttle.check(&req).await?;
+        }
+
         let db = req.require_state::<djangors_db::Database>()?;
 
         let pk_str = params.get("pk").ok_or_else(|| {
@@ -760,6 +801,12 @@ where
         _params: PathParams,
         options: &ViewSetOptions<M>,
     ) -> Result<Response, DjangorsError> {
+        // Throttling runs before any work, so a rejected request costs
+        // nothing beyond the counter read.
+        if let Some(throttle) = &options.throttle {
+            throttle.check(&req).await?;
+        }
+
         let db = req.require_state::<djangors_db::Database>()?;
 
         let json_val = json_body(&req).await?;
@@ -807,6 +854,12 @@ where
         params: PathParams,
         options: &ViewSetOptions<M>,
     ) -> Result<Response, DjangorsError> {
+        // Throttling runs before any work, so a rejected request costs
+        // nothing beyond the counter read.
+        if let Some(throttle) = &options.throttle {
+            throttle.check(&req).await?;
+        }
+
         let db = req.require_state::<djangors_db::Database>()?;
 
         let pk_str = params.get("pk").ok_or_else(|| {

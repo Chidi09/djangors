@@ -309,3 +309,94 @@ and give up the `QuerySet` API.
   that worked standalone would fail with "state absent" once mounted.
 - Added `AppState::merge`, `contains`, `len`, and `is_empty`.
 
+
+### Phase 12.3: ORM query expressiveness, REST filtering/throttling, and a responsive site
+
+Continues the response to the 0.2.2 external review. Phase 12.2 addressed error handling and the
+REST serializer layer; this phase addresses the remaining low scores — the ORM's query surface
+(rated 6/10) and the rest of the DRF parity gap — plus the marketing site's mobile layout.
+
+**ORM: `Q`-object filters.** `Expr` already supported `And`/`Or`/`Not` internally and the SQL
+compiler already emitted all three, but `UnresolvedExpr` — the type `q!` produces — had a single
+`And` variant, so nothing a user could write ever reached the `Or` or `Not` paths. Two ad-hoc
+escape hatches (`filter_or_icontains`, `filter_datetime_range`) existed precisely because of this.
+- `UnresolvedExpr` is now a tree: `All`, `Any`, and `Negate` join the original `And` leaf, with
+  `BitAnd`/`BitOr`/`Not` operator impls. `q!(a = 1) | q!(b = 2)` is Django's `Q(a=1) | Q(b=2)`.
+- `QuerySet::filter` resolves the tree recursively, validating every field name at every depth.
+- Added `QuerySet::exclude`, Django's `.exclude()`.
+- The variants are additive, so the ~15 existing `UnresolvedExpr::And(...)` construction sites
+  across the workspace are unchanged.
+
+**ORM: lookup suffixes.** Added `__ne`, `__iexact`, `__in`, `__isnull`, `__regex`, and `__iregex`
+to the existing comparison and substring lookups.
+- `__in` takes a `Vec` via the new `Value::List`, expanded into one placeholder per element while
+  compiling. An empty list compiles to `FALSE` rather than the syntactically invalid `IN ()`,
+  matching Django's `__in=[]`.
+- `__isnull` binds no parameter at all, and `= false` inverts it.
+- Both `suffix_to_op` and `split_field_lookup` were updated; missing the latter is what made the
+  first round of lookup tests fail, since an unrecognised suffix is treated as part of the field
+  name and surfaces as `FieldNotFound`.
+
+**ORM: `F` expressions in filters.** `F` previously existed only for the update side
+(`set!(votes = F("votes") + 1)`). Added `Expr::CompareField` and the `q_f!` macro for
+column-to-column comparison in a `WHERE` clause (`q_f!(paid_at__gte due_at)`), which binds no
+parameters.
+
+**ORM: grouping and projections.**
+- `QuerySet::annotate(db, group_by, aggs)` — Django's `.values(...).annotate(...)`. Returns
+  `GroupRow`s carrying the group keys and named aggregate results. Ordering is dropped for grouped
+  queries, since ordering by a column outside the `GROUP BY` is not valid SQL.
+- `QuerySet::values` / `values_list` for column projections.
+- `QuerySet::debug_sql` / `debug_params` — Django's `str(queryset.query)`. Placeholders stay as
+  `$1`, `$2`, … rather than being interpolated, so the output is never a runnable statement.
+- Added `OrmError::InvalidQuery` for queryset misuse caught before reaching the database.
+
+**REST: filter backends.** `ViewSetConfig::filterable_fields` only ever produced exact matches.
+Added a `FilterBackend<M>` trait with three implementations, composed in order via
+`ViewSetOptions::with_filter_backend`:
+- `FieldFilter` — lookup suffixes (`?age__gte=18`, `?status__in=a,b`, `?deleted_at__isnull=true`).
+- `SearchFilter` — free-text `?search=` across configured fields.
+- `OrderingFilter` — allowlisted `?ordering=-field`.
+
+All three are allowlist-driven, and the field/lookup name handed to the ORM is rebuilt from the
+compile-time allowlist rather than taken from the query string, so a client-supplied name cannot
+reach SQL.
+
+**REST: throttling.** Added `Throttle` and `parse_rate`, built on the existing
+`djangors_core::ratelimit` sliding window rather than duplicating it. DRF-style rate strings
+(`"100/hour"`), keyed per authenticated user and falling back to client IP (`ByUserOrIp`), applied
+to every ViewSet action via `ViewSetOptions::with_throttle`. A malformed rate returns `None`
+instead of silently becoming a default budget.
+
+**REST: nested serializers.** Added `NestedSerializer` and
+`Serializer::to_representation_nested`, which embed a pre-fetched related object in place of its
+raw foreign key. The serializer trait is synchronous and issues no queries, so this pairs with
+`select_related`; without a loaded relation the field keeps its id rather than becoming `null`.
+
+**Ergonomics.** `Value` now converts from `i8`/`i16`/`i32`/`u8`/`u16`/`u32`/`f32`, not just
+`i64`/`f64`. A model field declared `i32` — the common case for Django's `IntegerField` — could
+not previously be used with `q!` without a manual cast. This surfaced from the compile-tested doc
+examples, which the `polls` example's `votes: i32` field exercises.
+
+**Bug fixed: `contains` on a non-text value built a `Debug`-formatted pattern.** The `LIKE`/`ILIKE`
+branches formatted non-`Text` values with `{:?}`, so `q!(field__contains = 5i64)` bound
+`%I64(5)%` instead of `%5%` and matched nothing. All four affected branches now use `Display`.
+
+**Docs.**
+- New topic guide: **REST Framework** (`docs/src/guides/rest.md`), covering ViewSets, serializers,
+  validation, nested serializers, all three pagination strategies, filter backends, permissions,
+  throttling, and the JSON error envelope. There was previously no REST guide at all, despite REST
+  being the review's second-lowest-rated area.
+- The ORM guide gains a lookup-suffix table and sections on combining filters with `OR`/`AND`/
+  `NOT`, `q_f!`, and `annotate`/`values`. Every example compiles under `tools/doc-code-check`.
+
+**Site: mobile.**
+- The viewport meta was `width=device-width` with no `initial-scale=1`.
+- Pinned the Vite CSS target. Without one the minifier rewrote every `@media (max-width: …)` into
+  Media Queries Level 4 range syntax (`@media (width <= …)`), which iOS Safari only understands
+  from 16.4 — on an older iPhone *no* breakpoint matched and the desktop layout was served, which
+  defeats the point of the responsive rules. This also affected the pre-existing breakpoints.
+- Added breakpoints at 900/650/480px plus a `pointer: coarse` block: the hero and headline scale
+  down, every grid reaches a single column, long URLs and code no longer force horizontal page
+  scroll, the "Copy as Markdown" button no longer overlaps the first heading, and tap targets meet
+  the 44px guideline.

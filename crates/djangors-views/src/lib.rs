@@ -31,6 +31,22 @@ fn model_context<M: Model>(model: &M) -> serde_json::Value {
                 Value::Bool(v) => v.into(),
                 Value::DateTime(v) => v.to_rfc3339().into(),
                 Value::Null => serde_json::Value::Null,
+                // Only reachable through a projection such as
+                // `QuerySet::values`, never from a plain model field, but
+                // render it as an array so a template sees a real list.
+                Value::List(items) => serde_json::Value::Array(
+                    items
+                        .into_iter()
+                        .map(|item| match item {
+                            Value::I64(v) => v.into(),
+                            Value::F64(v) => serde_json::json!(v),
+                            Value::Text(v) => v.into(),
+                            Value::Bool(v) => v.into(),
+                            Value::DateTime(v) => v.to_rfc3339().into(),
+                            _ => serde_json::Value::Null,
+                        })
+                        .collect(),
+                ),
             },
         );
     }
