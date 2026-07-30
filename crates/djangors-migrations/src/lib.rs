@@ -15,6 +15,7 @@ pub use operation::{ColumnDef, ForeignKeyRef, Operation};
 pub use plan::build_create_all_plan;
 pub use plan::build_create_plan_from_snapshots;
 
+use djangors_db::BindValue;
 use std::path::{Path, PathBuf};
 
 /// Apply migration files in filename order. Files use `-- up` and `-- down` markers;
@@ -24,31 +25,34 @@ pub async fn migrate_from_dir(
     dir: &Path,
 ) -> Result<(), MigrationError> {
     ensure_history(db).await?;
+    let dialect = db.dialect();
     let mut files = migration_files(dir)?;
     files.sort();
     for path in files {
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
-        let applied = sqlx::query("SELECT 1 FROM djangors_migrations WHERE name=$1")
-            .bind(&name)
-            .fetch_optional(db.pool())
-            .await?
-            .is_some();
+        let query = format!(
+            "SELECT 1 FROM djangors_migrations WHERE name = {}",
+            dialect.placeholder(1)
+        );
+        let params = [BindValue::Text(name.clone())];
+        let applied = db.conn().fetch_optional(&query, &params).await?.is_some();
         if applied {
             continue;
         }
         let content = std::fs::read_to_string(&path)?;
         let up = section(&content, "up");
-        db.transaction(|conn| {
+        db.transaction_conn(|conn| {
             Box::pin(async move {
                 for sql in up.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-                    sqlx::query(sqlx::AssertSqlSafe(format!("{};", sql)))
-                        .execute(&mut *conn)
-                        .await?;
+                    let stmt = format!("{};", sql);
+                    conn.execute(&stmt, &[]).await?;
                 }
-                sqlx::query("INSERT INTO djangors_migrations (name) VALUES ($1)")
-                    .bind(&name)
-                    .execute(&mut *conn)
-                    .await?;
+                let dialect = conn.dialect();
+                let insert_sql = format!(
+                    "INSERT INTO djangors_migrations (name) VALUES ({})",
+                    dialect.placeholder(1)
+                );
+                conn.execute(&insert_sql, &[BindValue::Text(name)]).await?;
                 Ok::<(), djangors_db::DbError>(())
             })
         })
@@ -74,15 +78,38 @@ pub async fn rollback_from_dir(
         .iter()
         .filter_map(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
         .collect();
-    let rows = sqlx::query_as::<_, (String,)>(
-        "SELECT name FROM djangors_migrations WHERE name = ANY($1) ORDER BY id DESC LIMIT $2",
-    )
-    .bind(&known_names)
-    .bind(count as i64)
-    .fetch_all(db.pool())
-    .await?;
+
+    if known_names.is_empty() {
+        return Ok(());
+    }
+
+    let dialect = db.dialect();
+    let placeholders: Vec<String> = (1..=known_names.len())
+        .map(|i| dialect.placeholder(i))
+        .collect();
+    let limit_placeholder = dialect.placeholder(known_names.len() + 1);
+    let sql = format!(
+        "SELECT name FROM djangors_migrations WHERE name IN ({}) ORDER BY id DESC LIMIT {}",
+        placeholders.join(", "),
+        limit_placeholder
+    );
+
+    let mut params: Vec<BindValue> = known_names
+        .iter()
+        .map(|n| BindValue::Text(n.clone()))
+        .collect();
+    params.push(BindValue::I64(count as i64));
+
+    let rows = db.conn().fetch_all(&sql, &params).await?;
+    let mut names = Vec::new();
+    for row in rows {
+        if let Some(n) = row.try_string(0)? {
+            names.push(n);
+        }
+    }
+
     let mut downs = Vec::new();
-    for (name,) in &rows {
+    for name in &names {
         let path = dir.join(format!("{name}.sql"));
         let text = std::fs::read_to_string(&path)
             .map_err(|_| MigrationError::NonInvertible { name: name.clone() })?;
@@ -93,17 +120,18 @@ pub async fn rollback_from_dir(
         downs.push((name.clone(), down));
     }
     for (name, down) in downs {
-        db.transaction(|conn| {
+        db.transaction_conn(|conn| {
             Box::pin(async move {
                 for sql in down.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-                    sqlx::query(sqlx::AssertSqlSafe(format!("{};", sql)))
-                        .execute(&mut *conn)
-                        .await?;
+                    let stmt = format!("{};", sql);
+                    conn.execute(&stmt, &[]).await?;
                 }
-                sqlx::query("DELETE FROM djangors_migrations WHERE name=$1")
-                    .bind(&name)
-                    .execute(&mut *conn)
-                    .await?;
+                let dialect = conn.dialect();
+                let delete_sql = format!(
+                    "DELETE FROM djangors_migrations WHERE name = {}",
+                    dialect.placeholder(1)
+                );
+                conn.execute(&delete_sql, &[BindValue::Text(name)]).await?;
                 Ok::<(), djangors_db::DbError>(())
             })
         })
@@ -114,9 +142,21 @@ pub async fn rollback_from_dir(
 }
 
 async fn ensure_history(db: &djangors_db::Database) -> Result<(), MigrationError> {
-    sqlx::query("CREATE TABLE IF NOT EXISTS djangors_migrations (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())").execute(db.pool()).await?;
+    let dialect = db.dialect();
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS djangors_migrations (\
+            id {}, \
+            name TEXT UNIQUE NOT NULL, \
+            applied_at {} NOT NULL DEFAULT {}\
+        )",
+        dialect.auto_pk_type(),
+        dialect.timestamp_type(),
+        dialect.current_timestamp()
+    );
+    db.conn().execute(&sql, &[]).await?;
     Ok(())
 }
+
 fn migration_files(dir: &Path) -> Result<Vec<PathBuf>, MigrationError> {
     Ok(std::fs::read_dir(dir)?
         .filter_map(Result::ok)
@@ -132,6 +172,7 @@ fn migration_files(dir: &Path) -> Result<Vec<PathBuf>, MigrationError> {
         })
         .collect())
 }
+
 fn section(text: &str, wanted: &str) -> String {
     let mut current = "";
     let mut start = 0;
@@ -157,40 +198,41 @@ pub async fn migrate(db: &djangors_db::Database) -> Result<(), MigrationError> {
         return migrate_from_dir(db, Path::new("migrations")).await;
     }
     // 1. Ensure tracking table exists
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS djangors_migrations (
-            id SERIAL PRIMARY KEY,
-            name TEXT UNIQUE NOT NULL,
-            applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )",
-    )
-    .execute(db.pool())
-    .await?;
+    ensure_history(db).await?;
+
+    let dialect = db.dialect();
 
     // 2. Check if 0001_initial is applied
-    let row = sqlx::query("SELECT 1 FROM djangors_migrations WHERE name = $1")
-        .bind("0001_initial")
-        .fetch_optional(db.pool())
-        .await?;
+    let query = format!(
+        "SELECT 1 FROM djangors_migrations WHERE name = {}",
+        dialect.placeholder(1)
+    );
+    let params = [BindValue::Text("0001_initial".to_string())];
+    let row = db.conn().fetch_optional(&query, &params).await?;
 
     if row.is_some() {
         return Ok(());
     }
 
     // 3. Build plan and execute in transaction
-    let plan = build_create_all_plan()?;
-    let sqls: Vec<String> = plan.iter().map(|op| op.to_sql()).collect();
+    let plan = build_create_all_plan(dialect)?;
+    let mut sqls = Vec::new();
+    for op in &plan {
+        sqls.push(op.to_sql(dialect)?);
+    }
 
-    db.transaction(|conn| {
+    db.transaction_conn(|conn| {
         let sqls = sqls.clone();
         Box::pin(async move {
             for sql in sqls {
-                sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
-                    .execute(&mut *conn)
-                    .await?;
+                conn.execute(&sql, &[]).await?;
             }
-            sqlx::query("INSERT INTO djangors_migrations (name) VALUES ('0001_initial')")
-                .execute(&mut *conn)
+            let dialect = conn.dialect();
+            let insert_sql = format!(
+                "INSERT INTO djangors_migrations (name) VALUES ({})",
+                dialect.placeholder(1)
+            );
+            conn.execute(&insert_sql, &[BindValue::Text("0001_initial".to_string())])
                 .await?;
             Ok::<(), djangors_db::DbError>(())
         })
@@ -458,5 +500,128 @@ mod migrate_from_dir_tests {
             .execute(db.pool())
             .await
             .ok();
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_plan_execution_from_snapshots() {
+        use djangors_db::{Database, DatabaseConfig, Dialect};
+        use djangors_orm::{FieldKind, FieldSnapshot, ModelSnapshot, SnapshotDefault};
+
+        let snapshot = ModelSnapshot {
+            app_label: "testapp".to_string(),
+            table_name: "testapp_item".to_string(),
+            struct_name: "Item".to_string(),
+            fields: vec![
+                FieldSnapshot {
+                    name: "id".to_string(),
+                    column_name: "id".to_string(),
+                    kind: FieldKind::BigInt,
+                    nullable: false,
+                    primary_key: true,
+                    unique: false,
+                    db_index: false,
+                    default: SnapshotDefault::None,
+                    max_length: None,
+                    auto: true,
+                },
+                FieldSnapshot {
+                    name: "title".to_string(),
+                    column_name: "title".to_string(),
+                    kind: FieldKind::Char,
+                    nullable: false,
+                    primary_key: false,
+                    unique: false,
+                    db_index: false,
+                    default: SnapshotDefault::None,
+                    max_length: Some(100),
+                    auto: false,
+                },
+            ],
+            relations: vec![],
+            unique_together: vec![],
+            ordering: vec![],
+        };
+
+        let plan = build_create_plan_from_snapshots(&[snapshot], Dialect::Sqlite).unwrap();
+        let db = Database::connect(&DatabaseConfig::new("sqlite::memory:"))
+            .await
+            .unwrap();
+
+        for op in plan {
+            let sql = op.to_sql(Dialect::Sqlite).unwrap();
+            db.conn().execute(&sql, &[]).await.unwrap();
+        }
+
+        db.conn()
+            .execute(
+                "INSERT INTO testapp_item (title) VALUES ('hello_sqlite')",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let row = db
+            .conn()
+            .fetch_one("SELECT title FROM testapp_item WHERE id = 1", &[])
+            .await
+            .unwrap();
+        assert_eq!(row.try_string(0).unwrap().unwrap(), "hello_sqlite");
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_migrate_from_dir_cycle() {
+        use djangors_db::{Database, DatabaseConfig};
+
+        let db = Database::connect(&DatabaseConfig::new("sqlite::memory:"))
+            .await
+            .unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "djangors_sqlite_migtest_{:?}",
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let migration_body = "-- up\nCREATE TABLE test_cycle_sqlite (id INTEGER PRIMARY KEY AUTOINCREMENT, val TEXT);\n-- down\nDROP TABLE test_cycle_sqlite;\n";
+        std::fs::write(dir.join("0001_initial.sql"), migration_body).unwrap();
+
+        migrate_from_dir(&db, &dir).await.unwrap();
+
+        let row = db
+            .conn()
+            .fetch_one(
+                "SELECT name FROM djangors_migrations WHERE name = '0001_initial'",
+                &[],
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.try_string(0).unwrap().unwrap(), "0001_initial");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_alter_column_type_dialect_support() {
+        use djangors_db::Dialect;
+
+        let op = Operation::AlterColumnType {
+            table_name: "users".to_string(),
+            column_name: "age".to_string(),
+            new_sql_type: "BIGINT".to_string(),
+        };
+
+        let pg_sql = op.to_sql(Dialect::Postgres).unwrap();
+        assert_eq!(
+            pg_sql,
+            "ALTER TABLE \"users\" ALTER COLUMN \"age\" TYPE BIGINT USING \"age\"::BIGINT;"
+        );
+
+        let sqlite_res = op.to_sql(Dialect::Sqlite);
+        assert!(matches!(
+            sqlite_res,
+            Err(MigrationError::UnsupportedOnDialect { operation, dialect })
+            if operation == "AlterColumnType" && dialect == "Sqlite"
+        ));
     }
 }

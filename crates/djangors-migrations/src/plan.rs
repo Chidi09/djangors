@@ -1,11 +1,12 @@
 use crate::error::MigrationError;
 use crate::operation::{ColumnDef, ForeignKeyRef, Operation};
 use crate::type_mapping::field_meta_to_sql_type;
+use djangors_db::Dialect;
 use djangors_orm::{all_registered_models, ModelMeta};
 use std::collections::{HashMap, HashSet};
 
 /// Builds a sequence of migration DDL operations to create tables for all registered models.
-pub fn build_create_all_plan() -> Result<Vec<Operation>, MigrationError> {
+pub fn build_create_all_plan(dialect: Dialect) -> Result<Vec<Operation>, MigrationError> {
     // 1. Get all models
     let models: Vec<&'static ModelMeta> = all_registered_models().collect();
 
@@ -39,7 +40,7 @@ pub fn build_create_all_plan() -> Result<Vec<Operation>, MigrationError> {
 
         // Standard fields
         for field in model.fields {
-            let sql_type = field_meta_to_sql_type(field, djangors_db::Dialect::Postgres)?;
+            let sql_type = field_meta_to_sql_type(field, dialect)?;
             columns.push(ColumnDef {
                 name: field.column_name.to_string(),
                 sql_type,
@@ -67,7 +68,7 @@ pub fn build_create_all_plan() -> Result<Vec<Operation>, MigrationError> {
 
             let mut fk_field_meta = *target_pk;
             fk_field_meta.auto = false;
-            let sql_type = field_meta_to_sql_type(&fk_field_meta, djangors_db::Dialect::Postgres)?;
+            let sql_type = field_meta_to_sql_type(&fk_field_meta, dialect)?;
 
             let on_delete_str = match relation.on_delete {
                 djangors_orm::OnDelete::Cascade => "CASCADE",
@@ -105,6 +106,7 @@ pub fn build_create_all_plan() -> Result<Vec<Operation>, MigrationError> {
 /// Builds the initial plan from metadata emitted by a project's binary.
 pub fn build_create_plan_from_snapshots(
     snapshots: &[djangors_orm::ModelSnapshot],
+    dialect: Dialect,
 ) -> Result<Vec<Operation>, MigrationError> {
     let mut by_name = HashMap::new();
     for s in snapshots {
@@ -146,7 +148,7 @@ pub fn build_create_plan_from_snapshots(
                         f.max_length,
                         f.auto,
                         &f.name,
-                        djangors_db::Dialect::Postgres,
+                        dialect,
                     )?,
                     nullable: f.nullable,
                     primary_key: f.primary_key,
@@ -186,7 +188,7 @@ pub fn build_create_plan_from_snapshots(
                         fk.max_length,
                         fk.auto,
                         &fk.name,
-                        djangors_db::Dialect::Postgres,
+                        dialect,
                     )?,
                     nullable: matches!(r.on_delete, djangors_orm::OnDelete::SetNull),
                     primary_key: false,

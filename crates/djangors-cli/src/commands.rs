@@ -591,6 +591,8 @@ pub async fn runworker(poll_interval_secs: u64) {
 pub fn makemigrations(_check: bool) -> Result<(), String> {
     require_project_root()?;
     let check = _check;
+    let dialect =
+        djangors_db::Dialect::from_url(&std::env::var("DATABASE_URL").unwrap_or_default());
     let current = introspect_models()?;
     let path = Path::new("migrations/.schema_snapshot.json");
     let previous: Vec<djangors_orm::ModelSnapshot> = if path.exists() {
@@ -611,14 +613,17 @@ pub fn makemigrations(_check: bool) -> Result<(), String> {
         .cloned()
         .collect();
     if !new_models.is_empty() {
-        for op in djangors_migrations::build_create_plan_from_snapshots(&new_models)
+        for op in djangors_migrations::build_create_plan_from_snapshots(&new_models, dialect)
             .map_err(|e| e.to_string())?
         {
-            sql.push(format!("{};", op.to_sql()));
-            down.push(
-                op.to_down_sql()
-                    .map_or_else(|| "".to_string(), |s| format!("{};", s)),
-            );
+            let sql_str = op.to_sql(dialect).map_err(|e| e.to_string())?;
+            sql.push(format!("{};", sql_str));
+            let down_str = match op.to_down_sql(dialect) {
+                Some(Ok(s)) => format!("{};", s),
+                Some(Err(e)) => return Err(e.to_string()),
+                None => "".to_string(),
+            };
+            down.push(down_str);
         }
     }
 
@@ -636,7 +641,7 @@ pub fn makemigrations(_check: bool) -> Result<(), String> {
                         field.max_length,
                         field.auto,
                         &field.name,
-                        djangors_db::Dialect::Postgres,
+                        dialect,
                     )
                     .map_err(|e| e.to_string())?;
                     let op = djangors_migrations::Operation::AddColumn {
@@ -651,8 +656,14 @@ pub fn makemigrations(_check: bool) -> Result<(), String> {
                             references: None,
                         },
                     };
-                    sql.push(op.to_sql());
-                    down.push(op.to_down_sql().unwrap());
+                    let sql_str = op.to_sql(dialect).map_err(|e| e.to_string())?;
+                    sql.push(sql_str);
+                    let down_str = match op.to_down_sql(dialect) {
+                        Some(Ok(s)) => s,
+                        Some(Err(e)) => return Err(e.to_string()),
+                        None => "".to_string(),
+                    };
+                    down.push(down_str);
                 }
             }
         }
@@ -705,28 +716,55 @@ async fn migrate_with_plan(
     db: &djangors_db::Database,
     models: &[djangors_orm::ModelSnapshot],
 ) -> Result<(), djangors_migrations::MigrationError> {
-    sqlx::query("CREATE TABLE IF NOT EXISTS djangors_migrations (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())").execute(db.pool()).await?;
-    if sqlx::query("SELECT 1 FROM djangors_migrations WHERE name = '0001_initial'")
-        .fetch_optional(db.pool())
+    let dialect = db.dialect();
+    let history_sql = format!(
+        "CREATE TABLE IF NOT EXISTS djangors_migrations (\
+            id {}, \
+            name TEXT UNIQUE NOT NULL, \
+            applied_at {} NOT NULL DEFAULT {}\
+        )",
+        dialect.auto_pk_type(),
+        dialect.timestamp_type(),
+        dialect.current_timestamp()
+    );
+    db.conn().execute(&history_sql, &[]).await?;
+
+    let check_sql = format!(
+        "SELECT 1 FROM djangors_migrations WHERE name = {}",
+        dialect.placeholder(1)
+    );
+    let params = [djangors_db::BindValue::Text("0001_initial".to_string())];
+    if db
+        .conn()
+        .fetch_optional(&check_sql, &params)
         .await?
         .is_some()
     {
         return Ok(());
     }
-    let sqls: Vec<String> = djangors_migrations::build_create_plan_from_snapshots(models)?
-        .iter()
-        .map(|o| o.to_sql())
-        .collect();
-    db.transaction(|conn| {
+
+    let plan = djangors_migrations::build_create_plan_from_snapshots(models, dialect)?;
+    let mut sqls = Vec::new();
+    for o in &plan {
+        sqls.push(o.to_sql(dialect)?);
+    }
+
+    db.transaction_conn(|conn| {
+        let sqls = sqls.clone();
         Box::pin(async move {
             for sql in sqls {
-                sqlx::query(sqlx::AssertSqlSafe(sql))
-                    .execute(&mut *conn)
-                    .await?;
+                conn.execute(&sql, &[]).await?;
             }
-            sqlx::query("INSERT INTO djangors_migrations (name) VALUES ('0001_initial')")
-                .execute(&mut *conn)
-                .await?;
+            let dialect = conn.dialect();
+            let insert_sql = format!(
+                "INSERT INTO djangors_migrations (name) VALUES ({})",
+                dialect.placeholder(1)
+            );
+            conn.execute(
+                &insert_sql,
+                &[djangors_db::BindValue::Text("0001_initial".to_string())],
+            )
+            .await?;
             Ok::<(), djangors_db::DbError>(())
         })
     })

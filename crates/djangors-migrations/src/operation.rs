@@ -1,3 +1,6 @@
+use crate::error::MigrationError;
+use djangors_db::Dialect;
+
 /// Reference target for a foreign key constraint.
 #[derive(Clone)]
 pub struct ForeignKeyRef {
@@ -66,48 +69,54 @@ pub enum Operation {
 
 impl Operation {
     /// Generates the SQL statement for this migration operation.
-    pub fn to_sql(&self) -> String {
+    pub fn to_sql(&self, dialect: Dialect) -> Result<String, MigrationError> {
         match self {
             Operation::CreateTable {
                 table_name,
                 columns,
             } => {
                 let col_sqls: Vec<String> = columns.iter().map(column_sql).collect();
-                format!(
+                Ok(format!(
                     "CREATE TABLE IF NOT EXISTS \"{}\" (\n    {}\n)",
                     table_name,
                     col_sqls.join(",\n    ")
-                )
+                ))
             }
-            Operation::AddColumn { table_name, column } => format!(
+            Operation::AddColumn { table_name, column } => Ok(format!(
                 "ALTER TABLE \"{}\" ADD COLUMN {};",
                 table_name,
                 column_sql(column)
-            ),
+            )),
             Operation::DropColumn {
                 table_name,
                 column_name,
-            } => format!(
+            } => Ok(format!(
                 "ALTER TABLE \"{}\" DROP COLUMN \"{}\";",
                 table_name, column_name
-            ),
+            )),
             Operation::AlterColumnType {
                 table_name,
                 column_name,
                 new_sql_type,
-            } => format!(
-                "ALTER TABLE \"{}\" ALTER COLUMN \"{}\" TYPE {} USING \"{}\"::{};",
-                table_name, column_name, new_sql_type, column_name, new_sql_type
-            ),
+            } => match dialect {
+                Dialect::Postgres => Ok(format!(
+                    "ALTER TABLE \"{}\" ALTER COLUMN \"{}\" TYPE {} USING \"{}\"::{};",
+                    table_name, column_name, new_sql_type, column_name, new_sql_type
+                )),
+                Dialect::Sqlite => Err(MigrationError::UnsupportedOnDialect {
+                    operation: "AlterColumnType".to_string(),
+                    dialect: "Sqlite".to_string(),
+                }),
+            },
             Operation::RenameColumn {
                 table_name,
                 old_name,
                 new_name,
-            } => format!(
+            } => Ok(format!(
                 "ALTER TABLE \"{}\" RENAME COLUMN \"{}\" TO \"{}\";",
                 table_name, old_name, new_name
-            ),
-            Operation::DropTable { table_name } => format!("DROP TABLE \"{}\";", table_name),
+            )),
+            Operation::DropTable { table_name } => Ok(format!("DROP TABLE \"{}\";", table_name)),
         }
     }
 
@@ -135,8 +144,8 @@ impl Operation {
     }
 
     /// Generates reverse SQL when this operation is safely invertible.
-    pub fn to_down_sql(&self) -> Option<String> {
-        self.reverse().map(|op| op.to_sql())
+    pub fn to_down_sql(&self, dialect: Dialect) -> Option<Result<String, MigrationError>> {
+        self.reverse().map(|op| op.to_sql(dialect))
     }
 }
 

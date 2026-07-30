@@ -182,7 +182,7 @@ mod sqlite_ddl_tests {
             ],
         };
 
-        let sql = op.to_sql();
+        let sql = op.to_sql(Dialect::Sqlite).unwrap();
         assert!(
             !sql.contains("PRIMARY KEY AUTOINCREMENT NOT NULL"),
             "the auto-PK column must not get an extra NOT NULL appended: {sql}"

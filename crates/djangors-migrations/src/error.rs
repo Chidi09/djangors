@@ -35,4 +35,13 @@ pub enum MigrationError {
         /// Migration filename.
         name: String,
     },
+
+    /// An operation is not supported on the specified SQL dialect.
+    #[error("operation {operation} is not supported on dialect {dialect}")]
+    UnsupportedOnDialect {
+        /// Description of the unsupported operation.
+        operation: String,
+        /// Name of the SQL dialect.
+        dialect: String,
+    },
 }

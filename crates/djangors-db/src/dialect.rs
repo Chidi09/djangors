@@ -90,4 +90,49 @@ impl Dialect {
             Dialect::Sqlite => "BLOB",
         }
     }
+
+    /// Returns the column type string for an auto-incrementing integer primary key.
+    ///
+    /// Postgres: `SERIAL PRIMARY KEY`; SQLite: `INTEGER PRIMARY KEY AUTOINCREMENT`.
+    pub fn auto_pk_type(&self) -> &'static str {
+        match self {
+            Dialect::Postgres => "SERIAL PRIMARY KEY",
+            Dialect::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+        }
+    }
+
+    /// Returns the column type string for a timezone-aware timestamp.
+    ///
+    /// Postgres: `TIMESTAMPTZ`; SQLite: `TEXT`.
+    pub fn timestamp_type(&self) -> &'static str {
+        match self {
+            Dialect::Postgres => "TIMESTAMPTZ",
+            Dialect::Sqlite => "TEXT",
+        }
+    }
+
+    /// Returns the SQL expression string for the current timestamp.
+    ///
+    /// Postgres: `now()`; SQLite: `CURRENT_TIMESTAMP`.
+    pub fn current_timestamp(&self) -> &'static str {
+        match self {
+            Dialect::Postgres => "now()",
+            Dialect::Sqlite => "CURRENT_TIMESTAMP",
+        }
+    }
+
+    /// Infers the database dialect from a database URL string without connecting.
+    pub fn from_url(url: &str) -> Dialect {
+        let url = url.trim();
+        if url.starts_with("sqlite://")
+            || url.ends_with(".db")
+            || url.ends_with(".sqlite")
+            || url == ":memory:"
+            || url == "sqlite::memory:"
+        {
+            Dialect::Sqlite
+        } else {
+            Dialect::Postgres
+        }
+    }
 }

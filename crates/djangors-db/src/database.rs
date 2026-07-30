@@ -61,11 +61,7 @@ impl Database {
     /// Connect to the database using the given configuration, building a connection pool.
     pub async fn connect(config: &DatabaseConfig) -> Result<Self, DbError> {
         let url = config.url.trim();
-        let is_sqlite = url.starts_with("sqlite://")
-            || url.ends_with(".db")
-            || url.ends_with(".sqlite")
-            || url == ":memory:"
-            || url == "sqlite::memory:";
+        let is_sqlite = matches!(Dialect::from_url(url), Dialect::Sqlite);
 
         if is_sqlite {
             let mut options = SqlitePoolOptions::new()
@@ -253,6 +249,57 @@ impl Database {
             Self::Sqlite { .. } => Err(DbError::TransactionFailed(
                 "PostgreSQL transaction_with_isolation called on a SQLite Database".to_string(),
             )),
+        }
+    }
+
+    /// Run `f` inside a transaction on either backend.
+    pub async fn transaction_conn<F, T, E>(&self, f: F) -> Result<T, DbError>
+    where
+        F: for<'c> FnOnce(&'c mut Conn<'c>) -> BoxFuture<'c, Result<T, E>> + Send,
+        T: Send,
+        E: Into<DbError> + Send,
+    {
+        match self {
+            Self::Pg { pool, .. } => {
+                let mut tx = pool
+                    .begin()
+                    .await
+                    .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+                let mut conn = Conn::PgTx(&mut tx);
+                let res = f(&mut conn).await;
+                match res {
+                    Ok(val) => {
+                        tx.commit()
+                            .await
+                            .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+                        Ok(val)
+                    }
+                    Err(err) => {
+                        let _ = tx.rollback().await;
+                        Err(err.into())
+                    }
+                }
+            }
+            Self::Sqlite { pool, .. } => {
+                let mut tx = pool
+                    .begin()
+                    .await
+                    .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+                let mut conn = Conn::SqliteTx(&mut tx);
+                let res = f(&mut conn).await;
+                match res {
+                    Ok(val) => {
+                        tx.commit()
+                            .await
+                            .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+                        Ok(val)
+                    }
+                    Err(err) => {
+                        let _ = tx.rollback().await;
+                        Err(err.into())
+                    }
+                }
+            }
         }
     }
 }
@@ -447,5 +494,100 @@ mod tests {
             };
             assert_eq!(actual_level.to_lowercase(), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn test_transaction_conn_commit_and_rollback_both_backends() {
+        // 1. Postgres backend
+        let pg_config = DatabaseConfig::new(TEST_DB_URL);
+        let pg_db = Database::connect(&pg_config).await.expect("connect pg");
+
+        sqlx::query("DROP TABLE IF EXISTS test_tx_conn_pg")
+            .execute(pg_db.pool())
+            .await
+            .ok();
+        sqlx::query("CREATE TABLE test_tx_conn_pg (id INT)")
+            .execute(pg_db.pool())
+            .await
+            .expect("create pg table");
+
+        let res: Result<i32, DbError> = pg_db
+            .transaction_conn(|conn| {
+                Box::pin(async move {
+                    conn.execute("INSERT INTO test_tx_conn_pg VALUES (10)", &[])
+                        .await
+                        .map_err(DbError::QueryFailed)?;
+                    Ok::<i32, DbError>(10)
+                })
+            })
+            .await;
+        assert_eq!(res.unwrap(), 10);
+
+        let err_res: Result<(), DbError> = pg_db
+            .transaction_conn(|conn| {
+                Box::pin(async move {
+                    conn.execute("INSERT INTO test_tx_conn_pg VALUES (20)", &[])
+                        .await
+                        .map_err(DbError::QueryFailed)?;
+                    Err::<(), DbError>(DbError::TransactionFailed("abort".to_string()))
+                })
+            })
+            .await;
+        assert!(err_res.is_err());
+
+        let row = pg_db
+            .conn()
+            .fetch_one("SELECT COUNT(*) FROM test_tx_conn_pg", &[])
+            .await
+            .unwrap();
+        assert_eq!(row.try_i64(0).unwrap().unwrap(), 1);
+
+        sqlx::query("DROP TABLE test_tx_conn_pg")
+            .execute(pg_db.pool())
+            .await
+            .ok();
+
+        // 2. SQLite backend
+        let sqlite_config = DatabaseConfig::new(":memory:");
+        let sqlite_db = Database::connect(&sqlite_config)
+            .await
+            .expect("connect sqlite");
+
+        sqlite_db
+            .conn()
+            .execute("CREATE TABLE test_tx_conn_sqlite (id INT)", &[])
+            .await
+            .expect("create sqlite table");
+
+        let res: Result<i32, DbError> = sqlite_db
+            .transaction_conn(|conn| {
+                Box::pin(async move {
+                    conn.execute("INSERT INTO test_tx_conn_sqlite VALUES (100)", &[])
+                        .await
+                        .map_err(DbError::QueryFailed)?;
+                    Ok::<i32, DbError>(100)
+                })
+            })
+            .await;
+        assert_eq!(res.unwrap(), 100);
+
+        let err_res: Result<(), DbError> = sqlite_db
+            .transaction_conn(|conn| {
+                Box::pin(async move {
+                    conn.execute("INSERT INTO test_tx_conn_sqlite VALUES (200)", &[])
+                        .await
+                        .map_err(DbError::QueryFailed)?;
+                    Err::<(), DbError>(DbError::TransactionFailed("abort".to_string()))
+                })
+            })
+            .await;
+        assert!(err_res.is_err());
+
+        let row = sqlite_db
+            .conn()
+            .fetch_one("SELECT COUNT(*) FROM test_tx_conn_sqlite", &[])
+            .await
+            .unwrap();
+        assert_eq!(row.try_i64(0).unwrap().unwrap(), 1);
     }
 }

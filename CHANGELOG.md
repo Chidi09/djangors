@@ -481,7 +481,7 @@ Also added `Dialect::bytea_type()` (`BYTEA`/`BLOB`) for djangors-cache's DDL.
 
 **Still Postgres-only (deferred):** `dj makemigrations` and migration *plan* generation, and the
 `djangors-test` harness (whose job is provisioning isolated Postgres databases). Neither is an
-application-serving path.
+application-serving path. *(makemigrations and plan generation were closed in Phase 13.3 below.)*
 
 **Review finding.** The dispatch added a cross-process lock to
 `examples/polls/tests/voting.rs` after seeing that test fail with `401 "user not found"`. That
@@ -492,3 +492,43 @@ change reverted: 401 tests pass. Reverted, since it would otherwise have shipped
 reference code.
 
 401 tests pass.
+
+### Phase 13.3: Dialect-aware migrations (`dj makemigrations`, `dj migrate`, plan/DDL)
+
+13.1 made the ORM dual-backend and 13.2 did the same for production raw SQL, but the piece that
+*creates* the schema was still Postgres-only — a SQLite project could run its ORM and admin only
+against tables it had hand-written. This closes the `dj new` → SQLite → running admin story.
+
+**The blocker.** `Database::transaction` takes `FnOnce(&mut PgConnection)` and returned
+`TransactionFailed` on a SQLite handle. Every migration apply/rollback path runs inside one, so
+nothing downstream could be ported until it was solved. `Conn` already had `PgTx`/`SqliteTx`
+variants with no `Database` method handing one out, so this adds `Database::transaction_conn`
+(dual-backend, commit on `Ok`, rollback on `Err`) *alongside* the existing methods, which are
+unchanged.
+
+**New `Dialect` helpers:** `auto_pk_type()` (`SERIAL PRIMARY KEY` / `INTEGER PRIMARY KEY
+AUTOINCREMENT`), `timestamp_type()` (`TIMESTAMPTZ` / `TEXT`), `current_timestamp()` (`now()` /
+`CURRENT_TIMESTAMP`), and `from_url()`. `timestamp_type` is `TEXT` on SQLite, not `TIMESTAMP`:
+sqlx's SQLite `DateTime<Utc>` codec reads and writes ISO-8601 *text*, and `TEXT` affinity stores
+that losslessly where `TIMESTAMP`'s NUMERIC affinity would coerce. `Database::connect` now
+delegates to `from_url` rather than keeping a second copy of the URL detection.
+
+**Plan and DDL.** `build_create_all_plan` and `build_create_plan_from_snapshots` take a `Dialect`
+instead of hardcoding Postgres. `Operation::to_sql` is now dialect-aware **and fallible**:
+`AlterColumnType` has no SQLite equivalent (SQLite's `ALTER TABLE` cannot change a column's type;
+the real workaround is a 12-step table rebuild), so it returns the new
+`MigrationError::UnsupportedOnDialect` rather than emitting Postgres syntax that would fail at
+apply time. A generated migration file that is silently wrong is worse than one that refuses to
+generate. The plan builders never construct that variant, so no working path changed.
+
+**Runner.** All `Database::pool()` calls in `djangors-migrations` and the CLI's `migrate_with_plan`
+now go through `Conn`; the history-table DDL is built from `Dialect` instead of three copies of a
+Postgres literal. `rollback_from_dir`'s `WHERE name = ANY($1)` (no SQLite array binding) became an
+expanded `IN (?, ?, …)` with an empty-input guard, since `IN ()` is a syntax error in both
+dialects. `makemigrations` is synchronous and never connects, so it infers its dialect from
+`DATABASE_URL` via `Dialect::from_url`, defaulting to Postgres when unset.
+
+**Still Postgres-only (deferred):** the `djangors-test` harness, whose job is provisioning isolated
+Postgres databases and whose isolation relies on Postgres session-level advisory locks.
+
+405 tests pass (401 + 4 new).
