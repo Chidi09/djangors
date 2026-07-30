@@ -30,6 +30,7 @@ pub fn render_debug_page(error: &DjangorsError, req: &Request) -> Response {
         DjangorsError::TooManyRequests(msg) => {
             ("too-many-requests", "Too Many Requests", msg.as_str())
         }
+        DjangorsError::Api(api) => ("internal", api.code.as_str(), api.message.as_str()),
     };
 
     let mut headers_html = String::new();

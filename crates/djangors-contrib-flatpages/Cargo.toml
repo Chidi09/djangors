@@ -7,10 +7,10 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-admin = { path = "../djangors-admin", version = "0.2.2" }
-djangors-core = { path = "../djangors-core", version = "0.2.2" }
-djangors-macros = { path = "../djangors-macros", version = "0.2.2" }
-djangors-orm = { path = "../djangors-orm", version = "0.2.2" }
+djangors-admin = { path = "../djangors-admin", version = "0.3.0" }
+djangors-core = { path = "../djangors-core", version = "0.3.0" }
+djangors-macros = { path = "../djangors-macros", version = "0.3.0" }
+djangors-orm = { path = "../djangors-orm", version = "0.3.0" }
 
 [dev-dependencies]
 djangors-test = { path = "../djangors-test" }

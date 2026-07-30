@@ -8,12 +8,12 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-macros = { path = "../djangors-macros", version = "0.2.2" }
-djangors-orm = { path = "../djangors-orm", version = "0.2.2" }
-djangors-core = { path = "../djangors-core", version = "0.2.2" }
-djangors-db = { path = "../djangors-db", version = "0.2.2" }
-djangors-auth = { path = "../djangors-auth", version = "0.2.2" }
-djangors-rest = { path = "../djangors-rest", version = "0.2.2" }
+djangors-macros = { path = "../djangors-macros", version = "0.3.0" }
+djangors-orm = { path = "../djangors-orm", version = "0.3.0" }
+djangors-core = { path = "../djangors-core", version = "0.3.0" }
+djangors-db = { path = "../djangors-db", version = "0.3.0" }
+djangors-auth = { path = "../djangors-auth", version = "0.3.0" }
+djangors-rest = { path = "../djangors-rest", version = "0.3.0" }
 chrono = { version = "0.4", features = ["std"] }
 tower = { version = "0.5.3", features = ["util"] }
 hyper = "1.10.1"

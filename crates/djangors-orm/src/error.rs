@@ -31,6 +31,21 @@ pub enum OrmError {
     },
 }
 
+/// Lets ORM calls be used directly inside
+/// [`Database::transaction`](djangors_db::Database::transaction), whose closure
+/// must return an error convertible into [`DbError`](djangors_db::DbError).
+///
+/// SQL failures pass through with their original `sqlx::Error` intact; the
+/// ORM's own failure modes are carried as [`DbError::Orm`](djangors_db::DbError::Orm).
+impl From<OrmError> for djangors_db::DbError {
+    fn from(err: OrmError) -> Self {
+        match err {
+            OrmError::Query(e) => djangors_db::DbError::QueryFailed(e),
+            other => djangors_db::DbError::Orm(other.to_string()),
+        }
+    }
+}
+
 /// Trait implemented by models to construct instances from a database row.
 pub trait FromRow: Sized {
     /// Converts a PostgreSQL database row into an instance of `Self`.

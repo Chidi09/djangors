@@ -65,9 +65,7 @@ fn pk_value<M: Model>(model: &M) -> Result<i64, DjangorsError> {
 }
 
 async fn find<M: Model + FromRow>(req: &Request, params: &PathParams) -> Result<M, DjangorsError> {
-    let db = req
-        .state::<djangors_orm::djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".into()))?;
+    let db = req.require_state::<djangors_orm::djangors_db::Database>()?;
     let pk: i64 = params.get_as("pk")?;
     let field = M::meta()
         .fields
@@ -109,9 +107,7 @@ impl<M: Model + FromRow> ListView<M> {
         _params: PathParams,
         config: &ViewSetConfig<'_>,
     ) -> Result<Response, DjangorsError> {
-        let db = req
-            .state::<djangors_orm::djangors_db::Database>()
-            .ok_or_else(|| DjangorsError::Internal("Database connection not found".into()))?;
+        let db = req.require_state::<djangors_orm::djangors_db::Database>()?;
         let rows = M::objects()
             .all(db)
             .await
@@ -256,9 +252,7 @@ impl<M: Model + FromRow> DeleteView<M> {
                 serde_json::json!({"object": model_context(&object)}),
             );
         }
-        let db = req
-            .state::<djangors_orm::djangors_db::Database>()
-            .ok_or_else(|| DjangorsError::Internal("Database connection not found".into()))?;
+        let db = req.require_state::<djangors_orm::djangors_db::Database>()?;
         let pk = pk_value(&object)?;
         djangors_orm::QuerySet::<M>::delete_by_pk(db, pk)
             .await

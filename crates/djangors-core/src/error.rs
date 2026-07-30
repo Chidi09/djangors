@@ -17,29 +17,58 @@ pub struct JsonErrorRenderer;
 
 impl ErrorRenderer for JsonErrorRenderer {
     fn render(&self, err: &DjangorsError, _req: &Request) -> Response {
-        #[derive(serde::Serialize)]
-        struct Envelope<'a> {
-            error: ErrorBody<'a>,
-        }
-        #[derive(serde::Serialize)]
-        struct ErrorBody<'a> {
-            status: u16,
-            code: &'static str,
-            message: &'a str,
-        }
+        err.into_json_response()
+    }
+}
 
-        let message = err.message();
-        Response::json(
-            err.status_code(),
-            &Envelope {
-                error: ErrorBody {
-                    status: err.status_code().as_u16(),
-                    code: err.code(),
-                    message: &message,
-                },
-            },
-        )
-        .expect("JSON error envelope is serializable")
+/// An application-defined error carrying an explicit status code, a stable
+/// machine-readable code, and optional structured details.
+///
+/// This is the escape hatch for domain errors that the built-in
+/// [`DjangorsError`] variants cannot express — any status code, any code
+/// string, and an arbitrary JSON payload that clients can branch on.
+///
+/// # Examples
+///
+/// ```
+/// use djangors_core::error::DjangorsError;
+/// use hyper::StatusCode;
+/// use serde_json::json;
+///
+/// let err = DjangorsError::api(StatusCode::CONFLICT, "seat_taken", "That seat is already booked")
+///     .with_details(json!({ "seat": "12A", "flight": "DL404" }));
+///
+/// assert_eq!(err.status_code(), StatusCode::CONFLICT);
+/// assert_eq!(err.code(), "seat_taken");
+/// assert!(err.details().is_some());
+/// ```
+#[derive(Debug, Clone)]
+pub struct ApiError {
+    /// The HTTP status code to respond with.
+    pub status: StatusCode,
+    /// A stable, machine-readable domain code (e.g. `"insufficient_funds"`).
+    pub code: String,
+    /// A human-readable message safe to show to the caller.
+    pub message: String,
+    /// Optional structured payload, serialized under `error.details`.
+    pub details: Option<serde_json::Value>,
+}
+
+impl ApiError {
+    /// Create a new API error.
+    pub fn new(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            code: code.into(),
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    /// Attach a structured details payload.
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
 }
 
@@ -60,6 +89,9 @@ pub enum DjangorsError {
     Forbidden(String),
     /// The request exceeded a configured rate limit (429).
     TooManyRequests(String),
+    /// An application-defined error with an explicit status, domain code, and
+    /// optional structured details. See [`ApiError`].
+    Api(ApiError),
 }
 
 impl fmt::Display for DjangorsError {
@@ -72,14 +104,54 @@ impl fmt::Display for DjangorsError {
             DjangorsError::Unauthorized(msg) => write!(f, "Unauthorized: {msg}"),
             DjangorsError::Forbidden(msg) => write!(f, "Forbidden: {msg}"),
             DjangorsError::TooManyRequests(msg) => write!(f, "Too Many Requests: {msg}"),
+            DjangorsError::Api(api) => write!(f, "{}: {}", api.code, api.message),
         }
     }
 }
 
 impl std::error::Error for DjangorsError {}
 
+impl From<ApiError> for DjangorsError {
+    fn from(err: ApiError) -> Self {
+        DjangorsError::Api(err)
+    }
+}
+
 impl DjangorsError {
-    fn code(&self) -> &'static str {
+    /// Construct an application-defined error with an explicit status code and
+    /// stable domain code.
+    ///
+    /// Chain [`DjangorsError::with_details`] to attach a structured payload.
+    pub fn api(status: StatusCode, code: impl Into<String>, message: impl Into<String>) -> Self {
+        DjangorsError::Api(ApiError::new(status, code, message))
+    }
+
+    /// Attach a structured details payload to this error.
+    ///
+    /// Built-in variants are promoted to [`DjangorsError::Api`], preserving
+    /// their status code, domain code, and message.
+    pub fn with_details(self, details: serde_json::Value) -> Self {
+        let status = self.status_code();
+        match self {
+            DjangorsError::Api(api) => DjangorsError::Api(api.with_details(details)),
+            other => {
+                let code = other.code().to_string();
+                let message = other.message();
+                DjangorsError::Api(ApiError {
+                    status,
+                    code,
+                    message,
+                    details: Some(details),
+                })
+            }
+        }
+    }
+
+    /// The stable, machine-readable code for this error.
+    ///
+    /// Built-in variants return a fixed snake_case code; [`DjangorsError::Api`]
+    /// returns the application-supplied one.
+    pub fn code(&self) -> &str {
         match self {
             Self::NotFound => "not_found",
             Self::BadRequest(_) => "bad_request",
@@ -88,10 +160,12 @@ impl DjangorsError {
             Self::Unauthorized(_) => "unauthorized",
             Self::Forbidden(_) => "forbidden",
             Self::TooManyRequests(_) => "too_many_requests",
+            Self::Api(api) => &api.code,
         }
     }
 
-    fn message(&self) -> String {
+    /// The human-readable message for this error.
+    pub fn message(&self) -> String {
         match self {
             Self::NotFound => "Not Found".to_string(),
             Self::BadRequest(msg)
@@ -100,6 +174,15 @@ impl DjangorsError {
             | Self::Unauthorized(msg)
             | Self::Forbidden(msg) => msg.clone(),
             Self::TooManyRequests(msg) => msg.clone(),
+            Self::Api(api) => api.message.clone(),
+        }
+    }
+
+    /// The structured details payload, if one was attached.
+    pub fn details(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Api(api) => api.details.as_ref(),
+            _ => None,
         }
     }
 
@@ -107,6 +190,44 @@ impl DjangorsError {
     pub fn try_custom_render(&self, req: &Request) -> Option<Response> {
         req.state::<std::sync::Arc<dyn ErrorRenderer>>()
             .map(|renderer| renderer.render(self, req))
+    }
+
+    /// Whether this error should be rendered as JSON for the given request.
+    ///
+    /// True when the caller explicitly asked for JSON via `Accept`, or when the
+    /// error is an [`ApiError`] — an application-defined code and details
+    /// payload is only meaningful to a machine reader, so an HTML page would
+    /// throw the information away.
+    fn prefers_json(&self, req: &Request) -> bool {
+        if matches!(self, DjangorsError::Api(_)) {
+            return true;
+        }
+        req.header("accept")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|accept| accept.contains("application/json"))
+    }
+
+    /// Render this error into the response the caller should receive.
+    ///
+    /// Resolution order:
+    /// 1. A project-registered [`ErrorRenderer`], if one is in state.
+    /// 2. The JSON envelope, when the caller asked for JSON or this is an
+    ///    [`ApiError`].
+    /// 3. The rich debug page (when `debug`) or the minimal production page.
+    ///
+    /// Handlers do not call this — the router does, on every error path.
+    pub fn render(&self, req: &Request, debug: bool) -> Response {
+        if let Some(resp) = self.try_custom_render(req) {
+            return resp;
+        }
+        if self.prefers_json(req) {
+            return self.into_json_response();
+        }
+        if debug {
+            crate::debug_page::render_debug_page(self, req)
+        } else {
+            crate::debug_page::render_production_error_page(self.status_code())
+        }
     }
 
     /// Return the HTTP status code for this error.
@@ -119,11 +240,50 @@ impl DjangorsError {
             DjangorsError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             DjangorsError::Forbidden(_) => StatusCode::FORBIDDEN,
             DjangorsError::TooManyRequests(_) => StatusCode::TOO_MANY_REQUESTS,
+            DjangorsError::Api(api) => api.status,
         }
     }
 
-    /// Convert this error into an HTTP response.
-    pub fn into_response(self) -> Response {
+    /// Render this error as the standard JSON error envelope.
+    ///
+    /// The shape is `{"error": {"status", "code", "message", "details"?}}`.
+    /// `details` is omitted entirely when absent.
+    pub fn into_json_response(&self) -> Response {
+        #[derive(serde::Serialize)]
+        struct Envelope<'a> {
+            error: ErrorBody<'a>,
+        }
+        #[derive(serde::Serialize)]
+        struct ErrorBody<'a> {
+            status: u16,
+            code: &'a str,
+            message: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            details: Option<&'a serde_json::Value>,
+        }
+
+        let status = self.status_code();
+        let message = self.message();
+        Response::json(
+            status,
+            &Envelope {
+                error: ErrorBody {
+                    status: status.as_u16(),
+                    code: self.code(),
+                    message: &message,
+                    details: self.details(),
+                },
+            },
+        )
+        .expect("JSON error envelope is serializable")
+    }
+
+    /// Render this error as a plain-text response.
+    ///
+    /// [`DjangorsError::Api`] renders as the JSON envelope instead, since an
+    /// application-defined code and details payload only carry meaning to a
+    /// machine reader.
+    fn text_response(&self) -> Response {
         let status = self.status_code();
         match self {
             DjangorsError::NotFound => Response::text(status, "404 Not Found"),
@@ -146,6 +306,76 @@ impl DjangorsError {
             DjangorsError::TooManyRequests(msg) => {
                 Response::text(status, &format!("429 Too Many Requests: {msg}"))
             }
+            DjangorsError::Api(_) => self.into_json_response(),
         }
+    }
+
+    /// Convert this error into an HTTP response.
+    ///
+    /// See [`DjangorsError::text_response`] for the rendering rules.
+    pub fn into_response(self) -> Response {
+        self.text_response()
+    }
+
+    /// Render this error for a router that has no debug/production error pages,
+    /// honouring a project renderer and JSON content negotiation before falling
+    /// back to plain text.
+    pub fn render_basic(&self, req: &Request) -> Response {
+        if let Some(resp) = self.try_custom_render(req) {
+            return resp;
+        }
+        if self.prefers_json(req) {
+            return self.into_json_response();
+        }
+        self.text_response()
+    }
+}
+
+/// Maps arbitrary error types into [`DjangorsError::Api`] with an explicit
+/// status and domain code.
+///
+/// This keeps handler bodies free of `map_err` closures while still forcing a
+/// deliberate choice of status code and stable code for each failure mode.
+///
+/// # Examples
+///
+/// ```no_run
+/// use djangors_core::error::{DjangorsError, ApiResultExt};
+/// use hyper::StatusCode;
+///
+/// fn parse_quantity(raw: &str) -> Result<u32, DjangorsError> {
+///     raw.parse::<u32>()
+///         .api_err(StatusCode::UNPROCESSABLE_ENTITY, "invalid_quantity")
+/// }
+/// ```
+pub trait ApiResultExt<T> {
+    /// Convert the error case into [`DjangorsError::Api`], using the source
+    /// error's `Display` output as the message.
+    fn api_err(self, status: StatusCode, code: impl Into<String>) -> Result<T, DjangorsError>;
+
+    /// Convert the error case into [`DjangorsError::Api`] with a fixed message,
+    /// discarding the source error's own text.
+    ///
+    /// Use this when the underlying error may leak internal detail.
+    fn api_err_msg(
+        self,
+        status: StatusCode,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Result<T, DjangorsError>;
+}
+
+impl<T, E: fmt::Display> ApiResultExt<T> for Result<T, E> {
+    fn api_err(self, status: StatusCode, code: impl Into<String>) -> Result<T, DjangorsError> {
+        self.map_err(|e| DjangorsError::api(status, code, e.to_string()))
+    }
+
+    fn api_err_msg(
+        self,
+        status: StatusCode,
+        code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Result<T, DjangorsError> {
+        self.map_err(|_| DjangorsError::api(status, code, message))
     }
 }

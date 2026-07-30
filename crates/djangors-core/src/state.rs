@@ -37,6 +37,40 @@ impl AppState {
             .get(&TypeId::of::<T>())
             .and_then(|val| (**val).downcast_ref::<T>())
     }
+
+    /// Whether a value of type `T` has been inserted.
+    pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
+        self.inner.contains_key(&TypeId::of::<T>())
+    }
+
+    /// Number of distinct types held.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Whether no state has been attached.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Fold `other` into this state, keeping `self`'s value whenever both hold
+    /// the same type.
+    ///
+    /// Used when mounting a sub-router: the parent's configuration wins, and
+    /// anything the parent has not set is inherited from the child rather than
+    /// being silently lost.
+    pub fn merge(self, other: &AppState) -> Self {
+        if other.is_empty() {
+            return self;
+        }
+        let mut map = (*self.inner).clone();
+        for (type_id, value) in other.inner.iter() {
+            map.entry(*type_id).or_insert_with(|| value.clone());
+        }
+        Self {
+            inner: Arc::new(map),
+        }
+    }
 }
 
 #[cfg(test)]

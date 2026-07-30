@@ -1466,9 +1466,7 @@ async fn admin_export_csv(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     require_perm(&req, db, admin.model_meta(), "view").await?;
 
@@ -1580,9 +1578,7 @@ async fn admin_index(
 ) -> Result<Response, DjangorsError> {
     let user = require_staff(&req).await?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     let mut models = Vec::new();
     for meta in &registry {
@@ -1920,9 +1916,7 @@ async fn admin_changelist(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "view").await?;
 
@@ -2340,9 +2334,7 @@ async fn admin_add_get(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     require_perm(&req, db, admin.model_meta(), "add").await?;
 
@@ -2388,9 +2380,7 @@ async fn admin_add_post(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "add").await?;
 
@@ -2456,9 +2446,7 @@ async fn admin_change_get(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "change").await?;
 
@@ -2525,9 +2513,7 @@ async fn admin_change_post(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "change").await?;
 
@@ -2853,9 +2839,7 @@ async fn admin_delete_get(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     require_perm(&req, db, admin.model_meta(), "delete").await?;
 
@@ -2918,9 +2902,7 @@ async fn admin_delete_post(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "delete").await?;
 
@@ -3008,9 +2990,7 @@ async fn admin_history(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     let meta = admin.model_meta();
 
@@ -3089,9 +3069,7 @@ async fn admin_bulk_action_post(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "change").await?;
 
@@ -3180,9 +3158,7 @@ async fn admin_bulk_delete_post(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "delete").await?;
 
@@ -3303,9 +3279,7 @@ async fn admin_save_changelist_post(
         })
         .ok_or(DjangorsError::NotFound)?;
 
-    let db = req
-        .state::<djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".to_string()))?;
+    let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "change").await?;
 

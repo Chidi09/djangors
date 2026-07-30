@@ -112,7 +112,7 @@ where
                     .and_then(|qs| qs.filter(djangors_orm::q!(tenant = tenant_id)));
 
                 if let Ok(qs) = qs {
-                    if let Ok(Some(_)) = qs.first(&db).await {
+                    if let Ok(Some(_)) = qs.first(&*db).await {
                         req.extensions_mut().insert(CurrentTenant(tenant_id));
                     }
                 }

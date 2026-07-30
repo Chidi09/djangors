@@ -90,9 +90,9 @@ impl Router {
     /// multiple times with different types to attach several independent
     /// pieces of state.
     ///
-    /// Note: Sub-routers mounted using [`mount`](Self::mount) will NOT merge
-    /// their own state with the parent. State should be configured on the top-level
-    /// outer router that is served.
+    /// Sub-routers mounted with [`mount`](Self::mount) contribute any state the
+    /// parent has not already set for that type; the parent's value wins on
+    /// conflict.
     pub fn with_state<T: Send + Sync + 'static>(mut self, value: T) -> Self {
         self.state = self.state.insert(value);
         self
@@ -192,6 +192,11 @@ impl Router {
                 handler: route.handler.clone(),
             });
         }
+        // Inherit any state the sub-router configured that the parent has not.
+        // Previously a sub-router's state was dropped on the floor, so a
+        // handler that worked standalone would fail with "state absent" once
+        // mounted — the parent's values still take precedence.
+        self.state = self.state.merge(&sub_router.state);
         self
     }
 
@@ -423,10 +428,7 @@ impl Router {
                 let err = DjangorsError::Internal(format!("failed to read request body: {e}"));
                 let req = Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
                     .with_state(self.state.clone());
-                return err
-                    .try_custom_render(&req)
-                    .unwrap_or_else(|| err.into_response())
-                    .into_hyper();
+                return err.render_basic(&req).into_hyper();
             }
         };
 
@@ -456,20 +458,14 @@ impl Router {
 
             if !valid {
                 let err = DjangorsError::Forbidden("CSRF token missing or invalid".to_string());
-                return err
-                    .try_custom_render(&req)
-                    .unwrap_or_else(|| err.into_response())
-                    .into_hyper();
+                return err.render_basic(&req).into_hyper();
             }
         }
 
         let req_clone = req.clone();
         match self.handle(req).await {
             Ok(resp) => resp.into_hyper(),
-            Err(e) => e
-                .try_custom_render(&req_clone)
-                .unwrap_or_else(|| e.into_response())
-                .into_hyper(),
+            Err(e) => e.render_basic(&req_clone).into_hyper(),
         }
     }
 
@@ -490,20 +486,9 @@ impl Router {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 let err = DjangorsError::Internal(format!("failed to read request body: {e}"));
-                let resp = if debug {
-                    let dummy_req =
-                        Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
-                            .with_state(self.state.clone());
-                    err.try_custom_render(&dummy_req)
-                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&err, &dummy_req))
-                } else {
-                    let dummy_req =
-                        Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
-                            .with_state(self.state.clone());
-                    err.try_custom_render(&dummy_req).unwrap_or_else(|| {
-                        crate::debug_page::render_production_error_page(err.status_code())
-                    })
-                };
+                let dummy_req = Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
+                    .with_state(self.state.clone());
+                let resp = err.render(&dummy_req, debug);
                 return resp.into_hyper();
             }
         };
@@ -534,14 +519,7 @@ impl Router {
 
             if !valid {
                 let err = DjangorsError::Forbidden("CSRF token missing or invalid".to_string());
-                let resp = if debug {
-                    err.try_custom_render(&req)
-                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&err, &req))
-                } else {
-                    err.try_custom_render(&req).unwrap_or_else(|| {
-                        crate::debug_page::render_production_error_page(err.status_code())
-                    })
-                };
+                let resp = err.render(&req, debug);
                 return resp.into_hyper();
             }
         }
@@ -551,14 +529,7 @@ impl Router {
         match self.handle(req).await {
             Ok(resp) => resp.into_hyper(),
             Err(e) => {
-                let resp = if debug {
-                    e.try_custom_render(&req_clone)
-                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&e, &req_clone))
-                } else {
-                    e.try_custom_render(&req_clone).unwrap_or_else(|| {
-                        crate::debug_page::render_production_error_page(e.status_code())
-                    })
-                };
+                let resp = e.render(&req_clone, debug);
                 resp.into_hyper()
             }
         }
@@ -581,20 +552,9 @@ impl Router {
             Ok(collected) => collected.to_bytes(),
             Err(e) => {
                 let err = DjangorsError::Internal(format!("failed to read request body: {e}"));
-                let resp = if debug {
-                    let dummy_req =
-                        Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
-                            .with_state(self.state.clone());
-                    err.try_custom_render(&dummy_req)
-                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&err, &dummy_req))
-                } else {
-                    let dummy_req =
-                        Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
-                            .with_state(self.state.clone());
-                    err.try_custom_render(&dummy_req).unwrap_or_else(|| {
-                        crate::debug_page::render_production_error_page(err.status_code())
-                    })
-                };
+                let dummy_req = Request::new(parts.method, parts.uri, parts.headers, Bytes::new())
+                    .with_state(self.state.clone());
+                let resp = err.render(&dummy_req, debug);
                 return resp.into_hyper_boxed();
             }
         };
@@ -625,14 +585,7 @@ impl Router {
 
             if !valid {
                 let err = DjangorsError::Forbidden("CSRF token missing or invalid".to_string());
-                let resp = if debug {
-                    err.try_custom_render(&req)
-                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&err, &req))
-                } else {
-                    err.try_custom_render(&req).unwrap_or_else(|| {
-                        crate::debug_page::render_production_error_page(err.status_code())
-                    })
-                };
+                let resp = err.render(&req, debug);
                 return resp.into_hyper_boxed();
             }
         }
@@ -643,14 +596,7 @@ impl Router {
             Ok(ResponseKind::Standard(resp)) => resp.into_hyper_boxed(),
             Ok(ResponseKind::Streaming(resp)) => resp.into_hyper(),
             Err(e) => {
-                let resp = if debug {
-                    e.try_custom_render(&req_clone)
-                        .unwrap_or_else(|| crate::debug_page::render_debug_page(&e, &req_clone))
-                } else {
-                    e.try_custom_render(&req_clone).unwrap_or_else(|| {
-                        crate::debug_page::render_production_error_page(e.status_code())
-                    })
-                };
+                let resp = e.render(&req_clone, debug);
                 resp.into_hyper_boxed()
             }
         }

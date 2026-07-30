@@ -356,7 +356,7 @@ impl<T: Model + FromRow> QuerySet<T> {
     }
 
     /// Executes the query and returns all matching model instances.
-    pub async fn all(&self, db: &djangors_db::Database) -> Result<Vec<T>, OrmError> {
+    pub async fn all<E: djangors_db::DbExecutor>(&self, mut db: E) -> Result<Vec<T>, OrmError> {
         let (sql, params) = self.compile_select();
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for val in &params {
@@ -370,7 +370,7 @@ impl<T: Model + FromRow> QuerySet<T> {
             };
         }
         db.record_query();
-        let rows = query.fetch_all(db.pool()).await?;
+        let rows = db.conn().fetch_all(query).await?;
         let mut results = Vec::new();
         for row in rows {
             results.push(T::from_row(&row)?);
@@ -380,7 +380,7 @@ impl<T: Model + FromRow> QuerySet<T> {
 
     /// Fetches a single model instance matching the query filters.
     /// Returns `OrmError::NotFound` if no row matches, or `OrmError::MultipleObjectsReturned` if more than one row matches.
-    pub async fn get(&self, db: &djangors_db::Database) -> Result<T, OrmError> {
+    pub async fn get<E: djangors_db::DbExecutor>(&self, db: E) -> Result<T, OrmError> {
         let mut cloned = self.clone();
         cloned.limit = Some(2);
         let results = cloned.all(db).await?;
@@ -398,7 +398,7 @@ impl<T: Model + FromRow> QuerySet<T> {
     }
 
     /// Fetches the first model instance matching the query filters, or `None` if no row matches.
-    pub async fn first(&self, db: &djangors_db::Database) -> Result<Option<T>, OrmError> {
+    pub async fn first<E: djangors_db::DbExecutor>(&self, db: E) -> Result<Option<T>, OrmError> {
         let mut cloned = self.clone();
         cloned.limit = Some(1);
         let results = cloned.all(db).await?;
@@ -406,7 +406,7 @@ impl<T: Model + FromRow> QuerySet<T> {
     }
 
     /// Returns `true` if at least one record matches the query filters.
-    pub async fn exists(&self, db: &djangors_db::Database) -> Result<bool, OrmError> {
+    pub async fn exists<E: djangors_db::DbExecutor>(&self, mut db: E) -> Result<bool, OrmError> {
         let mut cloned = self.clone();
         cloned.limit = Some(1);
         let (sql, params) = cloned.compile_select_with_order("1", false);
@@ -422,12 +422,12 @@ impl<T: Model + FromRow> QuerySet<T> {
             };
         }
         db.record_query();
-        let row_opt = query.fetch_optional(db.pool()).await?;
+        let row_opt = db.conn().fetch_optional(query).await?;
         Ok(row_opt.is_some())
     }
 
     /// Returns the total count of rows matching the query filters.
-    pub async fn count(&self, db: &djangors_db::Database) -> Result<i64, OrmError> {
+    pub async fn count<E: djangors_db::DbExecutor>(&self, mut db: E) -> Result<i64, OrmError> {
         let (sql, params) = self.compile_select_with_order("COUNT(*)", false);
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
         for val in &params {
@@ -441,16 +441,16 @@ impl<T: Model + FromRow> QuerySet<T> {
             };
         }
         db.record_query();
-        let row = query.fetch_one(db.pool()).await?;
+        let row = db.conn().fetch_one(query).await?;
         use sqlx::Row;
         let count: i64 = row.try_get(0)?;
         Ok(count)
     }
 
     /// Executes aggregate functions over matching rows.
-    pub async fn aggregate(
+    pub async fn aggregate<E: djangors_db::DbExecutor>(
         &self,
-        db: &djangors_db::Database,
+        mut db: E,
         aggs: Vec<crate::aggregate::AggExpr>,
     ) -> Result<Vec<crate::aggregate::AggResult>, OrmError> {
         let meta = T::meta();
@@ -548,7 +548,7 @@ impl<T: Model + FromRow> QuerySet<T> {
         }
 
         db.record_query();
-        let row = query.fetch_one(db.pool()).await?;
+        let row = db.conn().fetch_one(query).await?;
         use sqlx::Row;
 
         let mut results = Vec::new();
@@ -576,9 +576,9 @@ impl<T: Model + FromRow> QuerySet<T> {
     }
 
     /// Executes a bulk UPDATE query matching current filters with specified field set expressions.
-    pub async fn update(
+    pub async fn update<E: djangors_db::DbExecutor>(
         &self,
-        db: &djangors_db::Database,
+        mut db: E,
         sets: Vec<(&'static str, SetExpr)>,
     ) -> Result<u64, OrmError> {
         let meta = T::meta();
@@ -691,13 +691,13 @@ impl<T: Model + FromRow> QuerySet<T> {
         }
 
         db.record_query();
-        let res = query.execute(db.pool()).await?;
+        let res = db.conn().execute(query).await?;
         Ok(res.rows_affected())
     }
 
     /// Performs a low-level INSERT query for `T` returning the generated primary key ID.
-    pub async fn insert_raw(
-        db: &djangors_db::Database,
+    pub async fn insert_raw<E: djangors_db::DbExecutor>(
+        mut db: E,
         values: Vec<(&'static str, crate::expr::Value)>,
     ) -> Result<i64, OrmError> {
         let meta = T::meta();
@@ -771,7 +771,7 @@ impl<T: Model + FromRow> QuerySet<T> {
 
         use sqlx::Row;
         db.record_query();
-        let row = query.fetch_one(db.pool()).await?;
+        let row = db.conn().fetch_one(query).await?;
         let pk: i64 = row.try_get(0)?;
         Ok(pk)
     }
@@ -780,7 +780,10 @@ impl<T: Model + FromRow> QuerySet<T> {
     /// generated primary key for each row in the same order as `items`. Auto (e.g.
     /// `#[djangors(auto)]`) fields are skipped on every row, same as [`Self::insert_raw`].
     /// Empty input is a no-op returning an empty `Vec` (no query is issued).
-    pub async fn bulk_create(db: &djangors_db::Database, items: &[T]) -> Result<Vec<i64>, OrmError>
+    pub async fn bulk_create<E: djangors_db::DbExecutor>(
+        mut db: E,
+        items: &[T],
+    ) -> Result<Vec<i64>, OrmError>
     where
         T: Model,
     {
@@ -868,12 +871,15 @@ impl<T: Model + FromRow> QuerySet<T> {
 
         use sqlx::Row;
         db.record_query();
-        let rows = query.fetch_all(db.pool()).await?;
+        let rows = db.conn().fetch_all(query).await?;
         rows.iter().map(|row| Ok(row.try_get(0)?)).collect()
     }
 
     /// Deletes a record from table `T` by primary key `pk`.
-    pub async fn delete_by_pk(db: &djangors_db::Database, pk: i64) -> Result<u64, OrmError> {
+    pub async fn delete_by_pk<E: djangors_db::DbExecutor>(
+        mut db: E,
+        pk: i64,
+    ) -> Result<u64, OrmError> {
         let meta = T::meta();
         let pk_field = meta
             .fields
@@ -886,9 +892,9 @@ impl<T: Model + FromRow> QuerySet<T> {
             meta.table_name, pk_field.column_name
         );
         db.record_query();
-        let res = sqlx::query(sqlx::AssertSqlSafe(sql))
-            .bind(pk)
-            .execute(db.pool())
+        let res = db
+            .conn()
+            .execute(sqlx::query(sqlx::AssertSqlSafe(sql)).bind(pk))
             .await
             .map_err(OrmError::from)?;
         Ok(res.rows_affected())
@@ -897,9 +903,9 @@ impl<T: Model + FromRow> QuerySet<T> {
     /// Eagerly loads the given relation, avoiding an N+1 query. Returns each
     /// matching `T` alongside its related `R` (or `None` if the relation is
     /// nullable and actually null for that row).
-    pub async fn select_related<R: Model + FromRow + Clone>(
+    pub async fn select_related<R: Model + FromRow + Clone, E: djangors_db::DbExecutor>(
         &self,
-        db: &djangors_db::Database,
+        mut db: E,
         relation_field: &'static str,
     ) -> Result<Vec<(T, Option<R>)>, OrmError> {
         let meta = T::meta();
@@ -943,7 +949,7 @@ impl<T: Model + FromRow> QuerySet<T> {
             };
         }
         db.record_query();
-        let rows = query.fetch_all(db.pool()).await?;
+        let rows = db.conn().fetch_all(query).await?;
 
         // 4. Collect distinct non-null ids and map T records
         let mut t_records = Vec::new();
@@ -984,7 +990,7 @@ impl<T: Model + FromRow> QuerySet<T> {
         r_query = r_query.bind(relation_ids_vec);
 
         db.record_query();
-        let r_rows = r_query.fetch_all(db.pool()).await?;
+        let r_rows = db.conn().fetch_all(r_query).await?;
 
         let mut r_map = std::collections::HashMap::new();
         for r_row in r_rows {
@@ -1010,14 +1016,15 @@ impl<T: Model + FromRow> QuerySet<T> {
 
 /// Batch-loads the reverse side of a foreign-key relation for already-fetched
 /// parents. The returned map omits parents with no matching children.
-pub async fn prefetch_related<T, R>(
-    db: &djangors_db::Database,
+pub async fn prefetch_related<T, R, E>(
+    mut db: E,
     parents: &[T],
     related_name: &str,
 ) -> Result<std::collections::HashMap<i64, Vec<R>>, OrmError>
 where
     T: Model,
     R: Model + FromRow + Clone,
+    E: djangors_db::DbExecutor,
 {
     let parent_meta = T::meta();
     let child_meta = R::meta();
@@ -1060,7 +1067,7 @@ where
     );
     let query = sqlx::query(sqlx::AssertSqlSafe(sql)).bind(parent_ids);
     db.record_query();
-    let rows = query.fetch_all(db.pool()).await?;
+    let rows = db.conn().fetch_all(query).await?;
     let mut grouped = std::collections::HashMap::new();
     for row in rows {
         let child = R::from_row(&row)?;

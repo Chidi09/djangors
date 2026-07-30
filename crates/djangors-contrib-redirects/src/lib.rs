@@ -29,9 +29,7 @@ pub async fn lookup_redirect(
     req: &Request,
     status: StatusCode,
 ) -> Result<Option<Response>, DjangorsError> {
-    let db = req
-        .state::<djangors_orm::djangors_db::Database>()
-        .ok_or_else(|| DjangorsError::Internal("Database connection not found".into()))?;
+    let db = req.require_state::<djangors_orm::djangors_db::Database>()?;
     let redirect = Redirect::objects()
         .filter(UnresolvedExpr::And(vec![UnresolvedCompare {
             field: "old_path",

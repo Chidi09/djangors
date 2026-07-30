@@ -10,9 +10,12 @@ pub mod config;
 pub mod database;
 /// Database errors and failure types.
 pub mod error;
+/// Query execution targets: run against the pool or inside a transaction.
+pub mod executor;
 
 pub use config::DatabaseConfig;
 #[doc(hidden)]
 pub use database::{isolation_level_sql, BoxFuture};
 pub use database::{Database, IsolationLevel};
 pub use error::DbError;
+pub use executor::{Conn, DbExecutor, PgQuery};

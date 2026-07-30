@@ -45,6 +45,35 @@ impl Request {
         self.state.get::<T>()
     }
 
+    /// Retrieve shared state of type `T`, failing with a descriptive
+    /// [`DjangorsError::Internal`] when it was never attached.
+    ///
+    /// Missing state is a wiring mistake, not a request-level failure, and
+    /// every handler that needs a database was hand-writing the same
+    /// `.ok_or_else(...)`. This names the missing type in the message, so the
+    /// error points at the `with_state` call that was forgotten:
+    ///
+    /// ```no_run
+    /// # use djangors_core::request::Request;
+    /// # use djangors_core::error::DjangorsError;
+    /// # struct Database;
+    /// # fn demo(req: &Request) -> Result<(), DjangorsError> {
+    /// let db = req.require_state::<Database>()?;
+    /// # let _ = db;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn require_state<T: Send + Sync + 'static>(
+        &self,
+    ) -> Result<&T, crate::error::DjangorsError> {
+        self.state.get::<T>().ok_or_else(|| {
+            crate::error::DjangorsError::Internal(format!(
+                "state of type `{}` was not attached; add it with Router::with_state",
+                std::any::type_name::<T>()
+            ))
+        })
+    }
+
     /// Attach the app-wide state to this request.
     pub fn with_state(mut self, state: AppState) -> Self {
         self.state = state;

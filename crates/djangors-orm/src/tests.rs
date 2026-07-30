@@ -849,7 +849,7 @@ async fn test_queryset_select_related() {
 
     // Run select_related
     let results = SelectRelatedChild::objects()
-        .select_related::<SelectRelatedParent>(&db, "parent")
+        .select_related::<SelectRelatedParent, _>(&db, "parent")
         .await
         .unwrap();
 
@@ -871,7 +871,7 @@ async fn test_queryset_select_related() {
 
     // Test validation: typo'd field name
     let typo_res = SelectRelatedChild::objects()
-        .select_related::<SelectRelatedParent>(&db, "nonexistent")
+        .select_related::<SelectRelatedParent, _>(&db, "nonexistent")
         .await;
     assert!(matches!(
         typo_res,
@@ -880,7 +880,7 @@ async fn test_queryset_select_related() {
 
     // Test validation: mismatched R type parameter
     let mismatch_res = SelectRelatedChild::objects()
-        .select_related::<SelectRelatedChild>(&db, "parent")
+        .select_related::<SelectRelatedChild, _>(&db, "parent")
         .await;
     assert!(matches!(
         mismatch_res,
@@ -980,7 +980,7 @@ async fn test_prefetch_related_is_constant_query_count() {
     db.reset_query_count();
     let parents = PrefetchParent::objects().all(&db).await.unwrap();
     let grouped =
-        crate::prefetch_related::<PrefetchParent, PrefetchChild>(&db, &parents, "children")
+        crate::prefetch_related::<PrefetchParent, PrefetchChild, _>(&db, &parents, "children")
             .await
             .unwrap();
     assert_eq!(db.query_count(), 2);
@@ -2001,4 +2001,42 @@ async fn test_filter_order_and_aggregate_on_reserved_keyword_field_names() {
         .execute(db.pool())
         .await
         .unwrap();
+}
+
+/// Compile-time proof that a `QuerySet` runs against both execution targets:
+/// the pool (`&Database`) and an open transaction (`&mut PgConnection`, as
+/// handed to the `Database::transaction` closure).
+///
+/// This is never called. It exists so that a regression in the `DbExecutor`
+/// bounds — especially the higher-ranked lifetimes on the transaction closure —
+/// fails the build instead of silently forcing users back onto raw SQLx.
+#[allow(dead_code)]
+async fn assert_queryset_runs_on_pool_and_in_transaction(
+    db: &djangors_db::Database,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Against the pool.
+    QuerySetTestModel::objects().all(db).await?;
+
+    // Inside a transaction: every ORM call shares the transaction, so they
+    // commit together or roll back together.
+    db.transaction(|conn| {
+        Box::pin(async move {
+            let rows = QuerySetTestModel::objects().all(&mut *conn).await?;
+            QuerySetTestModel::objects().count(&mut *conn).await?;
+            if rows.is_empty() {
+                crate::QuerySet::<QuerySetTestModel>::insert_raw(
+                    &mut *conn,
+                    vec![
+                        ("name", crate::expr::Value::Text("seeded".into())),
+                        ("is_active", crate::expr::Value::Bool(true)),
+                    ],
+                )
+                .await?;
+            }
+            Ok::<_, crate::error::OrmError>(())
+        })
+    })
+    .await?;
+
+    Ok(())
 }

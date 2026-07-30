@@ -217,3 +217,95 @@ to hardest.
   an arbitrary offset. Deliberately preserved the intentional one-occurrence-per-tick catch-up
   design (multiple concurrent ticks are meant to share backlog work, not each grab everything at
   once).
+
+### Phase 12.2: Error handling, ORM transactions, and REST polish
+
+Driven by an external review of a real backend built on 0.2.2, which rated error handling 4.5/10
+and REST 5.5/10 as the framework's weakest areas.
+
+**Error handling.** `DjangorsError` was a closed 7-variant enum whose payload was a bare `String`,
+with `code()` and `message()` private — so an application could not attach its own status code,
+stable domain code, or structured details, and even a custom `ErrorRenderer` could not read them
+back out.
+- Added `DjangorsError::Api(ApiError)`, carrying an explicit `StatusCode`, a stable domain `code`,
+  a `message`, and an optional `serde_json::Value` of `details`. Constructed via
+  `DjangorsError::api(status, code, message)` and `.with_details(json)`; `.with_details()` on a
+  built-in variant promotes it, preserving status/code/message.
+- Made `code()` and `message()` public and added `details()`, so custom renderers can build their
+  own envelope without re-matching on the variant.
+- Added the `ApiResultExt` trait (`.api_err(status, code)` / `.api_err_msg(...)`) so foreign errors
+  convert at the `?` site without a `map_err` closure.
+- Error responses now content-negotiate: a project `ErrorRenderer` wins, then the JSON envelope
+  when the caller sent `Accept: application/json` or the error is an `ApiError`, then the debug or
+  production page. This applies to every route, not just REST. The six duplicated
+  render-the-error branches in `router.rs` collapsed onto one `DjangorsError::render` method.
+- The JSON envelope now omits `details` entirely when absent rather than emitting `null`.
+
+**ORM transactions.** `Database::transaction` existed, but `QuerySet` only ever executed against
+`Database::pool()`, so no ORM call could join a transaction — atomic work had to drop to raw sqlx
+and give up the `QuerySet` API.
+- Added `djangors_db::DbExecutor`, implemented for `&Database` (the pool) and `&mut PgConnection`
+  (an open transaction, as handed to the `transaction` closure), plus the `Conn` handle that
+  centralises the pool-versus-transaction dispatch.
+- Every `QuerySet` method is now generic over `DbExecutor`: `all`, `get`, `first`, `exists`,
+  `count`, `aggregate`, `update`, `insert_raw`, `bulk_create`, `delete_by_pk`, `select_related`,
+  and the free `prefetch_related`. Existing `&Database` call sites are unchanged.
+- Added `impl From<OrmError> for DbError` (and a `DbError::Orm` variant). Without it the ORM still
+  could not be used inside `transaction`, whose closure must return an error convertible to
+  `DbError` — the trait bound, not the executor, was the actual blocker.
+- **Breaking:** `select_related` and `prefetch_related` gained a trailing inferred type parameter,
+  so turbofished calls become `select_related::<Related, _>(..)` and
+  `prefetch_related::<Parent, Child, _>(..)`.
+
+**REST.**
+- Page size is configurable per endpoint via `ViewSetConfig::page_size`; it was a hardcoded
+  `REST_PER_PAGE = 100`. Setting `max_page_size` additionally opts the endpoint into a
+  client-supplied `?page_size=`, clamped to that cap. Unparseable or out-of-range values fall back
+  to the default rather than failing an otherwise valid request.
+- Added the `IsStaff`, `IsSuperuser`, and `IsReadOnly` permission policies, the `And`/`Or`/`Not`
+  combinators, and the `PermissionExt` trait (`.and()`, `.or()`, `.negate()`) — previously the only
+  policies were `AllowAny` and `IsAuthenticated`, with no way to compose them.
+- Added `current_user()`, which resolves the request's user across session, token, and JWT auth
+  using the same precedence as `IsAuthenticated`.
+
+**REST, part two — the serializer layer.** `djangors-rest` was a single 3,257-line `lib.rs` whose
+`serialize`/`deserialize` were direct `Model`-to-JSON with no field control and no validation hook.
+- Split into `auth`, `permissions`, `serializers`, `validation`, `pagination`, `viewsets`, and
+  `openapi` modules. Every name is re-exported from the crate root, so existing imports are
+  unaffected.
+- Added the `Serializer<M>` trait (`to_representation` / `to_internal_value` / `validate` / `parse`)
+  and `ModelSerializer<M>`, the metadata-driven default. `ModelSerializer` with `FieldSet::all()`
+  reproduces the previous behaviour exactly.
+- Added `FieldSet`: `only` / `excluding` / `read_only` / `write_only`, giving the read/write split
+  the review found missing. A write to a read-only field is now *rejected* rather than silently
+  dropped — a client that thinks it set `id` is told it did not.
+- Added `ValidationErrors`: a `{field: [messages]}` map with `non_field_errors`, which renders as a
+  `422` `DjangorsError::Api` carrying the whole map in `details`. Validation failures used to
+  collapse into one `BadRequest` string, so a client could not tell which field was wrong.
+- Added the `Validator<T>` trait and `ModelSerializer::with_validator` for object-level rules. Every
+  registered validator runs even if an earlier one failed, so the client sees the full set at once.
+- Added the `Pagination` trait with `PageNumberPagination` (the default), `LimitOffsetPagination`,
+  and `CursorPagination`. The strategy owns both the row window and the response envelope.
+- Added `ViewSetOptions<M>` (serializer + pagination + config), `*_with_options` handlers for
+  `list`/`retrieve`/`create`/`update`, and `viewset_routes_with_options` so the options reach every
+  handler rather than just `list`.
+
+**Two real bugs found while building the above, both caught by new tests.**
+- `PATCH` was not partial. `deserialize` walks every column and defaults the absent ones, so a
+  `PATCH` of one field would persist a `false` for every omitted boolean and `NULL` for every
+  omitted nullable — silently resetting columns the client never mentioned. `deserialize` is now
+  partial-aware (`deserialize_partial`), and absent keys are skipped rather than defaulted.
+- A missing non-nullable boolean was silently accepted as `false` on a full write. That is right for
+  an HTML checkbox and wrong for a JSON API, where `POST {}` would quietly clear a flag.
+  `ModelSerializer` now reports it as required; `deserialize` keeps the form semantics the admin
+  depends on.
+
+**Router state and middleware ergonomics.**
+- Added `Request::require_state<T>()`, returning a descriptive error naming the missing type instead
+  of the `.ok_or_else(|| ...Internal("Database connection not found"))?` that appeared 30 times
+  across the framework. All 30 call sites now use it.
+- `Router::mount` now inherits state from the sub-router for types the parent has not set (the
+  parent still wins on conflict). Previously a mounted sub-router's state was dropped, so a handler
+  that worked standalone would fail with "state absent" once mounted.
+- Added `AppState::merge`, `contains`, `len`, and `is_empty`.
+
