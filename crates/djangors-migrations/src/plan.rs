@@ -39,7 +39,7 @@ pub fn build_create_all_plan() -> Result<Vec<Operation>, MigrationError> {
 
         // Standard fields
         for field in model.fields {
-            let sql_type = field_meta_to_sql_type(field)?;
+            let sql_type = field_meta_to_sql_type(field, djangors_db::Dialect::Postgres)?;
             columns.push(ColumnDef {
                 name: field.column_name.to_string(),
                 sql_type,
@@ -67,7 +67,7 @@ pub fn build_create_all_plan() -> Result<Vec<Operation>, MigrationError> {
 
             let mut fk_field_meta = *target_pk;
             fk_field_meta.auto = false;
-            let sql_type = field_meta_to_sql_type(&fk_field_meta)?;
+            let sql_type = field_meta_to_sql_type(&fk_field_meta, djangors_db::Dialect::Postgres)?;
 
             let on_delete_str = match relation.on_delete {
                 djangors_orm::OnDelete::Cascade => "CASCADE",
@@ -104,29 +104,34 @@ pub fn build_create_all_plan() -> Result<Vec<Operation>, MigrationError> {
 
 /// Builds the initial plan from metadata emitted by a project's binary.
 pub fn build_create_plan_from_snapshots(
-    models: &[djangors_orm::ModelSnapshot],
+    snapshots: &[djangors_orm::ModelSnapshot],
 ) -> Result<Vec<Operation>, MigrationError> {
-    let mut ordered = Vec::new();
+    let mut by_name = HashMap::new();
+    for s in snapshots {
+        by_name.insert(s.struct_name.clone(), s);
+    }
     let mut visited = HashSet::new();
-    let by_name: HashMap<&str, &djangors_orm::ModelSnapshot> =
-        models.iter().map(|m| (m.struct_name.as_str(), m)).collect();
+    let mut ordered = Vec::new();
+
     fn visit<'a>(
         m: &'a djangors_orm::ModelSnapshot,
-        by: &HashMap<&str, &'a djangors_orm::ModelSnapshot>,
-        seen: &mut HashSet<String>,
-        out: &mut Vec<&'a djangors_orm::ModelSnapshot>,
+        by_name: &HashMap<String, &'a djangors_orm::ModelSnapshot>,
+        visited: &mut HashSet<String>,
+        ordered: &mut Vec<&'a djangors_orm::ModelSnapshot>,
     ) {
-        if !seen.insert(m.struct_name.clone()) {
+        if visited.contains(&m.struct_name) {
             return;
         }
+        visited.insert(m.struct_name.clone());
         for r in &m.relations {
-            if let Some(t) = by.get(r.target_struct.as_str()) {
-                visit(t, by, seen, out);
+            if let Some(target) = by_name.get(r.target_struct.as_str()) {
+                visit(target, by_name, visited, ordered);
             }
         }
-        out.push(m);
+        ordered.push(m);
     }
-    for m in models {
+
+    for m in snapshots {
         visit(m, &by_name, &mut visited, &mut ordered);
     }
     ordered
@@ -141,6 +146,7 @@ pub fn build_create_plan_from_snapshots(
                         f.max_length,
                         f.auto,
                         &f.name,
+                        djangors_db::Dialect::Postgres,
                     )?,
                     nullable: f.nullable,
                     primary_key: f.primary_key,
@@ -180,6 +186,7 @@ pub fn build_create_plan_from_snapshots(
                         fk.max_length,
                         fk.auto,
                         &fk.name,
+                        djangors_db::Dialect::Postgres,
                     )?,
                     nullable: matches!(r.on_delete, djangors_orm::OnDelete::SetNull),
                     primary_key: false,

@@ -330,7 +330,11 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 relation_meta_tokens,
             });
             from_row_assignments.push(quote! {
-                #field_ident: djangors_orm::ForeignKey::new(row.try_get(#field_name_str).map_err(djangors_orm::OrmError::from)?)
+                #field_ident: djangors_orm::ForeignKey::new(
+                    row.try_i64_by_name(#field_name_str)
+                        .map_err(djangors_orm::OrmError::from)?
+                        .ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?
+                )
             });
             model_fields.push(ModelField {
                 ident: field_ident.clone(),
@@ -486,8 +490,26 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 primary_key,
                 field_meta_tokens,
             });
+            let from_row_code = match (last_ident_str.as_deref(), nullable) {
+                (Some("String"), true) => quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
+                (Some("String"), false) => quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
+                (Some("i64"), true) => quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
+                (Some("i64"), false) => quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
+                (Some("i32"), true) => quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.map(|v| v as i32) },
+                (Some("i32"), false) => quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? as i32 },
+                (Some("f64"), true) => quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
+                (Some("f64"), false) => quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
+                (Some("f32"), true) => quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.map(|v| v as f32) },
+                (Some("f32"), false) => quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? as f32 },
+                (Some("bool"), true) => quote! { row.try_bool_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
+                (Some("bool"), false) => quote! { row.try_bool_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
+                (Some("DateTime"), true) => quote! { row.try_datetime_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
+                (Some("DateTime"), false) => quote! { row.try_datetime_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
+                (_, true) => quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
+                (_, false) => quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
+            };
             from_row_assignments.push(quote! {
-                #field_ident: row.try_get(#final_column).map_err(djangors_orm::OrmError::from)?
+                #field_ident: #from_row_code
             });
             let null_bind_ty = inner_ty.clone();
             model_fields.push(ModelField {
@@ -606,76 +628,58 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
 
     // 5. Generate save, update, delete SQL building & binds
     let save_fields: Vec<&ModelField> = model_fields.iter().filter(|f| !f.is_auto).collect();
-    let save_cols: Vec<String> = save_fields
+    let save_cols_vec: Vec<String> = save_fields
         .iter()
-        .map(|f| format!("\"{}\"", f.column_name))
+        .map(|f| f.column_name.clone())
         .collect();
-    let save_placeholders: Vec<String> =
-        (1..=save_fields.len()).map(|i| format!("${}", i)).collect();
-    let save_sql = format!(
-        "INSERT INTO {} ({}) VALUES ({}) RETURNING *",
-        table_name,
-        save_cols.join(", "),
-        save_placeholders.join(", ")
-    );
 
     let save_bind_stmts = save_fields.iter().map(|f| {
         let val_expr = field_value_expr(f);
-        let null_bind_tok = &f.null_bind_tok;
+        let null_kind_tok = match f.null_bind_tok.to_string().as_str() {
+            "String" => quote! { djangors_orm::NullKind::Text },
+            "f64" | "f32" => quote! { djangors_orm::NullKind::F64 },
+            "bool" => quote! { djangors_orm::NullKind::Bool },
+            "chrono :: DateTime < chrono :: Utc >" | "DateTime < Utc >" | "DateTime" => quote! { djangors_orm::NullKind::DateTime },
+            _ => quote! { djangors_orm::NullKind::I64 },
+        };
         quote! {
             let val = #val_expr;
-            query = match &val {
-                djangors_orm::expr::Value::I64(v) => query.bind(*v),
-                djangors_orm::expr::Value::F64(v) => query.bind(*v),
-                djangors_orm::expr::Value::Text(v) => query.bind(v.clone()),
-                djangors_orm::expr::Value::Bool(v) => query.bind(*v),
-                djangors_orm::expr::Value::DateTime(v) => query.bind(*v),
-                djangors_orm::expr::Value::Null => query.bind(None::<#null_bind_tok>),
-                djangors_orm::expr::Value::List(_) => query.bind(None::<#null_bind_tok>),
+            let bind_val = match val {
+                djangors_orm::expr::Value::Null => djangors_orm::BindValue::Null(#null_kind_tok),
+                other => djangors_orm::BindValue::from(other),
             };
+            bind_values.push(bind_val);
         }
     });
 
     let pk_field = model_fields.iter().find(|f| f.is_primary_key).unwrap();
+    let pk_col_str = pk_field.column_name.clone();
     let update_fields: Vec<&ModelField> =
         model_fields.iter().filter(|f| !f.is_primary_key).collect();
-    let mut update_set_clauses = Vec::new();
-    for (i, f) in update_fields.iter().enumerate() {
-        update_set_clauses.push(format!("\"{}\" = ${}", f.column_name, i + 1));
-    }
-    let update_sql = format!(
-        "UPDATE {} SET {} WHERE \"{}\" = ${}",
-        table_name,
-        update_set_clauses.join(", "),
-        pk_field.column_name,
-        update_fields.len() + 1
-    );
+    let update_cols_vec: Vec<String> = update_fields.iter().map(|f| f.column_name.clone()).collect();
 
     let update_bind_stmts = update_fields
         .iter()
         .chain(std::iter::once(&pk_field))
         .map(|f| {
             let val_expr = field_value_expr(f);
-            let null_bind_tok = &f.null_bind_tok;
+            let null_kind_tok = match f.null_bind_tok.to_string().as_str() {
+                "String" => quote! { djangors_orm::NullKind::Text },
+                "f64" | "f32" => quote! { djangors_orm::NullKind::F64 },
+                "bool" => quote! { djangors_orm::NullKind::Bool },
+                "chrono :: DateTime < chrono :: Utc >" | "DateTime < Utc >" | "DateTime" => quote! { djangors_orm::NullKind::DateTime },
+                _ => quote! { djangors_orm::NullKind::I64 },
+            };
             quote! {
                 let val = #val_expr;
-                query = match &val {
-                    djangors_orm::expr::Value::I64(v) => query.bind(*v),
-                    djangors_orm::expr::Value::F64(v) => query.bind(*v),
-                    djangors_orm::expr::Value::Text(v) => query.bind(v.clone()),
-                    djangors_orm::expr::Value::Bool(v) => query.bind(*v),
-                    djangors_orm::expr::Value::DateTime(v) => query.bind(*v),
-                    djangors_orm::expr::Value::Null => query.bind(None::<#null_bind_tok>),
-                    djangors_orm::expr::Value::List(_) => query.bind(None::<#null_bind_tok>),
-                djangors_orm::expr::Value::List(_) => query.bind(None::<#null_bind_tok>),
+                let bind_val = match val {
+                    djangors_orm::expr::Value::Null => djangors_orm::BindValue::Null(#null_kind_tok),
+                    other => djangors_orm::BindValue::from(other),
                 };
+                bind_values.push(bind_val);
             }
         });
 
-    let delete_sql = format!(
-        "DELETE FROM {} WHERE {} = $1",
-        table_name, pk_field.column_name
-    );
     let delete_bind = field_value_expr(pk_field);
 
     let field_value_pairs = model_fields.iter().map(|f| {
@@ -768,8 +772,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             }
 
             /// Construct Self from a database row, reading each field by its column name.
-            pub fn from_row(row: &djangors_orm::sqlx::postgres::PgRow) -> Result<Self, djangors_orm::OrmError> {
-                use djangors_orm::sqlx::Row;
+            pub fn from_row(row: &djangors_orm::DbRow) -> Result<Self, djangors_orm::OrmError> {
                 Ok(Self {
                     #(#from_row_assignments),*
                 })
@@ -781,11 +784,22 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             /// set to true are ignored during insertion and populated by the database.
             /// Returns a new instance populated from the inserted database row.
             pub async fn save(&self, db: &djangors_orm::djangors_db::Database) -> Result<Self, djangors_orm::OrmError> {
+                use djangors_orm::djangors_db::DbExecutor;
                 Self::pre_save_signal().send(djangors_orm::Model::field_values(self)).await;
-                let sql = #save_sql;
-                let mut query = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(sql));
+                let mut db_ref = db;
+                let dialect = db_ref.dialect();
+                let save_cols: Vec<&str> = vec![#(#save_cols_vec),*];
+                let placeholders: Vec<String> = (1..=save_cols.len()).map(|i| dialect.placeholder(i)).collect();
+                let save_cols_quoted: Vec<String> = save_cols.iter().map(|c| format!("\"{}\"", c)).collect();
+                let sql = format!(
+                    "INSERT INTO {} ({}) VALUES ({}) RETURNING *",
+                    #table_name,
+                    save_cols_quoted.join(", "),
+                    placeholders.join(", ")
+                );
+                let mut bind_values = Vec::new();
                 #(#save_bind_stmts)*
-                let row = query.fetch_one(db.pool()).await?;
+                let row = db_ref.conn().fetch_one(&sql, &bind_values).await?;
                 let saved = Self::from_row(&row)?;
                 Self::post_save_signal().send(djangors_orm::Model::field_values(&saved)).await;
                 Ok(saved)
@@ -796,11 +810,27 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             /// Every non-primary-key column is set to the instance's current field values,
             /// matching on the primary key. Returns `OrmError::NotFound` if no row was updated.
             pub async fn update(&self, db: &djangors_orm::djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
+                use djangors_orm::djangors_db::DbExecutor;
                 Self::pre_save_signal().send(djangors_orm::Model::field_values(self)).await;
-                let sql = #update_sql;
-                let mut query = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(sql));
+                let mut db_ref = db;
+                let dialect = db_ref.dialect();
+                let update_cols: Vec<&str> = vec![#(#update_cols_vec),*];
+                let set_clauses: Vec<String> = update_cols
+                    .iter()
+                    .enumerate()
+                    .map(|(i, col)| format!("\"{}\" = {}", col, dialect.placeholder(i + 1)))
+                    .collect();
+                let pk_placeholder = dialect.placeholder(update_cols.len() + 1);
+                let sql = format!(
+                    "UPDATE {} SET {} WHERE \"{}\" = {}",
+                    #table_name,
+                    set_clauses.join(", "),
+                    #pk_col_str,
+                    pk_placeholder
+                );
+                let mut bind_values = Vec::new();
                 #(#update_bind_stmts)*
-                let rows_affected = query.execute(db.pool()).await?.rows_affected();
+                let rows_affected = db_ref.conn().execute(&sql, &bind_values).await?;
                 if rows_affected == 0 {
                     Err(djangors_orm::OrmError::NotFound {
                         model: Self::meta().struct_name,
@@ -815,21 +845,20 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             ///
             /// Deletes the row matching the primary key. Returns `OrmError::NotFound` if no row was deleted.
             pub async fn delete(&self, db: &djangors_orm::djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
+                use djangors_orm::djangors_db::DbExecutor;
                 let payload = djangors_orm::Model::field_values(self);
                 Self::pre_delete_signal().send(payload.clone()).await;
-                let sql = #delete_sql;
+                let mut db_ref = db;
+                let dialect = db_ref.dialect();
+                let sql = format!(
+                    "DELETE FROM {} WHERE \"{}\" = {}",
+                    #table_name,
+                    #pk_col_str,
+                    dialect.placeholder(1)
+                );
                 let val = #delete_bind;
-                let mut query = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(sql));
-                query = match &val {
-                    djangors_orm::expr::Value::I64(v) => query.bind(*v),
-                    djangors_orm::expr::Value::F64(v) => query.bind(*v),
-                    djangors_orm::expr::Value::Text(v) => query.bind(v.clone()),
-                    djangors_orm::expr::Value::Bool(v) => query.bind(*v),
-                    djangors_orm::expr::Value::DateTime(v) => query.bind(*v),
-                    djangors_orm::expr::Value::Null => query.bind(None::<i64>),
-                    djangors_orm::expr::Value::List(_) => query.bind(None::<i64>),
-                };
-                let rows_affected = query.execute(db.pool()).await?.rows_affected();
+                let bind_val = djangors_orm::BindValue::from(val);
+                let rows_affected = db_ref.conn().execute(&sql, &[bind_val]).await?;
                 if rows_affected == 0 {
                     Err(djangors_orm::OrmError::NotFound {
                         model: Self::meta().struct_name,
@@ -870,7 +899,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
 
         #[allow(missing_docs)]
         impl djangors_orm::FromRow for #struct_name_ident {
-            fn from_row(row: &djangors_orm::sqlx::postgres::PgRow) -> Result<Self, djangors_orm::OrmError> {
+            fn from_row(row: &djangors_orm::DbRow) -> Result<Self, djangors_orm::OrmError> {
                 #struct_name_ident::from_row(row)
             }
         }

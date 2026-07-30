@@ -142,6 +142,18 @@ impl Operation {
 
 fn column_sql(col: &ColumnDef) -> String {
     let mut sql = format!("\"{}\" {}", col.name, col.sql_type);
+    if col.sql_type.contains("PRIMARY KEY") {
+        if let Some(default) = &col.default_sql {
+            sql.push_str(&format!(" DEFAULT {}", default));
+        }
+        if let Some(refs) = &col.references {
+            sql.push_str(&format!(
+                " REFERENCES \"{}\"(\"{}\") ON DELETE {}",
+                refs.table, refs.column, refs.on_delete
+            ));
+        }
+        return sql;
+    }
     if !col.nullable {
         sql.push_str(" NOT NULL");
     }

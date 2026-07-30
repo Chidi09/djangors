@@ -54,6 +54,6 @@ impl From<OrmError> for djangors_db::DbError {
 
 /// Trait implemented by models to construct instances from a database row.
 pub trait FromRow: Sized {
-    /// Converts a PostgreSQL database row into an instance of `Self`.
-    fn from_row(row: &sqlx::postgres::PgRow) -> Result<Self, OrmError>;
+    /// Converts a database row into an instance of `Self`.
+    fn from_row(row: &djangors_db::DbRow) -> Result<Self, OrmError>;
 }

@@ -1,5 +1,6 @@
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{Executor, PgConnection, PgPool};
+use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Executor, PgConnection, PgPool, SqlitePool};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,21 +8,32 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::DatabaseConfig;
+use crate::dialect::Dialect;
 use crate::error::DbError;
+use crate::executor::Conn;
 
 /// A pinned, boxed future that sends across threads, used for async callbacks
 /// that borrow the database connection reference.
 #[doc(hidden)]
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// A wrapper around a SQLx PostgreSQL connection pool.
-///
-/// This serves as the connection manager for the Djangors framework, allowing
-/// database operations to run on a connection pool configured via settings.
+/// Connection pool manager for Djangors backends (PostgreSQL or SQLite).
 #[derive(Debug, Clone)]
-pub struct Database {
-    pool: PgPool,
-    query_count: Arc<AtomicUsize>,
+pub enum Database {
+    /// PostgreSQL connection pool wrapper.
+    Pg {
+        /// Underlying SQLx PostgreSQL pool.
+        pool: PgPool,
+        /// Recorded query counter.
+        query_count: Arc<AtomicUsize>,
+    },
+    /// SQLite connection pool wrapper.
+    Sqlite {
+        /// Underlying SQLx SQLite pool.
+        pool: SqlitePool,
+        /// Recorded query counter.
+        query_count: Arc<AtomicUsize>,
+    },
 }
 
 /// Supported isolation levels for database transactions.
@@ -48,98 +60,161 @@ pub fn isolation_level_sql(level: IsolationLevel) -> &'static str {
 impl Database {
     /// Connect to the database using the given configuration, building a connection pool.
     pub async fn connect(config: &DatabaseConfig) -> Result<Self, DbError> {
-        let mut options = PgPoolOptions::new()
-            .max_connections(config.max_connections)
-            .min_connections(config.min_connections)
-            .acquire_timeout(Duration::from_secs(config.connect_timeout_secs));
+        let url = config.url.trim();
+        let is_sqlite = url.starts_with("sqlite://")
+            || url.ends_with(".db")
+            || url.ends_with(".sqlite")
+            || url == ":memory:"
+            || url == "sqlite::memory:";
 
-        if let Some(idle) = config.idle_timeout_secs {
-            options = options.idle_timeout(Duration::from_secs(idle));
-        }
+        if is_sqlite {
+            let mut options = SqlitePoolOptions::new()
+                .max_connections(config.max_connections)
+                .min_connections(config.min_connections)
+                .acquire_timeout(Duration::from_secs(config.connect_timeout_secs));
 
-        let pool = options.connect(&config.url).await.map_err(|e| {
-            if matches!(e, sqlx::Error::PoolTimedOut) {
-                DbError::PoolExhausted
-            } else {
-                DbError::ConnectionFailed(e.to_string())
+            if let Some(idle) = config.idle_timeout_secs {
+                options = options.idle_timeout(Duration::from_secs(idle));
             }
-        })?;
 
-        Ok(Self {
-            pool,
-            query_count: Arc::new(AtomicUsize::new(0)),
-        })
+            let pool = options.connect(url).await.map_err(|e| {
+                if matches!(e, sqlx::Error::PoolTimedOut) {
+                    DbError::PoolExhausted
+                } else {
+                    DbError::ConnectionFailed(e.to_string())
+                }
+            })?;
+
+            Ok(Self::Sqlite {
+                pool,
+                query_count: Arc::new(AtomicUsize::new(0)),
+            })
+        } else {
+            let mut options = PgPoolOptions::new()
+                .max_connections(config.max_connections)
+                .min_connections(config.min_connections)
+                .acquire_timeout(Duration::from_secs(config.connect_timeout_secs));
+
+            if let Some(idle) = config.idle_timeout_secs {
+                options = options.idle_timeout(Duration::from_secs(idle));
+            }
+
+            let pool = options.connect(url).await.map_err(|e| {
+                if matches!(e, sqlx::Error::PoolTimedOut) {
+                    DbError::PoolExhausted
+                } else {
+                    DbError::ConnectionFailed(e.to_string())
+                }
+            })?;
+
+            Ok(Self::Pg {
+                pool,
+                query_count: Arc::new(AtomicUsize::new(0)),
+            })
+        }
     }
 
-    /// Access the underlying SQLx connection pool directly.
+    /// Access the underlying PostgreSQL connection pool directly.
     ///
-    /// This is useful for running raw queries or passing the pool to higher-level
-    /// framework components like the Djangors ORM.
+    /// # Panics
+    /// Panics if this `Database` handle is connected to a SQLite database.
     pub fn pool(&self) -> &PgPool {
-        &self.pool
+        match self {
+            Self::Pg { pool, .. } => pool,
+            Self::Sqlite { .. } => {
+                panic!("Attempted to access Postgres PgPool on a SQLite Database handle")
+            }
+        }
+    }
+
+    /// Access the underlying SQLite connection pool directly if connected to SQLite.
+    pub fn sqlite_pool(&self) -> Option<&SqlitePool> {
+        match self {
+            Self::Sqlite { pool, .. } => Some(pool),
+            Self::Pg { .. } => None,
+        }
+    }
+
+    /// Returns a [`Conn`] execution handle for this database pool.
+    pub fn conn(&self) -> Conn<'_> {
+        match self {
+            Self::Pg { pool, .. } => Conn::PgPool(pool),
+            Self::Sqlite { pool, .. } => Conn::SqlitePool(pool),
+        }
+    }
+
+    /// Returns the database dialect.
+    pub fn dialect(&self) -> Dialect {
+        match self {
+            Self::Pg { .. } => Dialect::Postgres,
+            Self::Sqlite { .. } => Dialect::Sqlite,
+        }
     }
 
     /// Records one SQL query for test observability.
     #[doc(hidden)]
     pub fn record_query(&self) {
-        self.query_count.fetch_add(1, Ordering::Relaxed);
+        let counter = match self {
+            Self::Pg { query_count, .. } => query_count,
+            Self::Sqlite { query_count, .. } => query_count,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Returns the number of SQL queries recorded by this database handle.
     #[doc(hidden)]
     pub fn query_count(&self) -> usize {
-        self.query_count.load(Ordering::Relaxed)
+        let counter = match self {
+            Self::Pg { query_count, .. } => query_count,
+            Self::Sqlite { query_count, .. } => query_count,
+        };
+        counter.load(Ordering::Relaxed)
     }
 
     /// Resets the recorded SQL query count to zero.
     #[doc(hidden)]
     pub fn reset_query_count(&self) {
-        self.query_count.store(0, Ordering::Relaxed);
+        let counter = match self {
+            Self::Pg { query_count, .. } => query_count,
+            Self::Sqlite { query_count, .. } => query_count,
+        };
+        counter.store(0, Ordering::Relaxed);
     }
 
-    /// Run `f` inside a database transaction.
-    ///
-    /// If `f` returns `Ok`, the transaction is committed. If it returns an error `Err`,
-    /// the transaction is rolled back.
-    ///
-    /// This is the Djangors framework equivalent of Django's `transaction.atomic()`.
-    ///
-    /// # Design Note on Signatures
-    /// This function uses a `BoxFuture` return type for the closure `f` instead of a generic
-    /// `Fut` parameter to avoid Rust lifetime issues where a generic future type cannot easily
-    /// borrow from arguments passed to a higher-rank trait bound closure (`for<'c> FnOnce`).
+    /// Run `f` inside a PostgreSQL database transaction.
     pub async fn transaction<F, T, E>(&self, f: F) -> Result<T, DbError>
     where
         F: for<'c> FnOnce(&'c mut PgConnection) -> BoxFuture<'c, Result<T, E>> + Send,
         T: Send,
         E: Into<DbError> + Send,
     {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
-        let res = f(&mut tx).await;
-        match res {
-            Ok(val) => {
-                tx.commit()
+        match self {
+            Self::Pg { pool, .. } => {
+                let mut tx = pool
+                    .begin()
                     .await
                     .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
-                Ok(val)
+                let res = f(&mut tx).await;
+                match res {
+                    Ok(val) => {
+                        tx.commit()
+                            .await
+                            .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+                        Ok(val)
+                    }
+                    Err(err) => {
+                        let _ = tx.rollback().await;
+                        Err(err.into())
+                    }
+                }
             }
-            Err(err) => {
-                let _ = tx.rollback().await;
-                Err(err.into())
-            }
+            Self::Sqlite { .. } => Err(DbError::TransactionFailed(
+                "PostgreSQL PgConnection transaction called on a SQLite Database".to_string(),
+            )),
         }
     }
 
-    /// Run `f` inside a database transaction with an explicit transaction isolation level.
-    ///
-    /// This behaves exactly like [`Database::transaction`], but executes a statement to set the
-    /// requested isolation level immediately after starting the transaction.
-    ///
-    /// This is the Djangors framework equivalent of Django's `transaction.atomic(isolation_level=...)`.
+    /// Run `f` inside a PostgreSQL database transaction with an explicit transaction isolation level.
     pub async fn transaction_with_isolation<F, T, E>(
         &self,
         level: IsolationLevel,
@@ -150,28 +225,34 @@ impl Database {
         T: Send,
         E: Into<DbError> + Send,
     {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
-        let sql = isolation_level_sql(level);
-        tx.execute(sql)
-            .await
-            .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
-
-        let res = f(&mut tx).await;
-        match res {
-            Ok(val) => {
-                tx.commit()
+        match self {
+            Self::Pg { pool, .. } => {
+                let mut tx = pool
+                    .begin()
                     .await
                     .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
-                Ok(val)
+                let sql = isolation_level_sql(level);
+                tx.execute(sql)
+                    .await
+                    .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+
+                let res = f(&mut tx).await;
+                match res {
+                    Ok(val) => {
+                        tx.commit()
+                            .await
+                            .map_err(|e| DbError::TransactionFailed(e.to_string()))?;
+                        Ok(val)
+                    }
+                    Err(err) => {
+                        let _ = tx.rollback().await;
+                        Err(err.into())
+                    }
+                }
             }
-            Err(err) => {
-                let _ = tx.rollback().await;
-                Err(err.into())
-            }
+            Self::Sqlite { .. } => Err(DbError::TransactionFailed(
+                "PostgreSQL transaction_with_isolation called on a SQLite Database".to_string(),
+            )),
         }
     }
 }
@@ -224,6 +305,22 @@ mod tests {
             .expect("Failed query");
         assert_eq!(row.0, 1);
     }
+
+    #[tokio::test]
+    async fn test_sqlite_connect_in_memory() {
+        let config = DatabaseConfig::new(":memory:");
+        let db = Database::connect(&config)
+            .await
+            .expect("Failed to connect SQLite");
+        assert_eq!(db.dialect(), Dialect::Sqlite);
+        assert!(db.sqlite_pool().is_some());
+    }
+
+    // Restored during review of dispatch 13.1: these three transaction tests were
+    // deleted by the SQLite port even though `transaction` and
+    // `transaction_with_isolation` both still exist. They cover the exact code the
+    // port rewrote, so losing them would have removed coverage precisely where the
+    // risk was highest. The rollback test's regression note is retained verbatim.
 
     #[tokio::test]
     async fn test_transaction_commit() {

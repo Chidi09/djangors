@@ -400,3 +400,56 @@ branches formatted non-`Text` values with `{:?}`, so `q!(field__contains = 5i64)
   down, every grid reaches a single column, long URLs and code no longer force horizontal page
   scroll, the "Copy as Markdown" button no longer overlaps the first heading, and tap targets meet
   the 44px guideline.
+
+### Phase 13.1: SQLite backend (dual-backend foundation)
+
+Djangors was PostgreSQL-only. This adds SQLite as a second backend for the ORM query path,
+the derive macro, and the migration type mapping — enough for `dj new` → running app with no
+database server, and for a test suite that needs no Postgres.
+
+`sqlx::Any` was evaluated and rejected: its `AnyValueKind` is
+`Null|Bool|SmallInt|Integer|BigInt|Real|Double|Text|Blob` with **no chrono support**, and every
+model in this workspace uses `DateTime<Utc>`. Making `QuerySet`/`FromRow`/the derive macro generic
+over `sqlx::Database` was also rejected — it would propagate `for<'r> i64: Decode<'r, DB> + Type<DB>`
+bounds through every method and every downstream crate. The chosen design is enum dispatch confined
+to `djangors-db`.
+
+**New in `djangors-db`:**
+- `Dialect` (`Postgres` | `Sqlite`) — placeholder style (`$1` vs `?`), `ILIKE` vs `LIKE`, identifier
+  quoting, float casts.
+- `BindValue` / `NullKind` — a driver-independent parameter. `NullKind` carries the typed-NULL
+  information that `NullBindKind` used to provide inside the ORM, because Postgres rejects a
+  mismatched parameter type even for NULL.
+- `DbRow` — wraps `PgRow`/`SqliteRow` with typed accessors by index and by name.
+- `Conn` is now four-way (`PgPool`/`PgTx`/`SqlitePool`/`SqliteTx`) and its methods take
+  `(sql, &[BindValue])` rather than a pre-built `sqlx::Query`, which is driver-typed and cannot
+  cross a backend boundary.
+- `Database` is an enum over the two pools; `connect()` picks the backend from the URL scheme.
+  `pool()` still returns `&PgPool` and **panics on a SQLite handle**, so not-yet-ported raw-SQL
+  call sites fail loudly rather than silently misbehaving. `sqlite_pool()` returns `Option<&SqlitePool>`.
+
+**Simplification:** because `Conn` now binds parameters itself, the **eight duplicated bind blocks
+in `queryset.rs` and four more in the derive macro are gone** — twelve copies of the same
+`match value { … .bind(…) }` collapsed into two (one per driver).
+
+**Breaking:** `FromRow::from_row` takes `&DbRow` instead of `&sqlx::postgres::PgRow`. This is a
+public trait implemented by every `#[derive(Model)]` type.
+
+**Integer decoding** now falls back `i64 → i32 → i16`, widening losslessly. Postgres's binary
+protocol is width-strict: an `INT4` column cannot be decoded as `i64`. SQLite is dynamically typed
+and hides this entirely, so a SQLite-only test would never have caught it — eight admin tests did.
+
+**SQLite type mapping** (`sql_type_for` is dialect-aware): `VARCHAR(n)`/`TEXT`→`TEXT`,
+`DOUBLE PRECISION`→`REAL`, `BOOLEAN`→`INTEGER`, date/time/`INTERVAL`/`UUID`/`INET`/`JSONB`→`TEXT`,
+`BYTEA`→`BLOB`. An auto primary key becomes `INTEGER PRIMARY KEY AUTOINCREMENT`, and `column_sql`
+suppresses its usual `NOT NULL`/`PRIMARY KEY` for such a column — SQLite rejects a table with two
+primary keys.
+
+**Known limitations (deliberately deferred):**
+- The ~555 raw `sqlx::query` call sites in `djangors-admin`, `-auth`, `-rest`, `-tasks`, and
+  `djangors-contrib-*` still write `$N` placeholders and are **Postgres-only**.
+- `dj makemigrations` and `plan.rs` hardcode `Dialect::Postgres`, so generated migration files are
+  still Postgres DDL.
+- Therefore SQLite currently supports the ORM query path, not a whole running admin site.
+
+400 tests pass.

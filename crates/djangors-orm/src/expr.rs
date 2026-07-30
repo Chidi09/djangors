@@ -89,6 +89,22 @@ impl From<DateTime<Utc>> for Value {
     }
 }
 
+impl From<Value> for djangors_db::BindValue {
+    fn from(v: Value) -> Self {
+        match v {
+            Value::I64(v) => djangors_db::BindValue::I64(v),
+            Value::F64(v) => djangors_db::BindValue::F64(v),
+            Value::Text(v) => djangors_db::BindValue::Text(v),
+            Value::Bool(v) => djangors_db::BindValue::Bool(v),
+            Value::DateTime(v) => djangors_db::BindValue::DateTime(v),
+            Value::Null => djangors_db::BindValue::Null(djangors_db::NullKind::I64),
+            // Value::List must never reach here — it is expanded into scalars by compile_expr_sql —
+            // so the conversion maps it to Null(NullKind::I64) with a comment, exactly as the current bind sites do.
+            Value::List(_) => djangors_db::BindValue::Null(djangors_db::NullKind::I64),
+        }
+    }
+}
+
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

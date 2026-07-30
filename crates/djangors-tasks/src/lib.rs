@@ -277,7 +277,7 @@ pub async fn claim_next_task(db: &djangors_db::Database) -> Result<Option<Queued
                     None => return Ok::<Option<QueuedTask>, djangors_db::DbError>(None),
                 };
 
-                let mut task = QueuedTask::from_row(&row)
+                let mut task = QueuedTask::from_row(&djangors_db::DbRow::Pg(row))
                     .map_err(|e| djangors_db::DbError::QueryFailed(sqlx::Error::Decode(Box::new(e))))?;
 
                 task.status = "running".to_string();

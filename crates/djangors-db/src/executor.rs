@@ -1,141 +1,221 @@
-//! Abstraction over *where* a query runs: a connection pool, or an open
+//! Abstraction over where a query runs: a connection pool, or an open
 //! transaction.
-//!
-//! Before this existed, every ORM method took `&Database` and reached for
-//! `Database::pool()`, which meant ORM calls could never participate in a
-//! transaction — atomic work had to drop down to raw SQLx and lose the
-//! `QuerySet` API entirely. [`DbExecutor`] closes that gap: the ORM is generic
-//! over its execution target, so the same call works against a pool or inside
-//! [`Database::transaction`](crate::Database::transaction).
-//!
-//! Against the pool, exactly as before:
-//!
-//! ```ignore
-//! Account::objects().all(db).await?;
-//! ```
-//!
-//! Or inside a transaction, where `conn` is the `&mut PgConnection` the closure
-//! receives. Both writes commit, or neither does:
-//!
-//! ```ignore
-//! db.transaction(|conn| {
-//!     Box::pin(async move {
-//!         Account::objects()
-//!             .filter(q!(id = from_id))?
-//!             .update(&mut *conn, vec![("balance", SetExpr::from(new_from))])
-//!             .await?;
-//!         Account::objects()
-//!             .filter(q!(id = to_id))?
-//!             .update(&mut *conn, vec![("balance", SetExpr::from(new_to))])
-//!             .await?;
-//!         Ok::<_, OrmError>(())
-//!     })
-//! })
-//! .await?;
-//! ```
 
-use sqlx::postgres::{PgArguments, PgQueryResult, PgRow};
-use sqlx::query::Query;
-use sqlx::{IntoArguments, PgConnection, PgPool, Postgres};
+use sqlx::{PgConnection, PgPool, SqliteConnection, SqlitePool};
 
+use crate::bind::{BindValue, NullKind};
 use crate::database::Database;
+use crate::dialect::Dialect;
+use crate::row::DbRow;
 
 /// A borrowed handle to whatever a query should run against.
-///
-/// Obtained from [`DbExecutor::conn`]. This exists so the pool-versus-transaction
-/// branch is written once here rather than at every call site in the ORM.
 pub enum Conn<'a> {
-    /// Run against the shared connection pool; each query gets its own
-    /// connection and commits independently.
-    Pool(&'a PgPool),
-    /// Run against a single connection with an open transaction; queries share
-    /// the transaction and commit or roll back together.
-    Tx(&'a mut PgConnection),
+    /// Run against the PostgreSQL connection pool.
+    PgPool(&'a PgPool),
+    /// Run against a single PostgreSQL connection in a transaction.
+    PgTx(&'a mut PgConnection),
+    /// Run against the SQLite connection pool.
+    SqlitePool(&'a SqlitePool),
+    /// Run against a single SQLite connection in a transaction.
+    SqliteTx(&'a mut SqliteConnection),
+}
+
+fn build_pg_query<'q>(
+    sql: &'q str,
+    params: &'q [BindValue],
+) -> sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+    for val in params {
+        q = match val {
+            BindValue::I64(v) => q.bind(*v),
+            BindValue::F64(v) => q.bind(*v),
+            BindValue::Text(v) => q.bind(v.as_str()),
+            BindValue::Bool(v) => q.bind(*v),
+            BindValue::DateTime(v) => q.bind(*v),
+            BindValue::Null(kind) => match kind {
+                NullKind::I64 => q.bind(None::<i64>),
+                NullKind::F64 => q.bind(None::<f64>),
+                NullKind::Text => q.bind(None::<String>),
+                NullKind::Bool => q.bind(None::<bool>),
+                NullKind::DateTime => q.bind(None::<chrono::DateTime<chrono::Utc>>),
+            },
+        };
+    }
+    q
+}
+
+fn build_sqlite_query<'q>(
+    sql: &'q str,
+    params: &'q [BindValue],
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
+    let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
+    for val in params {
+        q = match val {
+            BindValue::I64(v) => q.bind(*v),
+            BindValue::F64(v) => q.bind(*v),
+            BindValue::Text(v) => q.bind(v.as_str()),
+            BindValue::Bool(v) => q.bind(*v),
+            BindValue::DateTime(v) => q.bind(*v),
+            BindValue::Null(kind) => match kind {
+                NullKind::I64 => q.bind(None::<i64>),
+                NullKind::F64 => q.bind(None::<f64>),
+                NullKind::Text => q.bind(None::<String>),
+                NullKind::Bool => q.bind(None::<bool>),
+                NullKind::DateTime => q.bind(None::<chrono::DateTime<chrono::Utc>>),
+            },
+        };
+    }
+    q
 }
 
 impl<'a> Conn<'a> {
     /// Execute the query and collect every row.
-    pub async fn fetch_all<'q, A>(
+    pub async fn fetch_all(
         &mut self,
-        query: Query<'q, Postgres, A>,
-    ) -> Result<Vec<PgRow>, sqlx::Error>
-    where
-        A: 'q + IntoArguments<Postgres>,
-    {
+        sql: &str,
+        params: &[BindValue],
+    ) -> Result<Vec<DbRow>, sqlx::Error> {
         match self {
-            Conn::Pool(pool) => query.fetch_all(*pool).await,
-            Conn::Tx(conn) => query.fetch_all(&mut **conn).await,
+            Conn::PgPool(pool) => {
+                let q = build_pg_query(sql, params);
+                let rows = q.fetch_all(*pool).await?;
+                Ok(rows.into_iter().map(DbRow::Pg).collect())
+            }
+            Conn::PgTx(tx) => {
+                let q = build_pg_query(sql, params);
+                let rows = q.fetch_all(&mut **tx).await?;
+                Ok(rows.into_iter().map(DbRow::Pg).collect())
+            }
+            Conn::SqlitePool(pool) => {
+                let q = build_sqlite_query(sql, params);
+                let rows = q.fetch_all(*pool).await?;
+                Ok(rows.into_iter().map(DbRow::Sqlite).collect())
+            }
+            Conn::SqliteTx(tx) => {
+                let q = build_sqlite_query(sql, params);
+                let rows = q.fetch_all(&mut **tx).await?;
+                Ok(rows.into_iter().map(DbRow::Sqlite).collect())
+            }
         }
     }
 
     /// Execute the query, requiring exactly one row.
-    pub async fn fetch_one<'q, A>(
+    pub async fn fetch_one(
         &mut self,
-        query: Query<'q, Postgres, A>,
-    ) -> Result<PgRow, sqlx::Error>
-    where
-        A: 'q + IntoArguments<Postgres>,
-    {
+        sql: &str,
+        params: &[BindValue],
+    ) -> Result<DbRow, sqlx::Error> {
         match self {
-            Conn::Pool(pool) => query.fetch_one(*pool).await,
-            Conn::Tx(conn) => query.fetch_one(&mut **conn).await,
+            Conn::PgPool(pool) => {
+                let q = build_pg_query(sql, params);
+                let row = q.fetch_one(*pool).await?;
+                Ok(DbRow::Pg(row))
+            }
+            Conn::PgTx(tx) => {
+                let q = build_pg_query(sql, params);
+                let row = q.fetch_one(&mut **tx).await?;
+                Ok(DbRow::Pg(row))
+            }
+            Conn::SqlitePool(pool) => {
+                let q = build_sqlite_query(sql, params);
+                let row = q.fetch_one(*pool).await?;
+                Ok(DbRow::Sqlite(row))
+            }
+            Conn::SqliteTx(tx) => {
+                let q = build_sqlite_query(sql, params);
+                let row = q.fetch_one(&mut **tx).await?;
+                Ok(DbRow::Sqlite(row))
+            }
         }
     }
 
     /// Execute the query, returning the row if there is one.
-    pub async fn fetch_optional<'q, A>(
+    pub async fn fetch_optional(
         &mut self,
-        query: Query<'q, Postgres, A>,
-    ) -> Result<Option<PgRow>, sqlx::Error>
-    where
-        A: 'q + IntoArguments<Postgres>,
-    {
+        sql: &str,
+        params: &[BindValue],
+    ) -> Result<Option<DbRow>, sqlx::Error> {
         match self {
-            Conn::Pool(pool) => query.fetch_optional(*pool).await,
-            Conn::Tx(conn) => query.fetch_optional(&mut **conn).await,
+            Conn::PgPool(pool) => {
+                let q = build_pg_query(sql, params);
+                let row = q.fetch_optional(*pool).await?;
+                Ok(row.map(DbRow::Pg))
+            }
+            Conn::PgTx(tx) => {
+                let q = build_pg_query(sql, params);
+                let row = q.fetch_optional(&mut **tx).await?;
+                Ok(row.map(DbRow::Pg))
+            }
+            Conn::SqlitePool(pool) => {
+                let q = build_sqlite_query(sql, params);
+                let row = q.fetch_optional(*pool).await?;
+                Ok(row.map(DbRow::Sqlite))
+            }
+            Conn::SqliteTx(tx) => {
+                let q = build_sqlite_query(sql, params);
+                let row = q.fetch_optional(&mut **tx).await?;
+                Ok(row.map(DbRow::Sqlite))
+            }
         }
     }
 
     /// Execute the query for its side effect, returning the affected-row count.
-    pub async fn execute<'q, A>(
-        &mut self,
-        query: Query<'q, Postgres, A>,
-    ) -> Result<PgQueryResult, sqlx::Error>
-    where
-        A: 'q + IntoArguments<Postgres>,
-    {
+    pub async fn execute(&mut self, sql: &str, params: &[BindValue]) -> Result<u64, sqlx::Error> {
         match self {
-            Conn::Pool(pool) => query.execute(*pool).await,
-            Conn::Tx(conn) => query.execute(&mut **conn).await,
+            Conn::PgPool(pool) => {
+                let q = build_pg_query(sql, params);
+                let res = q.execute(*pool).await?;
+                Ok(res.rows_affected())
+            }
+            Conn::PgTx(tx) => {
+                let q = build_pg_query(sql, params);
+                let res = q.execute(&mut **tx).await?;
+                Ok(res.rows_affected())
+            }
+            Conn::SqlitePool(pool) => {
+                let q = build_sqlite_query(sql, params);
+                let res = q.execute(*pool).await?;
+                Ok(res.rows_affected())
+            }
+            Conn::SqliteTx(tx) => {
+                let q = build_sqlite_query(sql, params);
+                let res = q.execute(&mut **tx).await?;
+                Ok(res.rows_affected())
+            }
+        }
+    }
+
+    /// The database dialect for this connection handle.
+    pub fn dialect(&self) -> Dialect {
+        match self {
+            Conn::PgPool(_) | Conn::PgTx(_) => Dialect::Postgres,
+            Conn::SqlitePool(_) | Conn::SqliteTx(_) => Dialect::Sqlite,
         }
     }
 
     /// Whether this handle is inside an open transaction.
     pub fn in_transaction(&self) -> bool {
-        matches!(self, Conn::Tx(_))
+        matches!(self, Conn::PgTx(_) | Conn::SqliteTx(_))
     }
 }
 
 /// A target the ORM can run queries against.
-///
-/// Implemented for `&Database` (the connection pool) and for
-/// `&mut PgConnection` (an open transaction, as handed to the
-/// [`Database::transaction`] closure). ORM methods are generic over this trait,
-/// so the same `QuerySet` call works in both contexts.
 pub trait DbExecutor {
     /// Borrow the underlying execution target.
     fn conn(&mut self) -> Conn<'_>;
 
+    /// Returns the database dialect.
+    fn dialect(&mut self) -> Dialect {
+        self.conn().dialect()
+    }
+
     /// Record one query for test observability.
-    ///
-    /// Only the pool-backed [`Database`] keeps a counter; running inside a
-    /// transaction is a no-op.
     fn record_query(&self) {}
 }
 
 impl DbExecutor for &Database {
     fn conn(&mut self) -> Conn<'_> {
-        Conn::Pool(self.pool())
+        Database::conn(self)
     }
 
     fn record_query(&self) {
@@ -145,18 +225,23 @@ impl DbExecutor for &Database {
 
 impl DbExecutor for &mut PgConnection {
     fn conn(&mut self) -> Conn<'_> {
-        Conn::Tx(self)
+        Conn::PgTx(self)
+    }
+}
+
+impl DbExecutor for &mut SqliteConnection {
+    fn conn(&mut self) -> Conn<'_> {
+        Conn::SqliteTx(self)
     }
 }
 
 impl DbExecutor for Conn<'_> {
     fn conn(&mut self) -> Conn<'_> {
         match self {
-            Conn::Pool(pool) => Conn::Pool(pool),
-            Conn::Tx(conn) => Conn::Tx(conn),
+            Conn::PgPool(pool) => Conn::PgPool(pool),
+            Conn::PgTx(tx) => Conn::PgTx(tx),
+            Conn::SqlitePool(pool) => Conn::SqlitePool(pool),
+            Conn::SqliteTx(tx) => Conn::SqliteTx(tx),
         }
     }
 }
-
-/// Convenience alias for the concrete query type the ORM builds.
-pub type PgQuery<'q> = Query<'q, Postgres, PgArguments>;

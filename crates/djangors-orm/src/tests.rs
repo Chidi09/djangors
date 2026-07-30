@@ -2056,7 +2056,7 @@ use crate::queryset::QuerySet;
 
 /// Compiles a queryset's WHERE clause to SQL plus its bound parameters.
 fn where_sql(qs: QuerySet<QuerySetTestModel>) -> (String, Vec<Value>) {
-    let (sql, params) = qs.compile_select_with_order("*", false);
+    let (sql, params) = qs.compile_select_with_order("*", false, djangors_db::Dialect::Postgres);
     let where_part = sql
         .split_once(" WHERE ")
         .map(|(_, w)| w.to_string())
@@ -2204,6 +2204,80 @@ fn annotate_and_values_reject_empty_field_lists() {
     // Both would otherwise compile to invalid SQL (`GROUP BY` / `SELECT` with
     // nothing after them), so they fail before reaching the database.
     let qs = QuerySet::<QuerySetTestModel>::new();
-    let (sql, _) = qs.compile_select_with_order("*", false);
+    let (sql, _) = qs.compile_select_with_order("*", false, djangors_db::Dialect::Postgres);
     assert!(sql.starts_with("SELECT * FROM"), "got `{sql}`");
+}
+
+#[derive(Model)]
+#[djangors(app = "test_app", table_name = "test_sqlite_roundtrip")]
+pub struct SqliteTestModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+    pub is_active: bool,
+}
+
+#[tokio::test]
+async fn test_sqlite_queryset_roundtrip() {
+    let config = djangors_db::DatabaseConfig::new("sqlite::memory:");
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query(
+        "CREATE TABLE \"test_sqlite_roundtrip\" (
+            \"id\" INTEGER PRIMARY KEY AUTOINCREMENT,
+            \"name\" TEXT NOT NULL,
+            \"is_active\" INTEGER NOT NULL
+        )",
+    )
+    .execute(db.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+
+    let id1 = QuerySet::<SqliteTestModel>::insert_raw(
+        &db,
+        vec![
+            ("name", Value::Text("Alice".into())),
+            ("is_active", Value::Bool(true)),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(id1, 1);
+
+    let id2 = QuerySet::<SqliteTestModel>::insert_raw(
+        &db,
+        vec![
+            ("name", Value::Text("Bob".into())),
+            ("is_active", Value::Bool(false)),
+        ],
+    )
+    .await
+    .unwrap();
+    assert_eq!(id2, 2);
+
+    let active_models = SqliteTestModel::objects()
+        .filter(crate::q!(is_active = true))
+        .unwrap()
+        .all(&db)
+        .await
+        .unwrap();
+
+    assert_eq!(active_models.len(), 1);
+    assert_eq!(active_models[0].id, 1);
+    assert_eq!(active_models[0].name, "Alice");
+    assert!(active_models[0].is_active);
+
+    let bob = SqliteTestModel::objects()
+        .filter(crate::q!(name = "Bob"))
+        .unwrap()
+        .get(&db)
+        .await
+        .unwrap();
+
+    assert_eq!(bob.id, 2);
+    assert_eq!(bob.name, "Bob");
+    assert!(!bob.is_active);
+
+    let count = SqliteTestModel::objects().count(&db).await.unwrap();
+    assert_eq!(count, 2);
 }

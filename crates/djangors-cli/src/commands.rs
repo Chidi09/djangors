@@ -629,6 +629,7 @@ pub fn makemigrations(_check: bool) -> Result<(), String> {
                         field.max_length,
                         field.auto,
                         &field.name,
+                        djangors_db::Dialect::Postgres,
                     )
                     .map_err(|e| e.to_string())?;
                     let op = djangors_migrations::Operation::AddColumn {
