@@ -51,8 +51,8 @@ serde_urlencoded = "0.7.1"
 multer = "3.1.0"
 rand = "0.8.7"
 base64 = "0.22.1"
-djangors-orm = { path = "../djangors-orm", version = "0.4.0" }
-djangors-cache = { path = "../djangors-cache", version = "0.4.0" }
+djangors-orm = { path = "../djangors-orm", version = "0.5.0" }
+djangors-cache = { path = "../djangors-cache", version = "0.5.0" }
 inventory = "0.3.24"
 
 [dev-dependencies]

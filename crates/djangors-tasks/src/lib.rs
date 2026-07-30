@@ -3,6 +3,7 @@
 
 extern crate self as djangors_tasks;
 
+use djangors_db::DbExecutor;
 use djangors_macros::Model;
 use std::future::Future;
 use std::pin::Pin;
@@ -118,21 +119,26 @@ pub struct RecurringTask {
 
 /// Creates the database table `djangors_task_queue` if it does not already exist.
 pub async fn create_task_table(db: &djangors_db::Database) -> Result<(), djangors_db::DbError> {
-    let sql = r#"
-    CREATE TABLE IF NOT EXISTS djangors_task_queue (
-        id BIGSERIAL PRIMARY KEY,
-        task_name VARCHAR(255) NOT NULL,
-        payload TEXT NOT NULL,
-        status VARCHAR(50) NOT NULL,
-        attempts INT NOT NULL DEFAULT 0,
-        max_attempts INT NOT NULL DEFAULT 3,
-        created_at TIMESTAMPTZ NOT NULL,
-        scheduled_at TIMESTAMPTZ NOT NULL,
-        error_message TEXT
+    let mut conn = db.conn();
+    let dialect = conn.dialect();
+    let pk_type = match dialect {
+        djangors_db::Dialect::Postgres => "BIGSERIAL PRIMARY KEY",
+        djangors_db::Dialect::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+    };
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS djangors_task_queue (
+            id {pk_type},
+            task_name VARCHAR(255) NOT NULL,
+            payload TEXT NOT NULL,
+            status VARCHAR(50) NOT NULL,
+            attempts INT NOT NULL DEFAULT 0,
+            max_attempts INT NOT NULL DEFAULT 3,
+            created_at TIMESTAMPTZ NOT NULL,
+            scheduled_at TIMESTAMPTZ NOT NULL,
+            error_message TEXT
+        );"
     );
-    "#;
-    sqlx::query(sql)
-        .execute(db.pool())
+    conn.execute(&sql, &[])
         .await
         .map_err(djangors_db::DbError::QueryFailed)?;
     Ok(())
@@ -142,17 +148,24 @@ pub async fn create_task_table(db: &djangors_db::Database) -> Result<(), djangor
 pub async fn create_recurring_task_table(
     db: &djangors_db::Database,
 ) -> Result<(), djangors_db::DbError> {
-    let sql = r#"CREATE TABLE IF NOT EXISTS djangors_recurring_task (
-        id BIGSERIAL PRIMARY KEY,
-        task_name TEXT NOT NULL,
-        payload TEXT NOT NULL,
-        cron_expr TEXT NOT NULL,
-        next_run_at TIMESTAMPTZ NOT NULL,
-        last_run_at TIMESTAMPTZ,
-        enabled BOOLEAN NOT NULL DEFAULT TRUE
-    );"#;
-    sqlx::query(sql)
-        .execute(db.pool())
+    let mut conn = db.conn();
+    let dialect = conn.dialect();
+    let pk_type = match dialect {
+        djangors_db::Dialect::Postgres => "BIGSERIAL PRIMARY KEY",
+        djangors_db::Dialect::Sqlite => "INTEGER PRIMARY KEY AUTOINCREMENT",
+    };
+    let sql = format!(
+        "CREATE TABLE IF NOT EXISTS djangors_recurring_task (
+            id {pk_type},
+            task_name TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            cron_expr TEXT NOT NULL,
+            next_run_at TIMESTAMPTZ NOT NULL,
+            last_run_at TIMESTAMPTZ,
+            enabled BOOLEAN NOT NULL DEFAULT TRUE
+        );"
+    );
+    conn.execute(&sql, &[])
         .await
         .map_err(djangors_db::DbError::QueryFailed)?;
     Ok(())
@@ -172,47 +185,99 @@ pub async fn register_recurring(
     })?;
     let payload =
         serde_json::to_string(payload).map_err(|e| TaskError::Serialization(e.to_string()))?;
-    let row = sqlx::query("INSERT INTO djangors_recurring_task (task_name, payload, cron_expr, next_run_at, last_run_at, enabled) VALUES ($1, $2, $3, $4, NULL, TRUE) RETURNING id")
-        .bind(task_name).bind(payload).bind(cron_expr).bind(next_run_at)
-        .fetch_one(db.pool()).await.map_err(djangors_db::DbError::QueryFailed)?;
-    Ok(sqlx::Row::get(&row, "id"))
+    let mut conn = db.conn();
+    let dialect = conn.dialect();
+    let p1 = dialect.placeholder(1);
+    let p2 = dialect.placeholder(2);
+    let p3 = dialect.placeholder(3);
+    let p4 = dialect.placeholder(4);
+    let sql = format!(
+        "INSERT INTO djangors_recurring_task (task_name, payload, cron_expr, next_run_at, last_run_at, enabled) \
+         VALUES ({p1}, {p2}, {p3}, {p4}, NULL, TRUE) RETURNING id"
+    );
+    let params = vec![
+        djangors_db::BindValue::Text(task_name.to_string()),
+        djangors_db::BindValue::Text(payload),
+        djangors_db::BindValue::Text(cron_expr.to_string()),
+        djangors_db::BindValue::DateTime(next_run_at),
+    ];
+    let row = conn
+        .fetch_one(&sql, &params)
+        .await
+        .map_err(djangors_db::DbError::QueryFailed)?;
+    let id = row
+        .try_i64(0)
+        .map_err(djangors_db::DbError::QueryFailed)?
+        .ok_or_else(|| djangors_db::DbError::QueryFailed(sqlx::Error::RowNotFound))?;
+    Ok(id)
 }
 
 /// Enqueues due recurring tasks atomically while holding row locks, returning the enqueue count.
 pub async fn tick_recurring_tasks(db: &djangors_db::Database) -> Result<usize, TaskError> {
-    db.transaction(|tx| Box::pin(async move {
+    db.transaction(|mut tx| Box::pin(async move {
+        let mut conn = tx.conn();
+        let dialect = conn.dialect();
         // A tick spans several statements (cron evaluation, enqueue, and
-        // schedule advancement).  Serialize that claim-and-advance sequence
-        // at the database level so READ COMMITTED cannot let another tick
+        // schedule advancement). On Postgres, serialize that claim-and-advance
+        // sequence at the database level so READ COMMITTED cannot let another tick
         // observe the same due row between those statements.
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('djangors.tick_recurring_tasks', 0))")
-            .execute(&mut *tx)
-            .await
-            .map_err(djangors_db::DbError::QueryFailed)?;
-        // Captured only after the advisory lock is held, not before: a tick that spent
-        // time waiting on the lock must not compare rows against a stale "now" from
-        // before that wait, or it can re-claim a row the lock-holder just advanced.
+        // On SQLite, a write transaction holds an exclusive database lock for its duration,
+        // so the interleaving the advisory lock defends against cannot occur.
+        if dialect == djangors_db::Dialect::Postgres {
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended('djangors.tick_recurring_tasks', 0))", &[])
+                .await
+                .map_err(djangors_db::DbError::QueryFailed)?;
+        }
         let now = chrono::Utc::now();
-        let rows = sqlx::query("SELECT id, task_name, payload, cron_expr, next_run_at FROM djangors_recurring_task WHERE enabled = true AND next_run_at <= $1 ORDER BY next_run_at, id FOR UPDATE SKIP LOCKED")
-            .bind(now).fetch_all(&mut *tx).await.map_err(djangors_db::DbError::QueryFailed)?;
+        let p1 = dialect.placeholder(1);
+        let lock_clause = match dialect {
+            djangors_db::Dialect::Postgres => " FOR UPDATE SKIP LOCKED",
+            djangors_db::Dialect::Sqlite => "",
+        };
+        let sql_select = format!(
+            "SELECT id, task_name, payload, cron_expr, next_run_at FROM djangors_recurring_task WHERE enabled = true AND next_run_at <= {p1} ORDER BY next_run_at, id{lock_clause}"
+        );
+        let params_select = vec![djangors_db::BindValue::DateTime(now)];
+        let rows = conn.fetch_all(&sql_select, &params_select).await.map_err(djangors_db::DbError::QueryFailed)?;
+
+        let p_ins1 = dialect.placeholder(1);
+        let p_ins2 = dialect.placeholder(2);
+        let p_ins3 = dialect.placeholder(3);
+        let sql_insert = format!(
+            "INSERT INTO djangors_task_queue (task_name, payload, status, attempts, max_attempts, created_at, scheduled_at, error_message) VALUES ({p_ins1}, {p_ins2}, 'pending', 0, 3, {p_ins3}, {p_ins3}, NULL)"
+        );
+
+        let p_up1 = dialect.placeholder(1);
+        let p_up2 = dialect.placeholder(2);
+        let p_up3 = dialect.placeholder(3);
+        let sql_update = format!(
+            "UPDATE djangors_recurring_task SET last_run_at = {p_up1}, next_run_at = {p_up2} WHERE id = {p_up3}"
+        );
+
         let mut count = 0;
         for row in rows {
-            let id: i64 = sqlx::Row::get(&row, "id");
-            let task_name: String = sqlx::Row::get(&row, "task_name");
-            let payload: String = sqlx::Row::get(&row, "payload");
-            let expr: String = sqlx::Row::get(&row, "cron_expr");
-            let previous: chrono::DateTime<chrono::Utc> = sqlx::Row::get(&row, "next_run_at");
+            let id = row.try_i64(0).map_err(djangors_db::DbError::QueryFailed)?.unwrap_or_default();
+            let task_name = row.try_string(1).map_err(djangors_db::DbError::QueryFailed)?.unwrap_or_default();
+            let payload = row.try_string(2).map_err(djangors_db::DbError::QueryFailed)?.unwrap_or_default();
+            let expr = row.try_string(3).map_err(djangors_db::DbError::QueryFailed)?.unwrap_or_default();
+            let previous = row.try_datetime(4).map_err(djangors_db::DbError::QueryFailed)?.ok_or_else(|| djangors_db::DbError::QueryFailed(sqlx::Error::Protocol("missing next_run_at".into())))?;
+
             let schedule = parse_schedule(&expr).map_err(|e| djangors_db::DbError::QueryFailed(sqlx::Error::Protocol(e)))?;
-            // Advance exactly one step past `previous`, deliberately not catching all the
-            // way up to `now` in one tick: when a schedule has missed several occurrences
-            // (e.g. after downtime), each due occurrence is enqueued by whichever tick
-            // claims it, one at a time, so concurrent/successive ticks share the catch-up
-            // work under SKIP LOCKED rather than one tick enqueueing a whole backlog.
             let next = schedule.after(&previous).next().ok_or_else(|| djangors_db::DbError::QueryFailed(sqlx::Error::Protocol("cron has no next occurrence".into())))?;
-            sqlx::query("INSERT INTO djangors_task_queue (task_name, payload, status, attempts, max_attempts, created_at, scheduled_at, error_message) VALUES ($1, $2, 'pending', 0, 3, $3, $3, NULL)")
-                .bind(task_name).bind(payload).bind(previous).execute(&mut *tx).await.map_err(djangors_db::DbError::QueryFailed)?;
-            sqlx::query("UPDATE djangors_recurring_task SET last_run_at = $1, next_run_at = $2 WHERE id = $3")
-                .bind(previous).bind(next).bind(id).execute(&mut *tx).await.map_err(djangors_db::DbError::QueryFailed)?;
+
+            let params_insert = vec![
+                djangors_db::BindValue::Text(task_name),
+                djangors_db::BindValue::Text(payload),
+                djangors_db::BindValue::DateTime(previous),
+            ];
+            conn.execute(&sql_insert, &params_insert).await.map_err(djangors_db::DbError::QueryFailed)?;
+
+            let params_update = vec![
+                djangors_db::BindValue::DateTime(previous),
+                djangors_db::BindValue::DateTime(next),
+                djangors_db::BindValue::I64(id),
+            ];
+            conn.execute(&sql_update, &params_update).await.map_err(djangors_db::DbError::QueryFailed)?;
             count += 1;
         }
         Ok::<usize, djangors_db::DbError>(count)
@@ -256,41 +321,61 @@ pub async fn enqueue_scheduled(
 /// within a single transaction.
 pub async fn claim_next_task(db: &djangors_db::Database) -> Result<Option<QueuedTask>, TaskError> {
     let claimed = db
-        .transaction(|tx| {
+        .transaction(|mut tx| {
             Box::pin(async move {
+                let mut conn = tx.conn();
+                let dialect = conn.dialect();
                 let now = chrono::Utc::now();
-                let row = sqlx::query(
+                let p1 = dialect.placeholder(1);
+                let lock_clause = match dialect {
+                    djangors_db::Dialect::Postgres => " FOR UPDATE SKIP LOCKED",
+                    djangors_db::Dialect::Sqlite => "",
+                };
+                let sql_sel = format!(
                     "SELECT id, task_name, payload, status, attempts, max_attempts, created_at, scheduled_at, error_message \
                      FROM djangors_task_queue \
-                     WHERE status = 'pending' AND scheduled_at <= $1 \
-                     ORDER BY scheduled_at ASC, id ASC \
-                     FOR UPDATE SKIP LOCKED \
+                     WHERE status = 'pending' AND scheduled_at <= {p1} \
+                     ORDER BY scheduled_at ASC, id ASC{lock_clause} \
                      LIMIT 1"
-                )
-                .bind(now)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(djangors_db::DbError::QueryFailed)?;
+                );
+                let params_sel = vec![djangors_db::BindValue::DateTime(now)];
+                let row_opt = conn
+                    .fetch_optional(&sql_sel, &params_sel)
+                    .await
+                    .map_err(djangors_db::DbError::QueryFailed)?;
 
-                let row = match row {
+                let row = match row_opt {
                     Some(r) => r,
                     None => return Ok::<Option<QueuedTask>, djangors_db::DbError>(None),
                 };
 
-                let mut task = QueuedTask::from_row(&djangors_db::DbRow::Pg(row))
-                    .map_err(|e| djangors_db::DbError::QueryFailed(sqlx::Error::Decode(Box::new(e))))?;
+                let mut task = QueuedTask {
+                    id: row.try_i64(0).map_err(djangors_db::DbError::QueryFailed)?.unwrap_or_default(),
+                    task_name: row.try_string(1).map_err(djangors_db::DbError::QueryFailed)?.unwrap_or_default(),
+                    payload: row.try_string(2).map_err(djangors_db::DbError::QueryFailed)?.unwrap_or_default(),
+                    status: row.try_string(3).map_err(djangors_db::DbError::QueryFailed)?.unwrap_or_default(),
+                    attempts: row.try_i64(4).map_err(djangors_db::DbError::QueryFailed)?.unwrap_or_default() as i32,
+                    max_attempts: row.try_i64(5).map_err(djangors_db::DbError::QueryFailed)?.unwrap_or_default() as i32,
+                    created_at: row.try_datetime(6).map_err(djangors_db::DbError::QueryFailed)?.ok_or_else(|| djangors_db::DbError::QueryFailed(sqlx::Error::Protocol("missing created_at".into())))?,
+                    scheduled_at: row.try_datetime(7).map_err(djangors_db::DbError::QueryFailed)?.ok_or_else(|| djangors_db::DbError::QueryFailed(sqlx::Error::Protocol("missing scheduled_at".into())))?,
+                    error_message: row.try_string(8).map_err(djangors_db::DbError::QueryFailed)?,
+                };
 
                 task.status = "running".to_string();
                 task.attempts += 1;
 
-                sqlx::query(
-                    "UPDATE djangors_task_queue SET status = 'running', attempts = $1 WHERE id = $2"
-                )
-                .bind(task.attempts)
-                .bind(task.id)
-                .execute(&mut *tx)
-                .await
-                .map_err(djangors_db::DbError::QueryFailed)?;
+                let p_up1 = dialect.placeholder(1);
+                let p_up2 = dialect.placeholder(2);
+                let sql_up = format!(
+                    "UPDATE djangors_task_queue SET status = 'running', attempts = {p_up1} WHERE id = {p_up2}"
+                );
+                let params_up = vec![
+                    djangors_db::BindValue::I64(task.attempts as i64),
+                    djangors_db::BindValue::I64(task.id),
+                ];
+                conn.execute(&sql_up, &params_up)
+                    .await
+                    .map_err(djangors_db::DbError::QueryFailed)?;
 
                 Ok(Some(task))
             })
@@ -301,13 +386,15 @@ pub async fn claim_next_task(db: &djangors_db::Database) -> Result<Option<Queued
 }
 
 async fn mark_task_completed(db: &djangors_db::Database, task_id: i64) -> Result<(), TaskError> {
-    sqlx::query(
-        "UPDATE djangors_task_queue SET status = 'completed', error_message = NULL WHERE id = $1",
-    )
-    .bind(task_id)
-    .execute(db.pool())
-    .await
-    .map_err(djangors_db::DbError::QueryFailed)?;
+    let mut conn = db.conn();
+    let p1 = conn.dialect().placeholder(1);
+    let sql = format!(
+        "UPDATE djangors_task_queue SET status = 'completed', error_message = NULL WHERE id = {p1}"
+    );
+    let params = vec![djangors_db::BindValue::I64(task_id)];
+    conn.execute(&sql, &params)
+        .await
+        .map_err(djangors_db::DbError::QueryFailed)?;
     Ok(())
 }
 
@@ -323,11 +410,19 @@ async fn mark_task_failed(
     } else {
         "failed"
     };
-    sqlx::query("UPDATE djangors_task_queue SET status = $1, error_message = $2 WHERE id = $3")
-        .bind(next_status)
-        .bind(error_message)
-        .bind(task_id)
-        .execute(db.pool())
+    let mut conn = db.conn();
+    let p1 = conn.dialect().placeholder(1);
+    let p2 = conn.dialect().placeholder(2);
+    let p3 = conn.dialect().placeholder(3);
+    let sql = format!(
+        "UPDATE djangors_task_queue SET status = {p1}, error_message = {p2} WHERE id = {p3}"
+    );
+    let params = vec![
+        djangors_db::BindValue::Text(next_status.to_string()),
+        djangors_db::BindValue::Text(error_message.to_string()),
+        djangors_db::BindValue::I64(task_id),
+    ];
+    conn.execute(&sql, &params)
         .await
         .map_err(djangors_db::DbError::QueryFailed)?;
     Ok(())
@@ -978,7 +1073,10 @@ mod tests {
             .next()
             .expect("cron has a next occurrence");
         loop {
-            let candidate = schedule.after(&most_recent_boundary).next().expect("cron has a next occurrence");
+            let candidate = schedule
+                .after(&most_recent_boundary)
+                .next()
+                .expect("cron has a next occurrence");
             if candidate > now {
                 break;
             }

@@ -75,12 +75,14 @@ impl<T: Model + FromRow> QuerySet<T> {
     /// The `SELECT` this queryset would execute, for debugging and tests —
     /// Django's `str(queryset.query)`.
     pub fn debug_sql(&self) -> String {
-        self.compile_select_with_order("*", true, Dialect::Postgres).0
+        self.compile_select_with_order("*", true, Dialect::Postgres)
+            .0
     }
 
     /// The bind parameters [`debug_sql`](Self::debug_sql) would send, in order.
     pub fn debug_params(&self) -> Vec<Value> {
-        self.compile_select_with_order("*", true, Dialect::Postgres).1
+        self.compile_select_with_order("*", true, Dialect::Postgres)
+            .1
     }
 
     /// Excludes rows matching `expr` — the negation of [`filter`](Self::filter).
@@ -199,7 +201,8 @@ impl<T: Model + FromRow> QuerySet<T> {
         let mut clean_qs = self.clone();
         clean_qs.limit = None;
         clean_qs.offset = None;
-        let (mut sql, params) = clean_qs.compile_select_with_order(&select_parts.join(", "), false, dialect);
+        let (mut sql, params) =
+            clean_qs.compile_select_with_order(&select_parts.join(", "), false, dialect);
         sql.push_str(&format!(" GROUP BY {}", group_cols.join(", ")));
 
         let bind_values: Vec<BindValue> = params.into_iter().map(BindValue::from).collect();
@@ -483,8 +486,13 @@ impl<T: Model + FromRow> QuerySet<T> {
 
         if !self.filters.is_empty() {
             let combined = Expr::And(self.filters.clone());
-            let where_clause =
-                compile_expr_sql(&combined, &field_to_col, &mut params, &mut param_idx, dialect);
+            let where_clause = compile_expr_sql(
+                &combined,
+                &field_to_col,
+                &mut params,
+                &mut param_idx,
+                dialect,
+            );
             sql.push_str(" WHERE ");
             sql.push_str(&where_clause);
         }
@@ -773,7 +781,10 @@ impl<T: Model + FromRow> QuerySet<T> {
                     };
                     set_parts.push(format!(
                         "{} = {} {} {}",
-                        lhs_col, rhs_col, op_sql, dialect.placeholder(param_idx)
+                        lhs_col,
+                        rhs_col,
+                        op_sql,
+                        dialect.placeholder(param_idx)
                     ));
                     let bv = match operand {
                         Value::Null => BindValue::Null(nk),
@@ -793,8 +804,13 @@ impl<T: Model + FromRow> QuerySet<T> {
         );
         if !self.filters.is_empty() {
             let combined = Expr::And(self.filters.clone());
-            let where_clause =
-                compile_expr_sql(&combined, &field_to_col, &mut raw_params, &mut param_idx, dialect);
+            let where_clause = compile_expr_sql(
+                &combined,
+                &field_to_col,
+                &mut raw_params,
+                &mut param_idx,
+                dialect,
+            );
             sql.push_str(" WHERE ");
             sql.push_str(&where_clause);
             for p in raw_params {
@@ -970,7 +986,9 @@ impl<T: Model + FromRow> QuerySet<T> {
 
         let sql = format!(
             "DELETE FROM \"{}\" WHERE \"{}\" = {}",
-            meta.table_name, pk_field.column_name, dialect.placeholder(1)
+            meta.table_name,
+            pk_field.column_name,
+            dialect.placeholder(1)
         );
         db.record_query();
         let rows_affected = db.conn().execute(&sql, &[BindValue::I64(pk)]).await?;
@@ -1041,12 +1059,19 @@ impl<T: Model + FromRow> QuerySet<T> {
         let r_pk_col = r_pk_field.column_name;
 
         let relation_ids_vec: Vec<i64> = relation_ids.into_iter().collect();
-        let r_placeholders: Vec<String> = (1..=relation_ids_vec.len()).map(|i| dialect.placeholder(i)).collect();
+        let r_placeholders: Vec<String> = (1..=relation_ids_vec.len())
+            .map(|i| dialect.placeholder(i))
+            .collect();
         let r_sql = format!(
             "SELECT * FROM \"{}\" WHERE \"{}\" IN ({})",
-            r_meta.table_name, r_pk_col, r_placeholders.join(", ")
+            r_meta.table_name,
+            r_pk_col,
+            r_placeholders.join(", ")
         );
-        let r_bind_values: Vec<BindValue> = relation_ids_vec.iter().map(|&id| BindValue::I64(id)).collect();
+        let r_bind_values: Vec<BindValue> = relation_ids_vec
+            .iter()
+            .map(|&id| BindValue::I64(id))
+            .collect();
 
         db.record_query();
         let r_rows = db.conn().fetch_all(&r_sql, &r_bind_values).await?;
@@ -1122,10 +1147,14 @@ where
         return Ok(std::collections::HashMap::new());
     }
 
-    let placeholders: Vec<String> = (1..=parent_ids.len()).map(|i| dialect.placeholder(i)).collect();
+    let placeholders: Vec<String> = (1..=parent_ids.len())
+        .map(|i| dialect.placeholder(i))
+        .collect();
     let sql = format!(
         "SELECT * FROM \"{}\" WHERE \"{}\" IN ({})",
-        child_meta.table_name, relation.field_name, placeholders.join(", ")
+        child_meta.table_name,
+        relation.field_name,
+        placeholders.join(", ")
     );
     let bind_values: Vec<BindValue> = parent_ids.iter().map(|&id| BindValue::I64(id)).collect();
 
@@ -1388,7 +1417,12 @@ fn compile_expr_sql(
             } else {
                 let parts: Vec<String> = exprs
                     .iter()
-                    .map(|e| format!("({})", compile_expr_sql(e, field_to_col, params, param_idx, dialect)))
+                    .map(|e| {
+                        format!(
+                            "({})",
+                            compile_expr_sql(e, field_to_col, params, param_idx, dialect)
+                        )
+                    })
                     .collect();
                 parts.join(" AND ")
             }
@@ -1399,7 +1433,12 @@ fn compile_expr_sql(
             } else {
                 let parts: Vec<String> = exprs
                     .iter()
-                    .map(|e| format!("({})", compile_expr_sql(e, field_to_col, params, param_idx, dialect)))
+                    .map(|e| {
+                        format!(
+                            "({})",
+                            compile_expr_sql(e, field_to_col, params, param_idx, dialect)
+                        )
+                    })
                     .collect();
                 parts.join(" OR ")
             }
@@ -1421,7 +1460,9 @@ fn compile_expr_sql(
                 CompareOp::Gt => format!("{} > {}", lhs, rhs),
                 CompareOp::Gte => format!("{} >= {}", lhs, rhs),
                 CompareOp::Contains => format!("{} LIKE '%' || {} || '%'", lhs, rhs),
-                CompareOp::IContains => format!("{} {} '%' || {} || '%'", lhs, dialect.ilike(), rhs),
+                CompareOp::IContains => {
+                    format!("{} {} '%' || {} || '%'", lhs, dialect.ilike(), rhs)
+                }
                 CompareOp::StartsWith => format!("{} LIKE {} || '%'", lhs, rhs),
                 CompareOp::EndsWith => format!("{} LIKE '%' || {}", lhs, rhs),
                 CompareOp::IExact => format!("{} {} {}", lhs, dialect.ilike(), rhs),

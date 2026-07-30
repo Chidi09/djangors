@@ -25,24 +25,38 @@ impl DbRow {
         match self {
             DbRow::Pg(r) => r
                 .try_get::<Option<i64>, _>(idx)
-                .or_else(|_| r.try_get::<Option<i32>, _>(idx).map(|opt| opt.map(|v| v as i64)))
-                .or_else(|_| r.try_get::<Option<i16>, _>(idx).map(|opt| opt.map(|v| v as i64))),
+                .or_else(|_| {
+                    r.try_get::<Option<i32>, _>(idx)
+                        .map(|opt| opt.map(|v| v as i64))
+                })
+                .or_else(|_| {
+                    r.try_get::<Option<i16>, _>(idx)
+                        .map(|opt| opt.map(|v| v as i64))
+                }),
             DbRow::Sqlite(r) => r
                 .try_get::<Option<i64>, _>(idx)
-                .or_else(|_| r.try_get::<Option<i32>, _>(idx).map(|opt| opt.map(|v| v as i64)))
-                .or_else(|_| r.try_get::<Option<i16>, _>(idx).map(|opt| opt.map(|v| v as i64))),
+                .or_else(|_| {
+                    r.try_get::<Option<i32>, _>(idx)
+                        .map(|opt| opt.map(|v| v as i64))
+                })
+                .or_else(|_| {
+                    r.try_get::<Option<i16>, _>(idx)
+                        .map(|opt| opt.map(|v| v as i64))
+                }),
         }
     }
 
     /// Try decoding an optional f64 column by index.
     pub fn try_f64(&self, idx: usize) -> Result<Option<f64>, sqlx::Error> {
         match self {
-            DbRow::Pg(r) => r
-                .try_get::<Option<f64>, _>(idx)
-                .or_else(|_| r.try_get::<Option<f32>, _>(idx).map(|opt| opt.map(|v| v as f64))),
-            DbRow::Sqlite(r) => r
-                .try_get::<Option<f64>, _>(idx)
-                .or_else(|_| r.try_get::<Option<f32>, _>(idx).map(|opt| opt.map(|v| v as f64))),
+            DbRow::Pg(r) => r.try_get::<Option<f64>, _>(idx).or_else(|_| {
+                r.try_get::<Option<f32>, _>(idx)
+                    .map(|opt| opt.map(|v| v as f64))
+            }),
+            DbRow::Sqlite(r) => r.try_get::<Option<f64>, _>(idx).or_else(|_| {
+                r.try_get::<Option<f32>, _>(idx)
+                    .map(|opt| opt.map(|v| v as f64))
+            }),
         }
     }
 
@@ -73,29 +87,51 @@ impl DbRow {
         }
     }
 
+    /// Try decoding an optional byte vector column by index.
+    pub fn try_bytes(&self, idx: usize) -> Result<Option<Vec<u8>>, sqlx::Error> {
+        match self {
+            DbRow::Pg(r) => r.try_get(idx),
+            DbRow::Sqlite(r) => r.try_get(idx),
+        }
+    }
+
     /// Try decoding an optional i64 column by name.
     pub fn try_i64_by_name(&self, name: &str) -> Result<Option<i64>, sqlx::Error> {
         match self {
             DbRow::Pg(r) => r
                 .try_get::<Option<i64>, _>(name)
-                .or_else(|_| r.try_get::<Option<i32>, _>(name).map(|opt| opt.map(|v| v as i64)))
-                .or_else(|_| r.try_get::<Option<i16>, _>(name).map(|opt| opt.map(|v| v as i64))),
+                .or_else(|_| {
+                    r.try_get::<Option<i32>, _>(name)
+                        .map(|opt| opt.map(|v| v as i64))
+                })
+                .or_else(|_| {
+                    r.try_get::<Option<i16>, _>(name)
+                        .map(|opt| opt.map(|v| v as i64))
+                }),
             DbRow::Sqlite(r) => r
                 .try_get::<Option<i64>, _>(name)
-                .or_else(|_| r.try_get::<Option<i32>, _>(name).map(|opt| opt.map(|v| v as i64)))
-                .or_else(|_| r.try_get::<Option<i16>, _>(name).map(|opt| opt.map(|v| v as i64))),
+                .or_else(|_| {
+                    r.try_get::<Option<i32>, _>(name)
+                        .map(|opt| opt.map(|v| v as i64))
+                })
+                .or_else(|_| {
+                    r.try_get::<Option<i16>, _>(name)
+                        .map(|opt| opt.map(|v| v as i64))
+                }),
         }
     }
 
     /// Try decoding an optional f64 column by name.
     pub fn try_f64_by_name(&self, name: &str) -> Result<Option<f64>, sqlx::Error> {
         match self {
-            DbRow::Pg(r) => r
-                .try_get::<Option<f64>, _>(name)
-                .or_else(|_| r.try_get::<Option<f32>, _>(name).map(|opt| opt.map(|v| v as f64))),
-            DbRow::Sqlite(r) => r
-                .try_get::<Option<f64>, _>(name)
-                .or_else(|_| r.try_get::<Option<f32>, _>(name).map(|opt| opt.map(|v| v as f64))),
+            DbRow::Pg(r) => r.try_get::<Option<f64>, _>(name).or_else(|_| {
+                r.try_get::<Option<f32>, _>(name)
+                    .map(|opt| opt.map(|v| v as f64))
+            }),
+            DbRow::Sqlite(r) => r.try_get::<Option<f64>, _>(name).or_else(|_| {
+                r.try_get::<Option<f32>, _>(name)
+                    .map(|opt| opt.map(|v| v as f64))
+            }),
         }
     }
 
@@ -120,6 +156,14 @@ impl DbRow {
         &self,
         name: &str,
     ) -> Result<Option<chrono::DateTime<chrono::Utc>>, sqlx::Error> {
+        match self {
+            DbRow::Pg(r) => r.try_get(name),
+            DbRow::Sqlite(r) => r.try_get(name),
+        }
+    }
+
+    /// Try decoding an optional byte vector column by name.
+    pub fn try_bytes_by_name(&self, name: &str) -> Result<Option<Vec<u8>>, sqlx::Error> {
         match self {
             DbRow::Pg(r) => r.try_get(name),
             DbRow::Sqlite(r) => r.try_get(name),

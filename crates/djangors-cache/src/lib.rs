@@ -2,7 +2,7 @@
 //! Raw-byte caches, common backends, and explicitly opted-in response caching.
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use http_body_util::Full;
 use hyper::{Request, Response};
 use moka::future::Cache as MokaCache;
@@ -164,21 +164,38 @@ impl DatabaseCache {
         Self { db }
     }
     async fn ensure_table(&self) -> Result<(), CacheError> {
-        sqlx::query("CREATE TABLE IF NOT EXISTS djangors_cache_entries (key TEXT PRIMARY KEY, value BYTEA NOT NULL, expires_at TIMESTAMPTZ)").execute(self.db.pool()).await.map(|_| ()).map_err(|e| CacheError::Backend(e.to_string()))
+        let mut conn = self.db.conn();
+        let dialect = conn.dialect();
+        let bytea = dialect.bytea_type();
+        let sql = format!(
+            "CREATE TABLE IF NOT EXISTS djangors_cache_entries (key TEXT PRIMARY KEY, value {bytea} NOT NULL, expires_at TIMESTAMPTZ)"
+        );
+        conn.execute(&sql, &[])
+            .await
+            .map(|_| ())
+            .map_err(|e| CacheError::Backend(e.to_string()))
     }
 }
 #[async_trait]
 impl Cache for DatabaseCache {
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
         self.ensure_table().await?;
-        let row = sqlx::query_as::<_, (Vec<u8>, Option<DateTime<Utc>>)>(
-            "SELECT value, expires_at FROM djangors_cache_entries WHERE key = $1",
-        )
-        .bind(key)
-        .fetch_optional(self.db.pool())
-        .await
-        .map_err(|e| CacheError::Backend(e.to_string()))?;
-        if let Some((value, expiry)) = row {
+        let mut conn = self.db.conn();
+        let p1 = conn.dialect().placeholder(1);
+        let sql = format!("SELECT value, expires_at FROM djangors_cache_entries WHERE key = {p1}");
+        let params = vec![djangors_db::BindValue::Text(key.to_string())];
+        let row_opt = conn
+            .fetch_optional(&sql, &params)
+            .await
+            .map_err(|e| CacheError::Backend(e.to_string()))?;
+        if let Some(row) = row_opt {
+            let value = row
+                .try_bytes(0)
+                .map_err(|e| CacheError::Backend(e.to_string()))?
+                .unwrap_or_default();
+            let expiry = row
+                .try_datetime(1)
+                .map_err(|e| CacheError::Backend(e.to_string()))?;
             if expiry.is_none_or(|e| e > Utc::now()) {
                 return Ok(Some(value));
             }
@@ -194,13 +211,36 @@ impl Cache for DatabaseCache {
     ) -> Result<(), CacheError> {
         self.ensure_table().await?;
         let expires = ttl.map(|t| Utc::now() + chrono::Duration::from_std(t).unwrap_or_default());
-        sqlx::query("INSERT INTO djangors_cache_entries (key, value, expires_at) VALUES ($1, $2, $3) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at").bind(key).bind(value).bind(expires).execute(self.db.pool()).await.map(|_| ()).map_err(|e| CacheError::Backend(e.to_string()))
+        let mut conn = self.db.conn();
+        let dialect = conn.dialect();
+        let p1 = dialect.placeholder(1);
+        let p2 = dialect.placeholder(2);
+        let p3 = dialect.placeholder(3);
+        let sql = format!(
+            "INSERT INTO djangors_cache_entries (key, value, expires_at) VALUES ({p1}, {p2}, {p3}) \
+             ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, expires_at = EXCLUDED.expires_at"
+        );
+        let expires_param = match expires {
+            Some(dt) => djangors_db::BindValue::DateTime(dt),
+            None => djangors_db::BindValue::Null(djangors_db::NullKind::DateTime),
+        };
+        let params = vec![
+            djangors_db::BindValue::Text(key.to_string()),
+            djangors_db::BindValue::Bytes(value),
+            expires_param,
+        ];
+        conn.execute(&sql, &params)
+            .await
+            .map(|_| ())
+            .map_err(|e| CacheError::Backend(e.to_string()))
     }
     async fn delete(&self, key: &str) -> Result<(), CacheError> {
         self.ensure_table().await?;
-        sqlx::query("DELETE FROM djangors_cache_entries WHERE key = $1")
-            .bind(key)
-            .execute(self.db.pool())
+        let mut conn = self.db.conn();
+        let p1 = conn.dialect().placeholder(1);
+        let sql = format!("DELETE FROM djangors_cache_entries WHERE key = {p1}");
+        let params = vec![djangors_db::BindValue::Text(key.to_string())];
+        conn.execute(&sql, &params)
             .await
             .map(|_| ())
             .map_err(|e| CacheError::Backend(e.to_string()))

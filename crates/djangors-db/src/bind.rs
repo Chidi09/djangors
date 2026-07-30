@@ -15,6 +15,8 @@ pub enum NullKind {
     Bool,
     /// Timestamp NULL.
     DateTime,
+    /// Byte vector NULL.
+    Bytes,
 }
 
 /// A value that can be bound to a database query parameter across backends.
@@ -30,6 +32,8 @@ pub enum BindValue {
     Bool(bool),
     /// UTC Timestamp.
     DateTime(chrono::DateTime<chrono::Utc>),
+    /// Byte vector.
+    Bytes(Vec<u8>),
     /// Typed NULL value.
     Null(NullKind),
 }

@@ -24,7 +24,7 @@ pub use config::DatabaseConfig;
 #[doc(hidden)]
 pub use database::{isolation_level_sql, BoxFuture};
 pub use database::{Database, IsolationLevel};
-pub use dialect::Dialect;
+pub use dialect::{DatePart, Dialect};
 pub use error::DbError;
 pub use executor::{Conn, DbExecutor};
 pub use row::DbRow;

@@ -691,9 +691,15 @@ mod tests {
         impl FromRow for FixturesTestModel {
             fn from_row(row: &djangors_orm::DbRow) -> Result<Self, djangors_orm::OrmError> {
                 Ok(Self {
-                    id: row.try_i64_by_name("id")?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?,
-                    name: row.try_string_by_name("name")?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?,
-                    value: row.try_i64_by_name("value")?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?,
+                    id: row.try_i64_by_name("id")?.ok_or_else(|| {
+                        djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound)
+                    })?,
+                    name: row.try_string_by_name("name")?.ok_or_else(|| {
+                        djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound)
+                    })?,
+                    value: row.try_i64_by_name("value")?.ok_or_else(|| {
+                        djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound)
+                    })?,
                 })
             }
         }

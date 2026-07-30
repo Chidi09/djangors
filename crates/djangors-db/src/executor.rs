@@ -32,12 +32,14 @@ fn build_pg_query<'q>(
             BindValue::Text(v) => q.bind(v.as_str()),
             BindValue::Bool(v) => q.bind(*v),
             BindValue::DateTime(v) => q.bind(*v),
+            BindValue::Bytes(v) => q.bind(v.as_slice()),
             BindValue::Null(kind) => match kind {
                 NullKind::I64 => q.bind(None::<i64>),
                 NullKind::F64 => q.bind(None::<f64>),
                 NullKind::Text => q.bind(None::<String>),
                 NullKind::Bool => q.bind(None::<bool>),
                 NullKind::DateTime => q.bind(None::<chrono::DateTime<chrono::Utc>>),
+                NullKind::Bytes => q.bind(None::<Vec<u8>>),
             },
         };
     }
@@ -56,12 +58,14 @@ fn build_sqlite_query<'q>(
             BindValue::Text(v) => q.bind(v.as_str()),
             BindValue::Bool(v) => q.bind(*v),
             BindValue::DateTime(v) => q.bind(*v),
+            BindValue::Bytes(v) => q.bind(v.as_slice()),
             BindValue::Null(kind) => match kind {
                 NullKind::I64 => q.bind(None::<i64>),
                 NullKind::F64 => q.bind(None::<f64>),
                 NullKind::Text => q.bind(None::<String>),
                 NullKind::Bool => q.bind(None::<bool>),
                 NullKind::DateTime => q.bind(None::<chrono::DateTime<chrono::Utc>>),
+                NullKind::Bytes => q.bind(None::<Vec<u8>>),
             },
         };
     }

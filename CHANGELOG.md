@@ -453,3 +453,42 @@ primary keys.
 - Therefore SQLite currently supports the ORM query path, not a whole running admin site.
 
 400 tests pass.
+
+### Phase 13.2: Dialect-aware raw SQL
+
+13.1 made the ORM dual-backend, but every crate that drops to raw SQL still wrote `$N`
+placeholders and called `Database::pool()`, which panics on a SQLite handle — so an app on SQLite
+got a working ORM and an admin that panicked on the first request. This closes that.
+
+**Scope correction.** 13.1's notes said "~555 raw `sqlx::query` sites". That count included
+test-setup SQL. The *production* surface was **31**: admin 4, auth 3, tasks 11, guardian 5,
+contenttypes 4, cache 4. All are now dialect-aware.
+
+**Two cases were not mechanical:**
+
+- **`EXTRACT` (admin date_hierarchy).** SQLite has no `EXTRACT`. Added
+  `Dialect::extract_date_part(DatePart, col)`: `EXTRACT(YEAR FROM col)::int` on Postgres,
+  `CAST(strftime('%Y', col) AS INTEGER)` on SQLite. The `CAST` is load-bearing — `strftime`
+  returns a zero-padded *string*, so without it the comparison against a bound integer silently
+  matches nothing.
+- **`pg_advisory_xact_lock` (tasks).** SQLite has no advisory locks and does not need one here: it
+  permits a single writer and a write transaction holds an exclusive database lock for its
+  duration, so the interleaving the advisory lock defends against cannot occur. The lock is now
+  issued only under `Dialect::Postgres`, with that reasoning recorded at the call site rather than
+  left as a silent omission.
+
+Also added `Dialect::bytea_type()` (`BYTEA`/`BLOB`) for djangors-cache's DDL.
+
+**Still Postgres-only (deferred):** `dj makemigrations` and migration *plan* generation, and the
+`djangors-test` harness (whose job is provisioning isolated Postgres databases). Neither is an
+application-serving path.
+
+**Review finding.** The dispatch added a cross-process lock to
+`examples/polls/tests/voting.rs` after seeing that test fail with `401 "user not found"`. That
+failure was an artifact of two `cargo test` runs executing concurrently against the same database
+(the auth suite drops and recreates `auth_user` mid-flight). Verified by running the suite with the
+change reverted: 401 tests pass. Reverted, since it would otherwise have shipped two
+`std::mem::forget` leaks and an unneeded dev-dependency into an example app that users read as
+reference code.
+
+401 tests pass.

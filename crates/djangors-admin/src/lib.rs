@@ -1625,20 +1625,118 @@ async fn admin_index(
         });
     }
 
-    let recent_rows_res: Result<Vec<LogEntry>, _> = sqlx::query_as(sqlx::AssertSqlSafe(
+    let mut conn = db.conn();
+    let p1 = conn.dialect().placeholder(1);
+    let sql = format!(
         "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, \
-         action_flag, change_message, field_diff FROM djangors_admin_log WHERE user_id = $1 \
-         ORDER BY action_time DESC LIMIT 10",
-    ))
-    .bind(user.id)
-    .fetch_all(db.pool())
-    .await;
+         action_flag, change_message, field_diff FROM djangors_admin_log WHERE user_id = {p1} \
+         ORDER BY action_time DESC LIMIT 10"
+    );
+    let params = vec![djangors_db::BindValue::I64(user.id)];
+    let db_rows_res = conn.fetch_all(&sql, &params).await;
 
-    let recent_rows = match recent_rows_res {
-        Ok(rows) => rows,
+    let recent_rows = match db_rows_res {
+        Ok(rows) => {
+            let mut entries = Vec::with_capacity(rows.len());
+            let mut err = None;
+            for r in &rows {
+                let id = match r.try_i64(0) {
+                    Ok(v) => v.unwrap_or_default(),
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                let user_id = match r.try_i64(1) {
+                    Ok(v) => v.unwrap_or_default(),
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                let action_time = match r.try_datetime(2) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => {
+                        err = Some(sqlx::Error::Decode("missing action_time".into()));
+                        break;
+                    }
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                let app_label = match r.try_string(3) {
+                    Ok(v) => v.unwrap_or_default(),
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                let model_name = match r.try_string(4) {
+                    Ok(v) => v.unwrap_or_default(),
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                let object_id = match r.try_i64(5) {
+                    Ok(v) => v.unwrap_or_default(),
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                let object_repr = match r.try_string(6) {
+                    Ok(v) => v.unwrap_or_default(),
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                let action_flag = match r.try_i64(7) {
+                    Ok(v) => v.unwrap_or_default() as i32,
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                let change_message = match r.try_string(8) {
+                    Ok(v) => v.unwrap_or_default(),
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                let field_diff = match r.try_string(9) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        err = Some(e);
+                        break;
+                    }
+                };
+                entries.push(LogEntry {
+                    id,
+                    user_id,
+                    action_time,
+                    app_label,
+                    model_name,
+                    object_id,
+                    object_repr,
+                    action_flag,
+                    change_message,
+                    field_diff,
+                });
+            }
+            if let Some(e) = err {
+                return Err(DjangorsError::Internal(e.to_string()));
+            }
+            entries
+        }
         Err(e) => {
             let err_str = e.to_string();
-            if err_str.contains("relation \"djangors_admin_log\" does not exist") {
+            if err_str.contains("djangors_admin_log")
+                && (err_str.contains("does not exist") || err_str.contains("no such table"))
+            {
                 Vec::new()
             } else {
                 return Err(DjangorsError::Internal(err_str));
@@ -2673,17 +2771,25 @@ fn collect_related_objects_with_depth<'a>(
                 if (relation.target)().table_name != target_meta.table_name {
                     continue;
                 }
+                let mut conn = db.conn();
+                let p1 = conn.dialect().placeholder(1);
                 let sql = format!(
-                    "SELECT COUNT(*) FROM {} WHERE {} = $1",
+                    "SELECT COUNT(*) FROM {} WHERE {} = {p1}",
                     related_meta.table_name, relation.field_name
                 );
-                let count_result: Result<i64, _> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
-                    .bind(pk)
-                    .fetch_one(db.pool())
-                    .await;
+                let params = vec![djangors_db::BindValue::I64(pk)];
+                let count_result = match conn.fetch_one(&sql, &params).await {
+                    Ok(row) => row.try_i64(0).map(|opt| opt.unwrap_or(0)),
+                    Err(e) => Err(e),
+                };
                 let count = match count_result {
                     Ok(c) => c,
-                    Err(e) if e.to_string().contains("does not exist") => continue,
+                    Err(e)
+                        if e.to_string().contains("does not exist")
+                            || e.to_string().contains("no such table") =>
+                    {
+                        continue
+                    }
                     Err(e) => return Err(DjangorsError::Internal(e.to_string())),
                 };
                 if count > 0 {
@@ -2727,44 +2833,49 @@ async fn date_hierarchy_drilldown_values(
     year: Option<i32>,
     month: Option<u32>,
 ) -> Result<Vec<i32>, DjangorsError> {
-    let (sql, bind_year, bind_month): (String, Option<i32>, Option<i32>) = match (year, month) {
-        (None, _) => (
-            format!(
-                "SELECT DISTINCT EXTRACT(YEAR FROM {col})::int AS v FROM {table_name} \
-                 WHERE {col} IS NOT NULL ORDER BY 1"
-            ),
-            None,
-            None,
+    let mut conn = db.conn();
+    let dialect = conn.dialect();
+    let year_expr = dialect.extract_date_part(djangors_db::DatePart::Year, col);
+    let month_expr = dialect.extract_date_part(djangors_db::DatePart::Month, col);
+    let day_expr = dialect.extract_date_part(djangors_db::DatePart::Day, col);
+
+    let mut params = Vec::new();
+    let sql = match (year, month) {
+        (None, _) => format!(
+            "SELECT DISTINCT {year_expr} AS v FROM {table_name} WHERE {col} IS NOT NULL ORDER BY 1"
         ),
-        (Some(y), None) => (
+        (Some(y), None) => {
+            let p1 = dialect.placeholder(1);
+            params.push(djangors_db::BindValue::I64(y as i64));
             format!(
-                "SELECT DISTINCT EXTRACT(MONTH FROM {col})::int AS v FROM {table_name} \
-                 WHERE {col} IS NOT NULL AND EXTRACT(YEAR FROM {col})::int = $1 ORDER BY 1"
-            ),
-            Some(y),
-            None,
-        ),
-        (Some(y), Some(m)) => (
+                "SELECT DISTINCT {month_expr} AS v FROM {table_name} WHERE {col} IS NOT NULL AND {year_expr} = {p1} ORDER BY 1"
+            )
+        }
+        (Some(y), Some(m)) => {
+            let p1 = dialect.placeholder(1);
+            let p2 = dialect.placeholder(2);
+            params.push(djangors_db::BindValue::I64(y as i64));
+            params.push(djangors_db::BindValue::I64(m as i64));
             format!(
-                "SELECT DISTINCT EXTRACT(DAY FROM {col})::int AS v FROM {table_name} \
-                 WHERE {col} IS NOT NULL AND EXTRACT(YEAR FROM {col})::int = $1 \
-                 AND EXTRACT(MONTH FROM {col})::int = $2 ORDER BY 1"
-            ),
-            Some(y),
-            Some(m as i32),
-        ),
+                "SELECT DISTINCT {day_expr} AS v FROM {table_name} WHERE {col} IS NOT NULL AND {year_expr} = {p1} AND {month_expr} = {p2} ORDER BY 1"
+            )
+        }
     };
-    let mut query = sqlx::query_scalar(sqlx::AssertSqlSafe(sql));
-    if let Some(y) = bind_year {
-        query = query.bind(y);
-    }
-    if let Some(m) = bind_month {
-        query = query.bind(m);
-    }
-    query
-        .fetch_all(db.pool())
+    let rows = conn
+        .fetch_all(&sql, &params)
         .await
-        .map_err(|e| DjangorsError::Internal(e.to_string()))
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+
+    let mut result = Vec::new();
+    for row in rows {
+        if let Some(val) = row
+            .try_i64(0)
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+        {
+            result.push(val as i32);
+        }
+    }
+    Ok(result)
 }
 
 #[derive(serde::Serialize)]
@@ -2994,26 +3105,61 @@ async fn admin_history(
 
     let meta = admin.model_meta();
 
-    let rows: Vec<(
-        i64,
-        String,
-        chrono::DateTime<chrono::Utc>,
-        i32,
-        String,
-        Option<String>,
-    )> = sqlx::query_as(sqlx::AssertSqlSafe(
+    let mut conn = db.conn();
+    let p1 = conn.dialect().placeholder(1);
+    let p2 = conn.dialect().placeholder(2);
+    let p3 = conn.dialect().placeholder(3);
+    let sql = format!(
         "SELECT l.user_id, COALESCE(u.username, '?'), l.action_time, l.action_flag, l.change_message, l.field_diff \
          FROM djangors_admin_log l \
          LEFT JOIN auth_user u ON u.id = l.user_id \
-         WHERE l.app_label = $1 AND l.model_name = $2 AND l.object_id = $3 \
-         ORDER BY l.action_time DESC",
-    ))
-    .bind(meta.app_label)
-    .bind(meta.struct_name)
-    .bind(pk)
-    .fetch_all(db.pool())
-    .await
-    .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+         WHERE l.app_label = {p1} AND l.model_name = {p2} AND l.object_id = {p3} \
+         ORDER BY l.action_time DESC"
+    );
+    let params = vec![
+        djangors_db::BindValue::Text(meta.app_label.to_string()),
+        djangors_db::BindValue::Text(meta.struct_name.to_string()),
+        djangors_db::BindValue::I64(pk),
+    ];
+    let db_rows = conn
+        .fetch_all(&sql, &params)
+        .await
+        .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+
+    let mut rows = Vec::with_capacity(db_rows.len());
+    for row in db_rows {
+        let user_id = row
+            .try_i64(0)
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+            .unwrap_or_default();
+        let username = row
+            .try_string(1)
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+            .unwrap_or_else(|| "?".to_string());
+        let action_time = row
+            .try_datetime(2)
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+            .ok_or_else(|| DjangorsError::Internal("missing action_time".to_string()))?;
+        let action_flag = row
+            .try_i64(3)
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+            .unwrap_or_default() as i32;
+        let change_message = row
+            .try_string(4)
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?
+            .unwrap_or_default();
+        let field_diff = row
+            .try_string(5)
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        rows.push((
+            user_id,
+            username,
+            action_time,
+            action_flag,
+            change_message,
+            field_diff,
+        ));
+    }
 
     let history: Vec<HistoryEntryView> = rows
         .into_iter()
@@ -9220,5 +9366,54 @@ mod tests {
             .execute(db.pool())
             .await;
         }
+    }
+
+    #[tokio::test]
+    async fn test_date_hierarchy_drilldown_sqlite() {
+        let config = djangors_db::DatabaseConfig::new("sqlite::memory:");
+        let db = djangors_db::Database::connect(&config).await.unwrap();
+        db.conn()
+            .execute(
+                "CREATE TABLE test_events (id INTEGER PRIMARY KEY, created_at TEXT NOT NULL)",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO test_events (id, created_at) VALUES (1, '2023-05-15 10:00:00')",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        db.conn()
+            .execute(
+                "INSERT INTO test_events (id, created_at) VALUES (2, '2025-11-20 14:30:00')",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let years = date_hierarchy_drilldown_values(&db, "test_events", "created_at", None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(years, vec![2023, 2025]);
+
+        let months =
+            date_hierarchy_drilldown_values(&db, "test_events", "created_at", Some(2023), None)
+                .await
+                .unwrap();
+
+        assert_eq!(months, vec![5]);
+
+        let days =
+            date_hierarchy_drilldown_values(&db, "test_events", "created_at", Some(2023), Some(5))
+                .await
+                .unwrap();
+
+        assert_eq!(days, vec![15]);
     }
 }

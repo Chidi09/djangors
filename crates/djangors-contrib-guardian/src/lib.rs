@@ -72,20 +72,33 @@ pub async fn has_perm_for_object(
         return Ok(true);
     }
 
-    let count: i64 = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
+    let mut conn = db.conn();
+    let dialect = conn.dialect();
+    let p1 = dialect.placeholder(1);
+    let p2 = dialect.placeholder(2);
+    let p3 = dialect.placeholder(3);
+    let p4 = dialect.placeholder(4);
+    let p5 = dialect.placeholder(5);
+    let sql = format!(
         "SELECT COUNT(*) FROM djangors_object_permission op \
          JOIN auth_permission p ON p.id = op.permission \
-         WHERE op.\"user\" = $1 AND p.codename = $2 AND op.app_label = $3 AND op.model_name = $4 AND op.object_id = $5"
-            .to_string(),
-    ))
-    .bind(user_id)
-    .bind(codename)
-    .bind(app_label)
-    .bind(model_name)
-    .bind(object_id)
-    .fetch_one(db.pool())
-    .await
-    .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+         WHERE op.\"user\" = {p1} AND p.codename = {p2} AND op.app_label = {p3} AND op.model_name = {p4} AND op.object_id = {p5}"
+    );
+    let params = vec![
+        djangors_db::BindValue::I64(user_id),
+        djangors_db::BindValue::Text(codename.to_string()),
+        djangors_db::BindValue::Text(app_label.to_string()),
+        djangors_db::BindValue::Text(model_name.to_string()),
+        djangors_db::BindValue::I64(object_id),
+    ];
+    let row = conn
+        .fetch_one(&sql, &params)
+        .await
+        .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+    let count = row
+        .try_i64(0)
+        .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?
+        .unwrap_or(0);
 
     Ok(count > 0)
 }
@@ -99,30 +112,53 @@ pub async fn grant_object_permission(
     model_name: &str,
     object_id: i64,
 ) -> Result<ObjectPermission, djangors_auth::AuthError> {
-    let perm_id: i64 = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
-        "SELECT id FROM auth_permission WHERE codename = $1".to_string(),
-    ))
-    .bind(codename)
-    .fetch_optional(db.pool())
-    .await
-    .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?
-    .ok_or_else(|| {
-        djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(
-            djangors_orm::sqlx::Error::RowNotFound,
-        ))
-    })?;
+    let mut conn = db.conn();
+    let dialect = conn.dialect();
+    let p1 = dialect.placeholder(1);
+    let sql1 = format!("SELECT id FROM auth_permission WHERE codename = {p1}");
+    let params1 = vec![djangors_db::BindValue::Text(codename.to_string())];
+    let perm_row = conn
+        .fetch_optional(&sql1, &params1)
+        .await
+        .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?
+        .ok_or_else(|| {
+            djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(
+                djangors_orm::sqlx::Error::RowNotFound,
+            ))
+        })?;
+    let perm_id = perm_row
+        .try_i64(0)
+        .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?
+        .ok_or_else(|| {
+            djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(
+                djangors_orm::sqlx::Error::RowNotFound,
+            ))
+        })?;
 
-    let existing: Option<i64> = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
-        "SELECT id FROM djangors_object_permission WHERE \"user\" = $1 AND permission = $2 AND app_label = $3 AND model_name = $4 AND object_id = $5".to_string(),
-    ))
-    .bind(user_id)
-    .bind(perm_id)
-    .bind(app_label)
-    .bind(model_name)
-    .bind(object_id)
-    .fetch_optional(db.pool())
-    .await
-    .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+    let p2 = dialect.placeholder(2);
+    let p3 = dialect.placeholder(3);
+    let p4 = dialect.placeholder(4);
+    let p5 = dialect.placeholder(5);
+    let sql2 = format!(
+        "SELECT id FROM djangors_object_permission WHERE \"user\" = {p1} AND permission = {p2} AND app_label = {p3} AND model_name = {p4} AND object_id = {p5}"
+    );
+    let params2 = vec![
+        djangors_db::BindValue::I64(user_id),
+        djangors_db::BindValue::I64(perm_id),
+        djangors_db::BindValue::Text(app_label.to_string()),
+        djangors_db::BindValue::Text(model_name.to_string()),
+        djangors_db::BindValue::I64(object_id),
+    ];
+    let exist_row = conn
+        .fetch_optional(&sql2, &params2)
+        .await
+        .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+    let existing = match exist_row {
+        Some(r) => r
+            .try_i64(0)
+            .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?,
+        None => None,
+    };
 
     if let Some(id) = existing {
         return Ok(ObjectPermission {
@@ -159,31 +195,46 @@ pub async fn revoke_object_permission(
     model_name: &str,
     object_id: i64,
 ) -> Result<bool, djangors_auth::AuthError> {
-    let perm_id: Option<i64> = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
-        "SELECT id FROM auth_permission WHERE codename = $1".to_string(),
-    ))
-    .bind(codename)
-    .fetch_optional(db.pool())
-    .await
-    .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+    let mut conn = db.conn();
+    let dialect = conn.dialect();
+    let p1 = dialect.placeholder(1);
+    let sql1 = format!("SELECT id FROM auth_permission WHERE codename = {p1}");
+    let params1 = vec![djangors_db::BindValue::Text(codename.to_string())];
+    let perm_row = conn
+        .fetch_optional(&sql1, &params1)
+        .await
+        .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+    let perm_id = match perm_row {
+        Some(r) => r
+            .try_i64(0)
+            .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?,
+        None => None,
+    };
 
     let Some(p_id) = perm_id else {
         return Ok(false);
     };
 
-    let result = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(
-        "DELETE FROM djangors_object_permission WHERE \"user\" = $1 AND permission = $2 AND app_label = $3 AND model_name = $4 AND object_id = $5".to_string(),
-    ))
-    .bind(user_id)
-    .bind(p_id)
-    .bind(app_label)
-    .bind(model_name)
-    .bind(object_id)
-    .execute(db.pool())
-    .await
-    .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+    let p2 = dialect.placeholder(2);
+    let p3 = dialect.placeholder(3);
+    let p4 = dialect.placeholder(4);
+    let p5 = dialect.placeholder(5);
+    let sql2 = format!(
+        "DELETE FROM djangors_object_permission WHERE \"user\" = {p1} AND permission = {p2} AND app_label = {p3} AND model_name = {p4} AND object_id = {p5}"
+    );
+    let params2 = vec![
+        djangors_db::BindValue::I64(user_id),
+        djangors_db::BindValue::I64(p_id),
+        djangors_db::BindValue::Text(app_label.to_string()),
+        djangors_db::BindValue::Text(model_name.to_string()),
+        djangors_db::BindValue::I64(object_id),
+    ];
+    let rows_affected = conn
+        .execute(&sql2, &params2)
+        .await
+        .map_err(|e| djangors_auth::AuthError::Database(djangors_orm::OrmError::Query(e)))?;
 
-    Ok(result.rows_affected() > 0)
+    Ok(rows_affected > 0)
 }
 
 #[cfg(test)]

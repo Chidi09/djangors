@@ -9,6 +9,17 @@ pub enum Dialect {
     Sqlite,
 }
 
+/// Part of a date/datetime to extract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatePart {
+    /// Year part.
+    Year,
+    /// Month part (1..=12).
+    Month,
+    /// Day part (1..=31).
+    Day,
+}
+
 impl Dialect {
     /// Returns the parameter placeholder for this dialect.
     ///
@@ -45,6 +56,38 @@ impl Dialect {
         match self {
             Dialect::Postgres => format!("{}::float8", expr),
             Dialect::Sqlite => format!("CAST({} AS REAL)", expr),
+        }
+    }
+
+    /// SQL extracting an integer date part (`Year`, `Month`, `Day`) from `col`.
+    pub fn extract_date_part(&self, part: DatePart, col: &str) -> String {
+        match self {
+            Dialect::Postgres => {
+                let part_str = match part {
+                    DatePart::Year => "YEAR",
+                    DatePart::Month => "MONTH",
+                    DatePart::Day => "DAY",
+                };
+                format!("EXTRACT({part_str} FROM {col})::int")
+            }
+            Dialect::Sqlite => {
+                let fmt = match part {
+                    DatePart::Year => "%Y",
+                    DatePart::Month => "%m",
+                    DatePart::Day => "%d",
+                };
+                format!("CAST(strftime('{fmt}', {col}) AS INTEGER)")
+            }
+        }
+    }
+
+    /// Returns the binary blob data type name for DDL.
+    ///
+    /// `BYTEA` for Postgres; `BLOB` for SQLite.
+    pub fn bytea_type(&self) -> &'static str {
+        match self {
+            Dialect::Postgres => "BYTEA",
+            Dialect::Sqlite => "BLOB",
         }
     }
 }

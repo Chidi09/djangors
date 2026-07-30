@@ -601,33 +601,48 @@ pub async fn has_perm(
     user_id: i64,
     codename: &str,
 ) -> Result<bool, AuthError> {
-    let direct: i64 = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
+    let mut conn = db.conn();
+    let p1 = conn.dialect().placeholder(1);
+    let p2 = conn.dialect().placeholder(2);
+    let sql1 = format!(
         "SELECT COUNT(*) FROM auth_user_permissions up \
          JOIN auth_permission p ON p.id = up.permission \
-         WHERE up.\"user\" = $1 AND p.codename = $2"
-            .to_string(),
-    ))
-    .bind(user_id)
-    .bind(codename)
-    .fetch_one(db.pool())
-    .await
-    .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+         WHERE up.\"user\" = {p1} AND p.codename = {p2}"
+    );
+    let params1 = vec![
+        djangors_db::BindValue::I64(user_id),
+        djangors_db::BindValue::Text(codename.to_string()),
+    ];
+    let row = conn
+        .fetch_one(&sql1, &params1)
+        .await
+        .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+    let direct = row
+        .try_i64(0)
+        .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?
+        .unwrap_or(0);
     if direct > 0 {
         return Ok(true);
     }
 
-    let via_group: i64 = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
+    let sql2 = format!(
         "SELECT COUNT(*) FROM auth_user_groups ug \
          JOIN auth_group_permissions gp ON gp.\"group\" = ug.\"group\" \
          JOIN auth_permission p ON p.id = gp.permission \
-         WHERE ug.\"user\" = $1 AND p.codename = $2"
-            .to_string(),
-    ))
-    .bind(user_id)
-    .bind(codename)
-    .fetch_one(db.pool())
-    .await
-    .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+         WHERE ug.\"user\" = {p1} AND p.codename = {p2}"
+    );
+    let params2 = vec![
+        djangors_db::BindValue::I64(user_id),
+        djangors_db::BindValue::Text(codename.to_string()),
+    ];
+    let row2 = conn
+        .fetch_one(&sql2, &params2)
+        .await
+        .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+    let via_group = row2
+        .try_i64(0)
+        .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?
+        .unwrap_or(0);
     Ok(via_group > 0)
 }
 
@@ -642,6 +657,13 @@ pub async fn has_perm(
 /// needing to track that distinction).
 pub async fn sync_permissions(db: &djangors_db::Database) -> Result<usize, AuthError> {
     let mut count = 0;
+    let mut conn = db.conn();
+    let p1 = conn.dialect().placeholder(1);
+    let p2 = conn.dialect().placeholder(2);
+    let sql = format!(
+        "INSERT INTO auth_permission (codename, name) VALUES ({p1}, {p2}) \
+         ON CONFLICT (codename) DO NOTHING"
+    );
     for meta in djangors_orm::meta::all_registered_models() {
         for action in ["view", "add", "change", "delete"] {
             let codename = format!(
@@ -651,16 +673,13 @@ pub async fn sync_permissions(db: &djangors_db::Database) -> Result<usize, AuthE
                 meta.struct_name.to_lowercase()
             );
             let name = format!("Can {} {}", action, meta.struct_name.to_lowercase());
-            djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(
-                "INSERT INTO auth_permission (codename, name) VALUES ($1, $2) \
-                 ON CONFLICT (codename) DO NOTHING"
-                    .to_string(),
-            ))
-            .bind(&codename)
-            .bind(&name)
-            .execute(db.pool())
-            .await
-            .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?;
+            let params = vec![
+                djangors_db::BindValue::Text(codename),
+                djangors_db::BindValue::Text(name),
+            ];
+            conn.execute(&sql, &params)
+                .await
+                .map_err(|e| AuthError::Database(djangors_orm::OrmError::Query(e)))?;
             count += 1;
         }
     }

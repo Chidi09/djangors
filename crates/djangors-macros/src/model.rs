@@ -491,22 +491,54 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 field_meta_tokens,
             });
             let from_row_code = match (last_ident_str.as_deref(), nullable) {
-                (Some("String"), true) => quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
-                (Some("String"), false) => quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
-                (Some("i64"), true) => quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
-                (Some("i64"), false) => quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
-                (Some("i32"), true) => quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.map(|v| v as i32) },
-                (Some("i32"), false) => quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? as i32 },
-                (Some("f64"), true) => quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
-                (Some("f64"), false) => quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
-                (Some("f32"), true) => quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.map(|v| v as f32) },
-                (Some("f32"), false) => quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? as f32 },
-                (Some("bool"), true) => quote! { row.try_bool_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
-                (Some("bool"), false) => quote! { row.try_bool_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
-                (Some("DateTime"), true) => quote! { row.try_datetime_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
-                (Some("DateTime"), false) => quote! { row.try_datetime_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
-                (_, true) => quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)? },
-                (_, false) => quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? },
+                (Some("String"), true) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)? }
+                }
+                (Some("String"), false) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? }
+                }
+                (Some("i64"), true) => {
+                    quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)? }
+                }
+                (Some("i64"), false) => {
+                    quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? }
+                }
+                (Some("i32"), true) => {
+                    quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.map(|v| v as i32) }
+                }
+                (Some("i32"), false) => {
+                    quote! { row.try_i64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? as i32 }
+                }
+                (Some("f64"), true) => {
+                    quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)? }
+                }
+                (Some("f64"), false) => {
+                    quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? }
+                }
+                (Some("f32"), true) => {
+                    quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.map(|v| v as f32) }
+                }
+                (Some("f32"), false) => {
+                    quote! { row.try_f64_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? as f32 }
+                }
+                (Some("bool"), true) => {
+                    quote! { row.try_bool_by_name(#final_column).map_err(djangors_orm::OrmError::from)? }
+                }
+                (Some("bool"), false) => {
+                    quote! { row.try_bool_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? }
+                }
+                (Some("DateTime"), true) => {
+                    quote! { row.try_datetime_by_name(#final_column).map_err(djangors_orm::OrmError::from)? }
+                }
+                (Some("DateTime"), false) => {
+                    quote! { row.try_datetime_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? }
+                }
+                (_, true) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)? }
+                }
+                (_, false) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? }
+                }
             };
             from_row_assignments.push(quote! {
                 #field_ident: #from_row_code
@@ -628,10 +660,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
 
     // 5. Generate save, update, delete SQL building & binds
     let save_fields: Vec<&ModelField> = model_fields.iter().filter(|f| !f.is_auto).collect();
-    let save_cols_vec: Vec<String> = save_fields
-        .iter()
-        .map(|f| f.column_name.clone())
-        .collect();
+    let save_cols_vec: Vec<String> = save_fields.iter().map(|f| f.column_name.clone()).collect();
 
     let save_bind_stmts = save_fields.iter().map(|f| {
         let val_expr = field_value_expr(f);
@@ -639,7 +668,9 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             "String" => quote! { djangors_orm::NullKind::Text },
             "f64" | "f32" => quote! { djangors_orm::NullKind::F64 },
             "bool" => quote! { djangors_orm::NullKind::Bool },
-            "chrono :: DateTime < chrono :: Utc >" | "DateTime < Utc >" | "DateTime" => quote! { djangors_orm::NullKind::DateTime },
+            "chrono :: DateTime < chrono :: Utc >" | "DateTime < Utc >" | "DateTime" => {
+                quote! { djangors_orm::NullKind::DateTime }
+            }
             _ => quote! { djangors_orm::NullKind::I64 },
         };
         quote! {
@@ -656,7 +687,10 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     let pk_col_str = pk_field.column_name.clone();
     let update_fields: Vec<&ModelField> =
         model_fields.iter().filter(|f| !f.is_primary_key).collect();
-    let update_cols_vec: Vec<String> = update_fields.iter().map(|f| f.column_name.clone()).collect();
+    let update_cols_vec: Vec<String> = update_fields
+        .iter()
+        .map(|f| f.column_name.clone())
+        .collect();
 
     let update_bind_stmts = update_fields
         .iter()

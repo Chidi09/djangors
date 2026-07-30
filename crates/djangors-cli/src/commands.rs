@@ -65,7 +65,11 @@ pub(crate) fn resolve_core_dependency() -> CoreDependency {
 /// parameter instead of hardcoding the compile-time path, so both branches (a real sibling
 /// checkout present vs. absent) can be exercised directly against a real temp directory.
 fn resolve_core_dependency_at(crates_dir: std::path::PathBuf) -> CoreDependency {
-    if crates_dir.join("djangors-core").join("Cargo.toml").is_file() {
+    if crates_dir
+        .join("djangors-core")
+        .join("Cargo.toml")
+        .is_file()
+    {
         CoreDependency::Path(crates_dir)
     } else {
         CoreDependency::Version(env!("CARGO_PKG_VERSION"))
@@ -95,7 +99,10 @@ pub fn new(name: &str) -> Result<(), String> {
 
     let djangors_core_dep = match resolve_core_dependency() {
         CoreDependency::Path(crates_dir) => {
-            format!("{{ path = \"{}/djangors-core\" }}", crates_dir.to_string_lossy())
+            format!(
+                "{{ path = \"{}/djangors-core\" }}",
+                crates_dir.to_string_lossy()
+            )
         }
         CoreDependency::Version(version) => format!("\"{version}\""),
     };

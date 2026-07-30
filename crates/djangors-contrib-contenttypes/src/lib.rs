@@ -46,17 +46,22 @@ pub enum ContentTypeError {
 /// Ensures one content-type row exists for every registered model.
 pub async fn sync_content_types(db: &djangors_db::Database) -> Result<usize, ContentTypeError> {
     let mut count = 0;
+    let mut conn = db.conn();
+    let dialect = conn.dialect();
+    let p1 = dialect.placeholder(1);
+    let p2 = dialect.placeholder(2);
+    let sql = format!(
+        "INSERT INTO djangors_content_type (app_label, model_name) VALUES ({p1}, {p2}) \
+         ON CONFLICT (app_label, model_name) DO NOTHING"
+    );
     for meta in djangors_orm::meta::all_registered_models() {
-        djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(
-            "INSERT INTO djangors_content_type (app_label, model_name) VALUES ($1, $2) \
-             ON CONFLICT (app_label, model_name) DO NOTHING"
-                .to_string(),
-        ))
-        .bind(meta.app_label)
-        .bind(meta.struct_name)
-        .execute(db.pool())
-        .await
-        .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?;
+        let params = vec![
+            djangors_db::BindValue::Text(meta.app_label.to_string()),
+            djangors_db::BindValue::Text(meta.struct_name.to_string()),
+        ];
+        conn.execute(&sql, &params)
+            .await
+            .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?;
         count += 1;
     }
     Ok(count)
@@ -68,25 +73,37 @@ pub async fn generic_key_for<T: djangors_orm::Model>(
     object_id: i64,
 ) -> Result<GenericForeignKey, ContentTypeError> {
     let meta = T::meta();
-    djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(
-        "INSERT INTO djangors_content_type (app_label, model_name) VALUES ($1, $2) \
+    let mut conn = db.conn();
+    let dialect = conn.dialect();
+    let p1 = dialect.placeholder(1);
+    let p2 = dialect.placeholder(2);
+    let sql_ins = format!(
+        "INSERT INTO djangors_content_type (app_label, model_name) VALUES ({p1}, {p2}) \
          ON CONFLICT (app_label, model_name) DO NOTHING"
-            .to_string(),
-    ))
-    .bind(meta.app_label)
-    .bind(meta.struct_name)
-    .execute(db.pool())
-    .await
-    .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?;
+    );
+    let params = vec![
+        djangors_db::BindValue::Text(meta.app_label.to_string()),
+        djangors_db::BindValue::Text(meta.struct_name.to_string()),
+    ];
+    conn.execute(&sql_ins, &params)
+        .await
+        .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?;
 
-    let content_type_id: i64 = djangors_orm::sqlx::query_scalar(djangors_orm::sqlx::AssertSqlSafe(
-        "SELECT id FROM djangors_content_type WHERE app_label = $1 AND model_name = $2".to_string(),
-    ))
-    .bind(meta.app_label)
-    .bind(meta.struct_name)
-    .fetch_one(db.pool())
-    .await
-    .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?;
+    let sql_sel = format!(
+        "SELECT id FROM djangors_content_type WHERE app_label = {p1} AND model_name = {p2}"
+    );
+    let row = conn
+        .fetch_one(&sql_sel, &params)
+        .await
+        .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?;
+    let content_type_id = row
+        .try_i64(0)
+        .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?
+        .ok_or_else(|| {
+            ContentTypeError::Database(djangors_orm::OrmError::Query(
+                djangors_orm::sqlx::Error::RowNotFound,
+            ))
+        })?;
 
     Ok(GenericForeignKey {
         content_type_id,
@@ -99,14 +116,26 @@ pub async fn resolve_content_type(
     db: &djangors_db::Database,
     content_type_id: i64,
 ) -> Result<(String, String), ContentTypeError> {
-    djangors_orm::sqlx::query_as::<_, (String, String)>(djangors_orm::sqlx::AssertSqlSafe(
-        "SELECT app_label, model_name FROM djangors_content_type WHERE id = $1".to_string(),
-    ))
-    .bind(content_type_id)
-    .fetch_optional(db.pool())
-    .await
-    .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?
-    .ok_or(ContentTypeError::NotFound(content_type_id))
+    let mut conn = db.conn();
+    let p1 = conn.dialect().placeholder(1);
+    let sql = format!("SELECT app_label, model_name FROM djangors_content_type WHERE id = {p1}");
+    let params = vec![djangors_db::BindValue::I64(content_type_id)];
+    let row_opt = conn
+        .fetch_optional(&sql, &params)
+        .await
+        .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?;
+
+    let row = row_opt.ok_or(ContentTypeError::NotFound(content_type_id))?;
+    let app_label = row
+        .try_string(0)
+        .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?
+        .unwrap_or_default();
+    let model_name = row
+        .try_string(1)
+        .map_err(|e| ContentTypeError::Database(djangors_orm::OrmError::Query(e)))?
+        .unwrap_or_default();
+
+    Ok((app_label, model_name))
 }
 
 #[cfg(test)]
