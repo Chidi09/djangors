@@ -8,3 +8,10 @@ version = "0.3.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["chidiisking7@gmail.com"]
+
+# Full debug symbols push `target/debug` past 13G, which exhausts this repo's
+# 75G host mid-build and surfaces as phantom LLVM/linker and Postgres
+# "no space left on device" failures. Line tables keep backtraces useful
+# (file + line) at roughly a third of the size.
+[profile.dev]
+debug = "line-tables-only"
