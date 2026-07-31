@@ -1,7 +1,11 @@
 [package]
 name = "djangors-rest"
 description = "REST framework with serializers and ViewSets for Djangors"
-repository = "https://github.com/Chidi09/djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "rest", "api", "serializers"]
+categories = ["web-programming", "web-programming::http-server"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

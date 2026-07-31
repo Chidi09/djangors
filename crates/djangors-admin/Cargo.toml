@@ -1,7 +1,11 @@
 [package]
 name = "djangors-admin"
 description = "Auto-generated admin interface for Djangors"
-repository = "https://github.com/Chidi09/djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "admin", "dashboard", "crud"]
+categories = ["web-programming", "web-programming::http-server"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

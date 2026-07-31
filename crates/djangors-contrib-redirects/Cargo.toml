@@ -1,6 +1,11 @@
 [package]
 name = "djangors-contrib-redirects"
 description = "Admin-editable database redirects for Djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "redirects", "routing", "url-redirect"]
+categories = ["web-programming"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

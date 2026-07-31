@@ -1,7 +1,11 @@
 [package]
 name = "djangors-macros"
 description = "Proc macros for the Djangors web framework"
-repository = "https://github.com/Chidi09/djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "proc-macro", "derive", "macros"]
+categories = ["development-tools::procedural-macro-helpers"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

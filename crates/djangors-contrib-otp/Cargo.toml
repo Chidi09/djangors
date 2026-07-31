@@ -1,6 +1,11 @@
 [package]
 name = "djangors-contrib-otp"
 description = "TOTP enrollment and verification for Djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "totp", "2fa", "otp"]
+categories = ["authentication"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,7 +1,11 @@
 [package]
 name = "djangors-auth"
 description = "Authentication, users, and permissions for Djangors"
-repository = "https://github.com/Chidi09/djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "auth", "permissions", "users"]
+categories = ["authentication"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

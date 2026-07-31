@@ -1,6 +1,11 @@
 [package]
 name = "djangors-contrib-messages"
 description = "Per-session flash message queue for Djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "messages", "flash-messages", "session"]
+categories = ["web-programming"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

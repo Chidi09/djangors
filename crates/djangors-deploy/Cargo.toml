@@ -1,7 +1,11 @@
 [package]
 name = "djangors-deploy"
 description = "dj deploy - multi-provider deployment for the Djangors web framework"
-repository = "https://github.com/Chidi09/djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "deploy", "render", "devops"]
+categories = ["command-line-utilities", "development-tools"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

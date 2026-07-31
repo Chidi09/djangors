@@ -1,6 +1,11 @@
 [package]
 name = "djangors-i18n"
 description = "Runtime internationalization for Djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "i18n", "fluent", "translation"]
+categories = ["internationalization", "localization"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

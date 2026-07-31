@@ -1,7 +1,11 @@
 [package]
 name = "djangors-views"
 description = "Server-rendered generic class-based views for Djangors"
-repository = "https://github.com/Chidi09/djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "views", "cbv", "rendering"]
+categories = ["web-programming"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

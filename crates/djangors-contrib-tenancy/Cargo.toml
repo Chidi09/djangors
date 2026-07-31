@@ -1,7 +1,11 @@
 [package]
 name = "djangors-contrib-tenancy"
 description = "Multi-tenancy support for Djangors: a Tenant model, membership, and per-request tenant scoping"
-repository = "https://github.com/Chidi09/djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "multi-tenancy", "tenant", "saas"]
+categories = ["web-programming"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

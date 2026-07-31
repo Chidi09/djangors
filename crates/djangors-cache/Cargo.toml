@@ -1,6 +1,11 @@
 [package]
 name = "djangors-cache"
 description = "Cache backends and middleware for Djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "cache", "redis", "moka"]
+categories = ["caching"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

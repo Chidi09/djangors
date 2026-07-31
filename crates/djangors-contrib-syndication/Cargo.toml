@@ -1,6 +1,11 @@
 [package]
 name = "djangors-contrib-syndication"
 description = "RSS and Atom feeds for Djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "rss", "atom", "syndication"]
+categories = ["web-programming"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

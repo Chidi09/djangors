@@ -7,7 +7,9 @@ exclude = ["benchmarks"]
 version = "0.6.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-authors = ["chidiisking7@gmail.com"]
+authors = ["Chidi <chidiisking7@gmail.com>"]
+repository = "https://github.com/Chidi09/djangors"
+homepage = "https://djangors.vercel.app"
 
 # Full debug symbols push `target/debug` past 13G, which exhausts this repo's
 # 75G host mid-build and surfaces as phantom LLVM/linker and Postgres

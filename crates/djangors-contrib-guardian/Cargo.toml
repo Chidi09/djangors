@@ -1,6 +1,11 @@
 [package]
 name = "djangors-contrib-guardian"
 description = "Object-level permissions for Djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "guardian", "object-perm", "acl"]
+categories = ["authentication"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

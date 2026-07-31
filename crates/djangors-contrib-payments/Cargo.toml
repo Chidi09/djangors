@@ -1,7 +1,11 @@
 [package]
 name = "djangors-contrib-payments"
 description = "Payment provider integration (Paystack) for Djangors, with idempotent transaction recording"
-repository = "https://github.com/Chidi09/djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "payments", "paystack", "fintech"]
+categories = ["finance"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

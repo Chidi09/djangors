@@ -1,7 +1,11 @@
 [package]
 name = "djangors-staticfiles"
 description = "Static files support for Djangors"
-repository = "https://github.com/Chidi09/djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "staticfiles", "assets", "serving"]
+categories = ["web-programming"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

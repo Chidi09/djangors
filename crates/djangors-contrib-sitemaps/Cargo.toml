@@ -1,6 +1,11 @@
 [package]
 name = "djangors-contrib-sitemaps"
 description = "XML sitemap generation for Djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "sitemap", "xml", "seo"]
+categories = ["web-programming"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,11 @@
 [package]
 name = "djangors-contrib-flatpages"
 description = "Admin-editable exact-path flatpages for Djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "flatpages", "cms", "static-pages"]
+categories = ["web-programming"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

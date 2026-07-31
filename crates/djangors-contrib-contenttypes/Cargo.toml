@@ -1,6 +1,11 @@
 [package]
 name = "djangors-contrib-contenttypes"
 description = "Content types and generic foreign keys for Djangors"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["django", "web-framework", "contenttypes", "generic-fk", "orm"]
+categories = ["database"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
