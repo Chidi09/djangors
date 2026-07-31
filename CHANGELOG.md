@@ -7,6 +7,8 @@ version number.
 
 ## [Unreleased]
 
+See the versioned sections below for released work.
+
 Everything to date, through Phase 12. Workspace version is `0.2.0`; most crates were first
 published to crates.io as `0.1.0`, but that snapshot predates every fix and feature in Phase 12
 below. See Phase 12's own publish-status note.
@@ -556,3 +558,37 @@ compile-checked by `doc-code-check`. API names were instead verified by hand aga
 Promoting the runnable ones to `rust,compile` is follow-up work.
 
 405 tests pass.
+
+## [0.6.0]
+
+### Phase 14.1: Dual-backend test harness
+
+The original reason for adding SQLite was that tests would run faster. 13.1–13.3 made *application*
+code dual-backend but left the framework's own suite Postgres-only — ~475 test SQL sites plus 11
+Postgres-specific mechanisms in `djangors-test`. This closes that.
+
+`djangors-test` gains `TestBackend { Postgres, Sqlite }` and `TestDatabase::new_for_backend()`,
+selected by `TEST_BACKEND` or by whether `DATABASE_URL` is set. SQLite needs neither an advisory
+lock nor `CREATE DATABASE`: a fresh `sqlite::memory:` handle **is** a private database, so
+per-test isolation is free and strictly stronger than the Postgres scheme.
+
+The SQLite pool is pinned to `max_connections(1)`. With a plain `sqlite::memory:` URL every pooled
+connection is a *separate* database, so setup DDL executed on one connection would be invisible to
+the next query on another.
+
+Ported: `djangors-test`, `-db`, `-migrations`, `-contrib-guardian`, `-views`, `-tasks`, `-auth`,
+`-orm`, `-rest`, `-admin`.
+
+**This is dual-mode, not a switch.** Postgres stays first-class — isolation levels,
+`pg_advisory_lock`, `SKIP LOCKED`, and width-strict INT4/INT8 decoding are only meaningfully
+covered there.
+
+Measured on a development machine: `djangors-admin`'s 32 tests run in **0.69s** on SQLite versus
+**15.8s** on Postgres; `djangors-rest`'s 45 in **0.44s** versus **4.7s**.
+
+**Caveat, stated plainly:** five tests early-return when `DATABASE_URL` is unset, each with a
+comment naming the Postgres feature required. They report as *passing* on SQLite without
+executing, so a green SQLite run alone does not prove those paths still work. Run against Postgres
+before changing anything dialect-specific.
+
+Backend selection and this caveat are documented in `docs/src/guides/testing.md`.

@@ -8,12 +8,12 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-orm = { path = "../djangors-orm", version = "0.5.0" }
-djangors-macros = { path = "../djangors-macros", version = "0.5.0" }
-djangors-core = { path = "../djangors-core", version = "0.5.0" }
-djangors-db = { path = "../djangors-db", version = "0.5.0" }
-djangors-sessions = { path = "../djangors-sessions", version = "0.5.0" }
-djangors-mail = { path = "../djangors-mail", version = "0.5.0" }
+djangors-orm = { path = "../djangors-orm", version = "0.6.0" }
+djangors-macros = { path = "../djangors-macros", version = "0.6.0" }
+djangors-core = { path = "../djangors-core", version = "0.6.0" }
+djangors-db = { path = "../djangors-db", version = "0.6.0" }
+djangors-sessions = { path = "../djangors-sessions", version = "0.6.0" }
+djangors-mail = { path = "../djangors-mail", version = "0.6.0" }
 async-trait = "0.1.86"
 argon2 = "0.5.3"
 rand_core = { version = "0.6.4", features = ["getrandom"] }

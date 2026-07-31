@@ -7,10 +7,10 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-auth = { path = "../djangors-auth", version = "0.5.0" }
-djangors-db = { path = "../djangors-db", version = "0.5.0" }
-djangors-macros = { path = "../djangors-macros", version = "0.5.0" }
-djangors-orm = { path = "../djangors-orm", version = "0.5.0" }
+djangors-auth = { path = "../djangors-auth", version = "0.6.0" }
+djangors-db = { path = "../djangors-db", version = "0.6.0" }
+djangors-macros = { path = "../djangors-macros", version = "0.6.0" }
+djangors-orm = { path = "../djangors-orm", version = "0.6.0" }
 serde = { version = "1.0", features = ["derive"] }
 
 [dev-dependencies]

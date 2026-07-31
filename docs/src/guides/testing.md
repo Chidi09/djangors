@@ -135,3 +135,49 @@ async fn test_full_stack_socket() {
 | **Network Overhead** | Zero (in-memory execution) | Real local TCP loopback socket |
 | **Middleware Coverage** | Handler-level extensions & state | Full Tower layer stack & HTTP protocol |
 | **Use Case** | Unit tests & route handler assertions | Full-stack end-to-end flow validation |
+
+---
+
+## Choosing a Database Backend
+
+The test suite runs against either PostgreSQL or in-memory SQLite. Which one is used is decided by
+`TEST_BACKEND`, falling back to whether `DATABASE_URL` is set:
+
+| Condition | Backend |
+|---|---|
+| `TEST_BACKEND=sqlite` | SQLite (in-memory) |
+| `TEST_BACKEND=postgres` | PostgreSQL |
+| neither set, `DATABASE_URL` present | PostgreSQL |
+| neither set, no `DATABASE_URL` | SQLite (in-memory) |
+
+SQLite needs no server and no setup:
+
+```bash
+# Fast path - no PostgreSQL required. Unset DATABASE_URL so it cannot be picked up.
+env -u DATABASE_URL TEST_BACKEND=sqlite cargo test
+```
+
+```bash
+# PostgreSQL - required before changing any dialect-specific behaviour
+export DATABASE_URL="postgres://postgres:postgres@localhost/djangors_test"
+cargo test
+```
+
+Each SQLite test gets a fresh `sqlite::memory:` database, so isolation is automatic — there is no
+shared state to clean up and no advisory lock to arbitrate. The pool is deliberately pinned to a
+single connection: with a plain `sqlite::memory:` URL every pooled connection would otherwise be a
+*separate* database, and setup DDL run on one connection would be invisible to the next query.
+
+### Why both
+
+SQLite is dramatically faster. Measured on a development machine, `djangors-admin`'s 32 tests take
+**0.69s** on SQLite against **15.8s** on PostgreSQL.
+
+It is not a full substitute. A handful of tests cover behaviour SQLite cannot express — transaction
+isolation levels, `pg_advisory_lock`, `SKIP LOCKED` queue claiming, and PostgreSQL's width-strict
+integer decoding. Those tests return early when `DATABASE_URL` is absent, each with a comment
+naming the feature they need. **They report as passing on SQLite without executing**, so a green
+SQLite run alone does not prove those paths still work.
+
+Use SQLite for the fast inner development loop, and run against PostgreSQL before changing anything
+dialect-specific and in CI.
