@@ -8,6 +8,7 @@ keywords = ["django", "web-framework", "i18n", "fluent", "translation"]
 categories = ["internationalization", "localization"]
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 

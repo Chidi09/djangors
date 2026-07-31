@@ -527,13 +527,246 @@ pub fn check(deploy: bool) -> Result<Vec<String>, String> {
     Ok(issues)
 }
 
+/// Status of a migration for `showmigrations`.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct MigrationStatus {
+    /// Migration name (e.g., `0001_initial`).
+    pub name: String,
+    /// Whether recorded in `djangors_migrations` history table.
+    pub applied: bool,
+    /// Whether missing from disk despite being in history table.
+    pub missing_from_disk: bool,
+}
+
+/// Formats the migration statuses into Django-style output.
+pub fn format_showmigrations(app_name: &str, statuses: &[MigrationStatus]) -> String {
+    let mut out = String::new();
+    out.push_str(app_name);
+    out.push('\n');
+    for status in statuses {
+        if status.missing_from_disk {
+            out.push_str(&format!(" [?] {} (missing from disk)\n", status.name));
+        } else if status.applied {
+            out.push_str(&format!(" [X] {}\n", status.name));
+        } else {
+            out.push_str(&format!(" [ ] {}\n", status.name));
+        }
+    }
+    out
+}
+
+fn get_app_name() -> Option<String> {
+    let manifest_path = Path::new("Cargo.toml");
+    if manifest_path.is_file() {
+        let content = std::fs::read_to_string(manifest_path).ok()?;
+        let value: toml::Value = toml::from_str(&content).ok()?;
+        value
+            .get("package")?
+            .get("name")?
+            .as_str()
+            .map(String::from)
+    } else {
+        None
+    }
+}
+
+/// List all available migrations and their applied status.
+pub async fn showmigrations() -> Result<(), String> {
+    require_project_root()?;
+    let db_url = match std::env::var("DATABASE_URL") {
+        Ok(url) => url,
+        Err(_) => {
+            return Err("DATABASE_URL environment variable is not set".to_string());
+        }
+    };
+
+    let config = djangors_db::config::DatabaseConfig::new(db_url);
+    let db = match djangors_db::Database::connect(&config).await {
+        Ok(db) => db,
+        Err(e) => {
+            return Err(format!("failed to connect to database: {e}"));
+        }
+    };
+
+    let applied_names = djangors_migrations::get_applied_migrations(&db)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let applied_set: std::collections::HashSet<String> = applied_names.into_iter().collect();
+
+    let mut disk_names = Vec::new();
+    let migrations_dir = Path::new("migrations");
+    if migrations_dir.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(migrations_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("sql") {
+                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                        if stem.get(..4).and_then(|s| s.parse::<u32>().ok()).is_some() {
+                            disk_names.push(stem.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    disk_names.sort();
+
+    let mut all_names = disk_names.clone();
+    for name in &applied_set {
+        if !all_names.contains(name) {
+            all_names.push(name.clone());
+        }
+    }
+    all_names.sort();
+
+    let disk_set: std::collections::HashSet<String> = disk_names.into_iter().collect();
+
+    let statuses: Vec<MigrationStatus> = all_names
+        .into_iter()
+        .map(|name| MigrationStatus {
+            applied: applied_set.contains(&name),
+            missing_from_disk: applied_set.contains(&name) && !disk_set.contains(&name),
+            name,
+        })
+        .collect();
+
+    let app_name = get_app_name().unwrap_or_else(|| "default".to_string());
+    print!("{}", format_showmigrations(&app_name, &statuses));
+
+    Ok(())
+}
+
+fn section_up(text: &str) -> String {
+    let mut up_lines = Vec::new();
+    let mut in_up = false;
+    for line in text.lines() {
+        if line.trim() == "-- up" {
+            in_up = true;
+            continue;
+        }
+        if line.trim() == "-- down" {
+            break;
+        }
+        if in_up {
+            up_lines.push(line);
+        }
+    }
+    up_lines.join("\n")
+}
+
+/// Render the SQL statements for a migration without executing them.
+pub fn sqlmigrate(app: &str, migration: &str) -> Result<(), String> {
+    require_project_root()?;
+
+    let dialect =
+        djangors_db::Dialect::from_url(&std::env::var("DATABASE_URL").unwrap_or_default());
+
+    let migrations_dir = Path::new("migrations");
+    if !migrations_dir.is_dir() {
+        return Err("migrations directory does not exist".to_string());
+    }
+
+    let mut found_file: Option<PathBuf> = None;
+
+    let app_dir = migrations_dir.join(app);
+    let dirs_to_search = if app_dir.is_dir() {
+        vec![app_dir, migrations_dir.to_path_buf()]
+    } else {
+        vec![migrations_dir.to_path_buf()]
+    };
+
+    for dir in &dirs_to_search {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("sql") {
+                    if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+                        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                        if stem == migration
+                            || stem.starts_with(&format!("{migration}_"))
+                            || file_name == format!("{migration}.sql")
+                        {
+                            found_file = Some(path);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if found_file.is_some() {
+            break;
+        }
+    }
+
+    if found_file.is_none() {
+        return Err(format!(
+            "migration '{migration}' for app '{app}' not found in migrations directory"
+        ));
+    }
+
+    let snapshot_path = Path::new("migrations/.schema_snapshot.json");
+    let snapshots: Option<Vec<djangors_orm::ModelSnapshot>> = if snapshot_path.exists() {
+        std::fs::read_to_string(snapshot_path)
+            .ok()
+            .and_then(|content| serde_json::from_str(&content).ok())
+    } else {
+        None
+    };
+
+    let operations = if let Some(snaps) = snapshots {
+        djangors_migrations::build_create_plan_from_snapshots(&snaps, dialect).ok()
+    } else if let Ok(models) = introspect_models() {
+        djangors_migrations::build_create_plan_from_snapshots(&models, dialect).ok()
+    } else {
+        None
+    };
+
+    if let Some(ops) = operations {
+        for op in ops {
+            match op.to_sql(dialect) {
+                Ok(sql) => {
+                    let trimmed = sql.trim();
+                    if trimmed.ends_with(';') {
+                        println!("{trimmed}");
+                    } else {
+                        println!("{trimmed};");
+                    }
+                }
+                Err(djangors_migrations::MigrationError::UnsupportedOnDialect {
+                    operation,
+                    dialect,
+                }) => {
+                    println!("-- Operation '{operation}' is unsupported on dialect {dialect:?}");
+                }
+                Err(e) => {
+                    println!("-- Error rendering SQL: {e}");
+                }
+            }
+        }
+    } else if let Some(file_path) = found_file {
+        let content = std::fs::read_to_string(&file_path)
+            .map_err(|e| format!("failed to read migration file: {e}"))?;
+        let up_section = section_up(&content);
+        for stmt in up_section
+            .split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            println!("{stmt};");
+        }
+    }
+
+    Ok(())
+}
+
 /// Apply database migrations.
 ///
 /// Reads the database connection URL from the `DATABASE_URL` environment
 /// variable (the standard sqlx/Rust ecosystem convention) and runs
-/// [`djangors_migrations::migrate`]. Currently a v1, CreateTable-only
-/// engine — see `docs/design/4.3-migrations.md` for scope.
-pub async fn migrate(rollback: Option<u32>) {
+/// [`djangors_migrations::migrate`].
+pub async fn migrate(rollback: Option<u32>, plan: bool, fake: bool) {
     let db_url = match std::env::var("DATABASE_URL") {
         Ok(url) => url,
         Err(_) => {
@@ -561,10 +794,102 @@ pub async fn migrate(rollback: Option<u32>) {
         }
         return;
     }
+
+    if plan {
+        let applied_names = match djangors_migrations::get_applied_migrations(&db).await {
+            Ok(names) => names,
+            Err(e) => {
+                eprintln!("[dj migrate] failed to read migration history: {e}");
+                std::process::exit(1);
+            }
+        };
+        let applied_set: std::collections::HashSet<String> = applied_names.into_iter().collect();
+
+        if Path::new("migrations").is_dir() {
+            let mut unapplied = Vec::new();
+            if let Ok(entries) = std::fs::read_dir("migrations") {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("sql") {
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            if stem.get(..4).and_then(|s| s.parse::<u32>().ok()).is_some()
+                                && !applied_set.contains(stem)
+                            {
+                                unapplied.push(stem.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            unapplied.sort();
+            if unapplied.is_empty() {
+                println!("[dj migrate] Database is up to date. No migrations to apply.");
+            } else {
+                println!("[dj migrate] Planned migrations:");
+                for name in unapplied {
+                    println!("  Apply {name}");
+                }
+            }
+        } else if applied_set.contains("0001_initial") {
+            println!("[dj migrate] Database is up to date. No migrations to apply.");
+        } else {
+            println!("[dj migrate] Planned migrations:");
+            println!("  Apply 0001_initial");
+        }
+        return;
+    }
+
+    if fake {
+        let applied_names = match djangors_migrations::get_applied_migrations(&db).await {
+            Ok(names) => names,
+            Err(e) => {
+                eprintln!("[dj migrate] failed to read migration history: {e}");
+                std::process::exit(1);
+            }
+        };
+        let applied_set: std::collections::HashSet<String> = applied_names.into_iter().collect();
+
+        if Path::new("migrations").is_dir() {
+            let mut to_fake = Vec::new();
+            if let Ok(entries) = std::fs::read_dir("migrations") {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("sql") {
+                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                            if stem.get(..4).and_then(|s| s.parse::<u32>().ok()).is_some()
+                                && !applied_set.contains(stem)
+                            {
+                                to_fake.push(stem.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            to_fake.sort();
+            if to_fake.is_empty() {
+                println!("[dj migrate] Database is up to date. No migrations to fake.");
+            } else {
+                for name in to_fake {
+                    if let Err(e) = djangors_migrations::record_migration(&db, &name).await {
+                        eprintln!("[dj migrate] failed to fake migration {name}: {e}");
+                        std::process::exit(1);
+                    }
+                    println!("[dj migrate] Marked as applied (faked): {name}");
+                }
+            }
+        } else if applied_set.contains("0001_initial") {
+            println!("[dj migrate] Database is up to date. No migrations to fake.");
+        } else {
+            if let Err(e) = djangors_migrations::record_migration(&db, "0001_initial").await {
+                eprintln!("[dj migrate] failed to fake migration 0001_initial: {e}");
+                std::process::exit(1);
+            }
+            println!("[dj migrate] Marked as applied (faked): 0001_initial");
+        }
+        return;
+    }
+
     let result = if Path::new("migrations").is_dir() {
-        // The file-based path reads its own SQL straight off disk; it needs no live model
-        // introspection, so a broken/unrelated compile error elsewhere in the project must
-        // not block it.
         djangors_migrations::migrate_from_dir(&db, Path::new("migrations")).await
     } else {
         let models = match introspect_models() {
@@ -1710,5 +2035,29 @@ allowed_hosts = ["example.com"]
                     .status();
             }
         }
+    }
+
+    #[test]
+    fn test_format_showmigrations_output() {
+        let statuses = vec![
+            MigrationStatus {
+                name: "0001_initial".to_string(),
+                applied: true,
+                missing_from_disk: false,
+            },
+            MigrationStatus {
+                name: "0002_add_field".to_string(),
+                applied: false,
+                missing_from_disk: false,
+            },
+            MigrationStatus {
+                name: "0003_deleted".to_string(),
+                applied: true,
+                missing_from_disk: true,
+            },
+        ];
+        let formatted = format_showmigrations("polls", &statuses);
+        let expected = "polls\n [X] 0001_initial\n [ ] 0002_add_field\n [?] 0003_deleted (missing from disk)\n";
+        assert_eq!(formatted, expected);
     }
 }

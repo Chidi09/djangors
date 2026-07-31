@@ -8,6 +8,7 @@ keywords = ["django", "web-framework", "testing", "helpers", "test"]
 categories = ["development-tools::testing"]
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 

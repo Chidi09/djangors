@@ -2,6 +2,7 @@
 name = "doc-code-check"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 djangors = { path = "../../crates/djangors" }

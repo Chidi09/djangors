@@ -106,3 +106,44 @@ Auto-escaping is context-aware based on template filenames:
 | `naturaltime` | `{{ val\|naturaltime }}` | Formats ISO-8601 datetimes as relative strings (`"just now"`, `"5 minutes ago"`, `"in 5 minutes"`) |
 | `trans` | `{{ "Welcome"\|trans }}` | Internationalization translation filter (via `djangors-i18n`) |
 | `default` | `{{ val\|default('N/A', true) }}` | Built-in fallback value if `val` is undefined or falsy |
+
+---
+
+## Template Functions
+
+In `djangors-template`, template helpers are invoked as **functions** using `{{ ... }}` variable expression syntax rather than statement tags `{% ... %}`:
+
+| Function | Example Usage | Description / Output |
+|---|---|---|
+| `url` | `{{ url('poll-detail', id=1) }}` | Resolves a named route to an absolute URL path. Requires `set_url_resolver` on `TemplateEngine`. |
+| `static` | `{{ static('css/app.css') }}` | Joins configured static URL prefix (default `/static/`) and path with exactly one slash. |
+| `csrf_token` | `{{ csrf_token() }}` | Renders safe `<input type="hidden" name="csrfmiddlewaretoken" value="...">` with HTML-attribute-escaped token value. |
+| `now` | `{{ now('%Y-%m-%d') }}` | Formats current UTC time with a `chrono` strftime format string. |
+
+> [!NOTE]
+> Django uses statement tags such as `{% static "..." %}` and `{% csrf_token %}`. Because MiniJinja 2.21 uses function expressions, Djangors uses function call syntax (`{{ static('...') }}` and `{{ csrf_token() }}`).
+
+### Wiring Named Routes with `set_url_resolver`
+
+To support `{{ url(...) }}`, wire your router to the `TemplateEngine` using `set_url_resolver`:
+
+```rust,compile
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+use djangors_core::Router;
+use djangors_template::TemplateEngine;
+
+let mut engine = TemplateEngine::new(vec!["templates".into()])?;
+
+let router = Router::new()
+    .get("/polls/{id}", |_, _| async { Ok(djangors_core::Response::text(djangors_core::StatusCode::OK, "ok")) })
+    .name("poll-detail");
+
+let router_clone = router.clone();
+engine.set_url_resolver(move |name, params| {
+    let params_refs: Vec<(&str, &str)> = params.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    router_clone.reverse(name, &params_refs).ok()
+});
+# Ok(())
+# }
+```
+

@@ -137,3 +137,60 @@ During a rollback, the system:
 3. Asserts that the files do not contain the `-- no-down` marker.
 4. Executes the SQL inside the `-- down` section.
 5. Deletes the migration records from the `djangors_migrations` table.
+
+---
+
+## Migration Inspection & CLI Options
+
+Djangors provides several commands and flags for inspecting and managing migration states:
+
+### `dj sqlmigrate <app> <migration>`
+
+Renders the SQL statements that a migration would execute without connecting to the database or modifying any state. The SQL output is dialect-correct based on `DATABASE_URL` (e.g. SQLite DDL when targeting SQLite, Postgres DDL when targeting PostgreSQL).
+
+```bash
+# Render SQL statements for migration 0001 in app polls
+dj sqlmigrate polls 0001
+```
+
+### `dj showmigrations`
+
+Lists every migration along with its applied state:
+
+```bash
+dj showmigrations
+```
+
+Output format:
+```text
+polls
+ [X] 0001_initial
+ [ ] 0002_add_field
+```
+
+* **`[X]`**: Migration is recorded in the `djangors_migrations` history table.
+* **`[ ]`**: Migration exists on disk but has not been applied.
+* **`[?]`**: Migration is recorded in the history table but missing from disk.
+
+### `dj migrate --plan`
+
+Prints the ordered list of migrations that would be applied without executing them:
+
+```bash
+dj migrate --plan
+```
+
+If the database is already up to date, it clearly reports that no migrations need to be applied.
+
+### `dj migrate --fake`
+
+Records migrations as applied in the `djangors_migrations` history table without executing their SQL DDL instructions:
+
+```bash
+dj migrate --fake
+```
+
+> [!WARNING]
+> `--fake` can silently desynchronise the migration history table from the actual database schema. Use with caution when schema changes have been made out of band.
+
+Note that `--fake`, `--plan`, and `--rollback` are mutually exclusive flags.

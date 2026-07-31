@@ -14,6 +14,8 @@ fn builtin_command_names() -> std::collections::HashSet<&'static str> {
         "runworker",
         "migrate",
         "makemigrations",
+        "sqlmigrate",
+        "showmigrations",
         "createsuperuser",
         "createpermissions",
         "shell",
@@ -101,12 +103,28 @@ async fn main() {
         Commands::RunWorker { poll_interval_secs } => {
             commands::runworker(poll_interval_secs).await;
         }
-        Commands::Migrate { rollback } => {
-            commands::migrate(rollback).await;
+        Commands::Migrate {
+            rollback,
+            plan,
+            fake,
+        } => {
+            commands::migrate(rollback, plan, fake).await;
         }
         Commands::Makemigrations { check } => {
             if let Err(e) = commands::makemigrations(check) {
                 eprintln!("[dj makemigrations] error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Sqlmigrate { app, migration } => {
+            if let Err(e) = commands::sqlmigrate(&app, &migration) {
+                eprintln!("[dj sqlmigrate] error: {e}");
+                std::process::exit(1);
+            }
+        }
+        Commands::Showmigrations => {
+            if let Err(e) = commands::showmigrations().await {
+                eprintln!("[dj showmigrations] error: {e}");
                 std::process::exit(1);
             }
         }

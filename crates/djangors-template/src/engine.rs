@@ -5,11 +5,13 @@ use std::sync::Arc;
 
 use crate::error::TemplateError;
 use crate::filters;
+use crate::functions;
 
 /// The template rendering engine for Djangors, powered by MiniJinja.
 #[derive(Clone)]
 pub struct TemplateEngine {
     env: Environment<'static>,
+    functions_state: functions::FunctionsState,
 }
 
 impl TemplateEngine {
@@ -66,7 +68,13 @@ impl TemplateEngine {
         // Note: 'default' filter is built-in to minijinja and behaves matching Django's
         // default template filter when the value is undefined or falsy.
 
-        Ok(TemplateEngine { env })
+        let functions_state = functions::FunctionsState::default();
+        functions::register_functions(&mut env, functions_state.clone());
+
+        Ok(TemplateEngine {
+            env,
+            functions_state,
+        })
     }
 
     /// Create a new `TemplateEngine` from templates embedded at compile time
@@ -100,7 +108,26 @@ impl TemplateEngine {
         env.add_filter("naturaltime", filters::naturaltime);
         env.add_filter("trans", djangors_i18n::trans);
 
-        Ok(TemplateEngine { env })
+        let functions_state = functions::FunctionsState::default();
+        functions::register_functions(&mut env, functions_state.clone());
+
+        Ok(TemplateEngine {
+            env,
+            functions_state,
+        })
+    }
+
+    /// Supply the resolver backing `{{ url(...) }}`.
+    pub fn set_url_resolver<F>(&mut self, f: F)
+    where
+        F: Fn(&str, &[(String, String)]) -> Option<String> + Send + Sync + 'static,
+    {
+        *self.functions_state.url_resolver.lock().unwrap() = Some(Arc::new(f));
+    }
+
+    /// Prefix for `{{ static(...) }}`. Defaults to "/static/".
+    pub fn set_static_url(&mut self, prefix: impl Into<String>) {
+        *self.functions_state.static_url.lock().unwrap() = prefix.into();
     }
 
     /// Render a template by name with a serializable context.
@@ -570,5 +597,112 @@ mod tests {
                 .unwrap(),
             "in 5 minutes"
         );
+    }
+
+    #[test]
+    fn test_function_static() {
+        let engine = TemplateEngine::from_embedded(&[
+            ("default.html", "{{ static('css/app.css') }}"),
+            ("slash.html", "{{ static('/js/main.js') }}"),
+        ])
+        .unwrap();
+
+        assert_eq!(
+            engine.render("default.html", ()).unwrap(),
+            "/static/css/app.css"
+        );
+        assert_eq!(
+            engine.render("slash.html", ()).unwrap(),
+            "/static/js/main.js"
+        );
+
+        let mut custom_engine =
+            TemplateEngine::from_embedded(&[("custom.html", "{{ static('img/logo.png') }}")])
+                .unwrap();
+        custom_engine.set_static_url("/assets/");
+        assert_eq!(
+            custom_engine.render("custom.html", ()).unwrap(),
+            "/assets/img/logo.png"
+        );
+
+        custom_engine.set_static_url("/media");
+        assert_eq!(
+            custom_engine.render("custom.html", ()).unwrap(),
+            "/media/img/logo.png"
+        );
+    }
+
+    #[test]
+    fn test_function_csrf_token() {
+        let engine = TemplateEngine::from_embedded(&[("form.html", "{{ csrf_token() }}")]).unwrap();
+
+        // Standard token rendering
+        let ctx = minijinja::context! {
+            _csrf_token => "secret_123",
+        };
+        let rendered = engine.render("form.html", &ctx).unwrap();
+        assert_eq!(
+            rendered,
+            r#"<input type="hidden" name="csrfmiddlewaretoken" value="secret_123">"#
+        );
+
+        // Token containing " and < must be HTML-attribute-escaped and marked safe (not double escaped)
+        let sneaky_ctx = minijinja::context! {
+            _csrf_token => r#"abc"def<ghi"#,
+        };
+        let sneaky_rendered = engine.render("form.html", &sneaky_ctx).unwrap();
+        assert_eq!(
+            sneaky_rendered,
+            r#"<input type="hidden" name="csrfmiddlewaretoken" value="abc&quot;def&lt;ghi">"#
+        );
+
+        // Missing csrf_token context variable must return an error naming missing context key
+        let res = engine.render("form.html", ());
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("csrf_token"));
+    }
+
+    #[test]
+    fn test_function_url() {
+        let mut engine =
+            TemplateEngine::from_embedded(&[("link.html", "{{ url('poll-detail', id=1) }}")])
+                .unwrap();
+
+        // 1. Resolver unset -> template error
+        let res = engine.render("link.html", ());
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains("No URL resolver configured"));
+
+        // 2. Resolver configured -> success
+        engine.set_url_resolver(|name, params| {
+            if name == "poll-detail" {
+                let id = params.iter().find(|(k, _)| k == "id")?.1.clone();
+                Some(format!("/polls/{id}"))
+            } else {
+                None
+            }
+        });
+
+        let rendered = engine.render("link.html", ()).unwrap();
+        assert_eq!(rendered, "/polls/1");
+
+        // 3. Unknown route name -> template error
+        let engine_bad =
+            TemplateEngine::from_embedded(&[("bad.html", "{{ url('unknown-route') }}")]).unwrap();
+        let mut engine_bad = engine_bad;
+        engine_bad.set_url_resolver(|_, _| None);
+        let res_bad = engine_bad.render("bad.html", ());
+        assert!(res_bad.is_err());
+    }
+
+    #[test]
+    fn test_function_now() {
+        let engine = TemplateEngine::from_embedded(&[("year.html", "{{ now('%Y') }}")]).unwrap();
+
+        let rendered = engine.render("year.html", ()).unwrap();
+        assert_eq!(rendered.len(), 4);
+        assert!(rendered.parse::<u32>().is_ok());
     }
 }

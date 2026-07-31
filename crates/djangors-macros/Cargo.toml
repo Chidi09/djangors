@@ -8,6 +8,7 @@ keywords = ["django", "web-framework", "proc-macro", "derive", "macros"]
 categories = ["development-tools::procedural-macro-helpers"]
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 

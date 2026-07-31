@@ -256,6 +256,39 @@ pub async fn migrate(db: &djangors_db::Database) -> Result<(), MigrationError> {
     Ok(())
 }
 
+/// Returns the list of migration names currently recorded as applied in `djangors_migrations`.
+pub async fn get_applied_migrations(
+    db: &djangors_db::Database,
+) -> Result<Vec<String>, MigrationError> {
+    ensure_history(db).await?;
+    let sql = "SELECT name FROM djangors_migrations ORDER BY id ASC";
+    let rows = db.conn().fetch_all(sql, &[]).await?;
+    let mut names = Vec::new();
+    for row in rows {
+        if let Some(n) = row.try_string(0)? {
+            names.push(n);
+        }
+    }
+    Ok(names)
+}
+
+/// Records a migration name as applied in `djangors_migrations` without executing its SQL.
+pub async fn record_migration(
+    db: &djangors_db::Database,
+    name: &str,
+) -> Result<(), MigrationError> {
+    ensure_history(db).await?;
+    let dialect = db.dialect();
+    let insert_sql = format!(
+        "INSERT INTO djangors_migrations (name) VALUES ({})",
+        dialect.placeholder(1)
+    );
+    db.conn()
+        .execute(&insert_sql, &[BindValue::Text(name.to_string())])
+        .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod migrate_from_dir_tests {
     use super::*;
@@ -661,5 +694,20 @@ mod migrate_from_dir_tests {
             Err(MigrationError::UnsupportedOnDialect { operation, dialect })
             if operation == "AlterColumnType" && dialect == "Sqlite"
         ));
+    }
+
+    #[tokio::test]
+    async fn test_record_and_get_applied_migrations() {
+        use djangors_db::{Database, DatabaseConfig};
+
+        let db = Database::connect(&DatabaseConfig::new("sqlite::memory:"))
+            .await
+            .unwrap();
+
+        record_migration(&db, "0001_initial").await.unwrap();
+        record_migration(&db, "0002_add_field").await.unwrap();
+
+        let applied = get_applied_migrations(&db).await.unwrap();
+        assert_eq!(applied, vec!["0001_initial", "0002_add_field"]);
     }
 }

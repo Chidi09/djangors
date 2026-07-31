@@ -49,6 +49,31 @@ struct Route {
     segments: Vec<Segment>,
     param_names: Vec<String>,
     handler: HandlerKind,
+    name: Option<String>,
+}
+
+/// Error type returned when route reversing fails.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ReverseError {
+    /// The specified route name was not found in the router.
+    #[error("Unknown route name: {0}")]
+    UnknownName(String),
+    /// A required parameter for the route pattern was not provided.
+    #[error("Missing parameter '{param}' for route '{route}'")]
+    MissingParam {
+        /// The route name or pattern.
+        route: String,
+        /// The name of the missing parameter.
+        param: String,
+    },
+    /// An unexpected parameter was provided that is not part of the route pattern.
+    #[error("Unexpected parameter '{param}' for route '{route}'")]
+    UnexpectedParam {
+        /// The route name or pattern.
+        route: String,
+        /// The name of the unexpected parameter.
+        param: String,
+    },
 }
 
 /// A URL router that matches incoming requests to registered handlers.
@@ -114,6 +139,7 @@ impl Router {
             segments,
             param_names,
             handler: HandlerKind::Standard(Arc::new(handler)),
+            name: None,
         });
         self
     }
@@ -136,8 +162,93 @@ impl Router {
             segments,
             param_names,
             handler: HandlerKind::Streaming(Arc::new(handler)),
+            name: None,
         });
         self
+    }
+
+    /// Assign a name to the most recently registered route.
+    ///
+    /// # Panics
+    /// Panics if called on an empty router or if a route with the given name already exists.
+    pub fn name(mut self, name: &str) -> Self {
+        if self.routes.is_empty() {
+            panic!("Router::name called on an empty router");
+        }
+        if self.routes.iter().any(|r| r.name.as_deref() == Some(name)) {
+            panic!("Duplicate route name '{name}'");
+        }
+        Arc::make_mut(&mut self.routes).last_mut().unwrap().name = Some(name.to_string());
+        self
+    }
+
+    /// Reconstruct a path URL for a named route by substituting parameters.
+    ///
+    /// Values are percent-encoded for safety. Note that typed path converters (e.g. `{id:i64}`)
+    /// are not type-validated during reversing in v1, but will not crash on non-numeric strings.
+    ///
+    /// # Errors
+    /// Returns [`ReverseError::UnknownName`] if the name is not registered,
+    /// [`ReverseError::MissingParam`] if a required parameter is missing, or
+    /// [`ReverseError::UnexpectedParam`] if an unrecognised parameter is supplied.
+    pub fn reverse(&self, name: &str, params: &[(&str, &str)]) -> Result<String, ReverseError> {
+        let route = self
+            .routes
+            .iter()
+            .find(|r| r.name.as_deref() == Some(name))
+            .ok_or_else(|| ReverseError::UnknownName(name.to_string()))?;
+
+        for (k, _) in params {
+            if !route.param_names.iter().any(|p| p.as_str() == *k) {
+                return Err(ReverseError::UnexpectedParam {
+                    route: name.to_string(),
+                    param: k.to_string(),
+                });
+            }
+        }
+
+        for p in &route.param_names {
+            if !params.iter().any(|(k, _)| k == p) {
+                return Err(ReverseError::MissingParam {
+                    route: name.to_string(),
+                    param: p.clone(),
+                });
+            }
+        }
+
+        let mut path_parts = Vec::new();
+        let mut param_idx = 0;
+
+        for segment in &route.segments {
+            match segment {
+                Segment::Literal(lit) => {
+                    path_parts.push(lit.clone());
+                }
+                Segment::Capture(_) => {
+                    let p_name = &route.param_names[param_idx];
+                    param_idx += 1;
+                    let (_, val) = params.iter().find(|(k, _)| k == p_name).unwrap();
+
+                    use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+                    const PATH_SEGMENT_SET: &AsciiSet = &CONTROLS
+                        .add(b' ')
+                        .add(b'"')
+                        .add(b'#')
+                        .add(b'<')
+                        .add(b'>')
+                        .add(b'?')
+                        .add(b'`')
+                        .add(b'{')
+                        .add(b'}')
+                        .add(b'/');
+
+                    let encoded = utf8_percent_encode(val, PATH_SEGMENT_SET).to_string();
+                    path_parts.push(encoded);
+                }
+            }
+        }
+
+        Ok(format!("/{}", path_parts.join("/")))
     }
 
     /// Register an SSE streaming GET handler.
@@ -183,6 +294,11 @@ impl Router {
             } else {
                 format!("{}/{}", prefix, route.pattern)
             };
+            if let Some(ref name) = route.name {
+                if self.routes.iter().any(|r| r.name.as_deref() == Some(name)) {
+                    panic!("Duplicate route name '{name}'");
+                }
+            }
             let (segments, param_names) = Self::parse_pattern(&full_pattern);
             Arc::make_mut(&mut self.routes).push(Route {
                 pattern: full_pattern,
@@ -190,6 +306,7 @@ impl Router {
                 segments,
                 param_names,
                 handler: route.handler.clone(),
+                name: route.name.clone(),
             });
         }
         // Inherit any state the sub-router configured that the parent has not.
@@ -1113,5 +1230,109 @@ mod tests {
             assert_eq!(json["error"]["code"], "panicked");
             assert_eq!(json["error"]["message"], "boom");
         }
+    }
+
+    #[tokio::test]
+    async fn test_reverse_round_trip() {
+        let router = Router::new()
+            .get("/polls/{id}", echo_id_fn)
+            .name("poll-detail");
+
+        let reversed = router.reverse("poll-detail", &[("id", "42")]).unwrap();
+        assert_eq!(reversed, "/polls/42");
+
+        let req = make_request(Method::GET, &reversed);
+        let resp = router.handle(req).await.unwrap();
+        let body = String::from_utf8(resp.body().to_vec()).unwrap();
+        assert_eq!(body, "item 42");
+    }
+
+    #[tokio::test]
+    async fn test_reverse_mounted_sub_router() {
+        let sub = Router::new()
+            .get("/users/{id}", echo_id_fn)
+            .name("user-detail");
+        let router = Router::new().mount("/api/v1", sub);
+
+        let reversed = router.reverse("user-detail", &[("id", "99")]).unwrap();
+        assert_eq!(reversed, "/api/v1/users/99");
+
+        let req = make_request(Method::GET, &reversed);
+        let resp = router.handle(req).await.unwrap();
+        let body = String::from_utf8(resp.body().to_vec()).unwrap();
+        assert_eq!(body, "item 99");
+    }
+
+    #[test]
+    fn test_reverse_errors() {
+        let router = Router::new()
+            .get("/polls/{id}", ok_handler_fn)
+            .name("poll-detail");
+
+        // Unknown name
+        let err = router.reverse("unknown", &[]).unwrap_err();
+        assert_eq!(err, ReverseError::UnknownName("unknown".to_string()));
+
+        // Missing param
+        let err = router.reverse("poll-detail", &[]).unwrap_err();
+        assert_eq!(
+            err,
+            ReverseError::MissingParam {
+                route: "poll-detail".to_string(),
+                param: "id".to_string(),
+            }
+        );
+
+        // Unexpected param
+        let err = router
+            .reverse("poll-detail", &[("id", "1"), ("extra", "2")])
+            .unwrap_err();
+        assert_eq!(
+            err,
+            ReverseError::UnexpectedParam {
+                route: "poll-detail".to_string(),
+                param: "extra".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_reverse_percent_encoding() {
+        let router = Router::new()
+            .get("/search/{query}", ok_handler_fn)
+            .name("search");
+
+        let reversed = router
+            .reverse("search", &[("query", "hello / world? #1")])
+            .unwrap();
+        assert_eq!(reversed, "/search/hello%20%2F%20world%3F%20%231");
+    }
+
+    #[test]
+    #[should_panic(expected = "Router::name called on an empty router")]
+    fn test_name_on_empty_router_panics() {
+        Router::new().name("empty");
+    }
+
+    #[test]
+    #[should_panic(expected = "Duplicate route name 'poll-detail'")]
+    fn test_duplicate_route_name_panics() {
+        Router::new()
+            .get("/polls/{id}", ok_handler_fn)
+            .name("poll-detail")
+            .get("/polls/view/{id}", ok_handler_fn)
+            .name("poll-detail");
+    }
+
+    #[test]
+    #[should_panic(expected = "Duplicate route name 'poll-detail'")]
+    fn test_duplicate_route_name_mount_panics() {
+        let sub = Router::new()
+            .get("/polls/{id}", ok_handler_fn)
+            .name("poll-detail");
+        Router::new()
+            .get("/main/polls/{id}", ok_handler_fn)
+            .name("poll-detail")
+            .mount("/sub", sub);
     }
 }

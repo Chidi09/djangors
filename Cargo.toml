@@ -6,6 +6,16 @@ exclude = ["benchmarks"]
 [workspace.package]
 version = "0.6.0"
 edition = "2021"
+# MEASURED, not chosen. `cargo metadata` reports the highest rust-version declared
+# anywhere in the dependency tree as 1.96.0, required by `reqx` 0.1.41 <- `s3` 0.1.36
+# <- djangors-staticfiles, which is a non-optional dependency of both `djangors` and
+# `djangors-cli`. So the whole framework inherits that floor; it is not confined to an
+# opt-in feature. Re-derive with:
+#   cargo metadata --format-version 1 | \
+#     python3 -c "import sys,json; print(max((p['rust_version'] for p in json.load(sys.stdin)['packages'] if p.get('rust_version')), key=lambda s: tuple(map(int, s.split('.')))))"
+# Raise this only alongside the CI image pin in .circleci/config.yml - the two must
+# move together or CI stops testing what users actually get.
+rust-version = "1.96.0"
 license = "MIT OR Apache-2.0"
 authors = ["Chidi <chidiisking7@gmail.com>"]
 repository = "https://github.com/Chidi09/djangors"

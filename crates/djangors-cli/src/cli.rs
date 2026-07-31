@@ -58,8 +58,22 @@ pub enum Commands {
     #[command(name = "migrate")]
     Migrate {
         /// Roll back the most recent migration, or the last N migrations.
-        #[arg(long, num_args = 0..=1, default_missing_value = "1")]
+        #[arg(
+            long,
+            num_args = 0..=1,
+            default_missing_value = "1",
+            conflicts_with_all = ["plan", "fake"]
+        )]
         rollback: Option<u32>,
+
+        /// Print the ordered list of migrations that would be applied without executing them.
+        #[arg(long, conflicts_with_all = ["rollback", "fake"])]
+        plan: bool,
+
+        /// Mark migrations as applied in the history table without executing their SQL.
+        /// WARNING: This can silently desynchronise the migration history table from the actual database schema. Use with caution.
+        #[arg(long, conflicts_with_all = ["rollback", "plan"])]
+        fake: bool,
     },
     /// Generate new migrations.
     #[command(name = "makemigrations")]
@@ -68,6 +82,17 @@ pub enum Commands {
         #[arg(long)]
         check: bool,
     },
+    /// Render the SQL statements for a migration without executing them.
+    #[command(name = "sqlmigrate")]
+    Sqlmigrate {
+        /// The app label.
+        app: String,
+        /// The migration name or prefix.
+        migration: String,
+    },
+    /// List all available migrations and their applied status.
+    #[command(name = "showmigrations")]
+    Showmigrations,
     /// Create an admin user.
     #[command(name = "createsuperuser")]
     Createsuperuser {
@@ -193,5 +218,82 @@ mod tests {
             Commands::Dbshell => {}
             _ => panic!("Expected Commands::Dbshell"),
         }
+    }
+
+    #[test]
+    fn test_parse_sqlmigrate() {
+        let args = vec!["dj", "sqlmigrate", "polls", "0001"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Commands::Sqlmigrate { app, migration } => {
+                assert_eq!(app, "polls");
+                assert_eq!(migration, "0001");
+            }
+            _ => panic!("Expected Commands::Sqlmigrate"),
+        }
+    }
+
+    #[test]
+    fn test_parse_showmigrations() {
+        let args = vec!["dj", "showmigrations"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Commands::Showmigrations => {}
+            _ => panic!("Expected Commands::Showmigrations"),
+        }
+    }
+
+    #[test]
+    fn test_parse_migrate_plan() {
+        let args = vec!["dj", "migrate", "--plan"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Commands::Migrate {
+                rollback,
+                plan,
+                fake,
+            } => {
+                assert_eq!(rollback, None);
+                assert!(plan);
+                assert!(!fake);
+            }
+            _ => panic!("Expected Commands::Migrate"),
+        }
+    }
+
+    #[test]
+    fn test_parse_migrate_fake() {
+        let args = vec!["dj", "migrate", "--fake"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Commands::Migrate {
+                rollback,
+                plan,
+                fake,
+            } => {
+                assert_eq!(rollback, None);
+                assert!(!plan);
+                assert!(fake);
+            }
+            _ => panic!("Expected Commands::Migrate"),
+        }
+    }
+
+    #[test]
+    fn test_migrate_plan_and_fake_conflict() {
+        let args = vec!["dj", "migrate", "--plan", "--fake"];
+        assert!(Cli::try_parse_from(args).is_err());
+    }
+
+    #[test]
+    fn test_migrate_rollback_and_fake_conflict() {
+        let args = vec!["dj", "migrate", "--rollback", "--fake"];
+        assert!(Cli::try_parse_from(args).is_err());
+    }
+
+    #[test]
+    fn test_migrate_rollback_and_plan_conflict() {
+        let args = vec!["dj", "migrate", "--rollback", "--plan"];
+        assert!(Cli::try_parse_from(args).is_err());
     }
 }

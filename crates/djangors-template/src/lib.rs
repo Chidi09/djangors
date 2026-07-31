@@ -17,6 +17,8 @@ pub mod engine;
 pub mod error;
 /// Template filters matching standard Django built-in filters.
 pub mod filters;
+/// Built-in template functions (`url`, `static`, `csrf_token`, `now`).
+pub mod functions;
 /// Convenient HTTP response rendering shortcuts.
 pub mod render;
 
