@@ -84,3 +84,54 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   .terminal-tab, .terminal-copy, .copy, .faq-item summary { min-height: 44px; }
   .faq-item summary { display: flex; align-items: center; }
 }
+
+/* ── Grid/flex item shrinking ─────────────────────────────────────────────
+   Root cause of the landing page's horizontal scroll on phones, found by
+   measuring with a headless browser at 320-430px: every `.info-card` rendered
+   554px wide at *every* mobile width, and the document's scrollWidth was stuck
+   at 573px no matter the viewport.
+
+   The `1fr` single-column rules were firing correctly. The problem is that a
+   grid (and flex) item defaults to `min-width: auto`, which refuses to shrink
+   the item below its content's max-content width. `.info-card` contains a
+   `<pre>` code block ~516px wide, so the track was floored at that size and the
+   whole page inherited it.
+
+   `min-width: 0` lets the item shrink; the `pre` inside then scrolls on its own
+   (it already sets `overflow: auto`) instead of forcing the page wider. */
+.pillars > *, .info-grid > *, .features-grid > *,
+.get-started-grid > *, .footer-grid > *, .faq-list > *, .actions > * {
+  min-width: 0;
+}
+
+/* Same reasoning for the containers themselves when they are flex/grid children. */
+.pillars, .info-grid, .features-grid, .get-started-grid, .footer-grid { min-width: 0; }
+
+/* A code block must never be what widens the page. */
+pre { max-width: 100%; overflow-x: auto; }
+code { overflow-wrap: anywhere; }
+/* ...but a fenced block inside a <pre> should scroll as one unit, not break
+   mid-token, so opt its code child back out of anywhere-breaking. */
+pre code { overflow-wrap: normal; }
+
+/* Tables outside `.markdown` (README sections rendered into cards) had no
+   overflow handling at all, so a wide table pushed the page out too. */
+table { display: block; max-width: 100%; overflow-x: auto; }
+
+/* Standalone card CTAs ("See the benchmarks →") sat at 19px tall. Inline links
+   inside prose are deliberately left alone - WCAG 2.5.8 exempts links in a
+   sentence, and padding them out would wreck the text flow. */
+@media (pointer: coarse) {
+  .pillar > a, .info-card > a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+  }
+}
+
+/* Footer navigation is a list of standalone links, not prose - give them real
+   tap targets on touch devices. */
+@media (pointer: coarse) {
+  .footer-grid li { margin-bottom: .15rem; }
+  .footer-grid a { display: inline-flex; align-items: center; min-height: 44px; }
+}
