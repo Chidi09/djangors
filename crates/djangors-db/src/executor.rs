@@ -6,6 +6,7 @@ use sqlx::{PgConnection, PgPool, SqliteConnection, SqlitePool};
 use crate::bind::{BindValue, NullKind};
 use crate::database::Database;
 use crate::dialect::Dialect;
+use crate::error::DbError;
 use crate::row::DbRow;
 
 /// A borrowed handle to whatever a query should run against.
@@ -201,6 +202,59 @@ impl<'a> Conn<'a> {
     pub fn in_transaction(&self) -> bool {
         matches!(self, Conn::PgTx(_) | Conn::SqliteTx(_))
     }
+
+    /// Establishes a new savepoint with the given name inside the current transaction.
+    pub async fn savepoint(&mut self, name: &str) -> Result<(), DbError> {
+        if !self.in_transaction() {
+            return Err(DbError::SavepointOutsideTransaction);
+        }
+        validate_savepoint_name(name)?;
+        let quoted = self.dialect().quote_ident(name);
+        let sql = format!("SAVEPOINT {}", quoted);
+        self.execute(&sql, &[]).await?;
+        Ok(())
+    }
+
+    /// Rolls back the transaction to the specified savepoint.
+    pub async fn rollback_to_savepoint(&mut self, name: &str) -> Result<(), DbError> {
+        if !self.in_transaction() {
+            return Err(DbError::SavepointOutsideTransaction);
+        }
+        validate_savepoint_name(name)?;
+        let quoted = self.dialect().quote_ident(name);
+        let sql = format!("ROLLBACK TO SAVEPOINT {}", quoted);
+        self.execute(&sql, &[]).await?;
+        Ok(())
+    }
+
+    /// Releases (destroys) the specified savepoint.
+    pub async fn release_savepoint(&mut self, name: &str) -> Result<(), DbError> {
+        if !self.in_transaction() {
+            return Err(DbError::SavepointOutsideTransaction);
+        }
+        validate_savepoint_name(name)?;
+        let quoted = self.dialect().quote_ident(name);
+        let sql = format!("RELEASE SAVEPOINT {}", quoted);
+        self.execute(&sql, &[]).await?;
+        Ok(())
+    }
+}
+
+fn validate_savepoint_name(name: &str) -> Result<(), DbError> {
+    if name.is_empty() || name.len() > 63 {
+        return Err(DbError::InvalidSavepointName(name.to_string()));
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap();
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return Err(DbError::InvalidSavepointName(name.to_string()));
+    }
+    for c in chars {
+        if !c.is_ascii_alphanumeric() && c != '_' {
+            return Err(DbError::InvalidSavepointName(name.to_string()));
+        }
+    }
+    Ok(())
 }
 
 /// A target the ORM can run queries against.

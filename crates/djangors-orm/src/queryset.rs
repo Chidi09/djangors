@@ -25,6 +25,17 @@ fn null_bind_kind_for(field_name: &str, meta: &'static ModelMeta) -> NullKind {
     }
 }
 
+/// Options for row locking via [`QuerySet::select_for_update`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ForUpdate {
+    /// If true, return an error immediately if a lock cannot be acquired.
+    pub nowait: bool,
+    /// If true, skip locked rows.
+    pub skip_locked: bool,
+    /// Specific tables to lock (Postgres `FOR UPDATE OF`).
+    pub of: Vec<String>,
+}
+
 /// Lazily constructed database query builder for model `T`.
 #[derive(Debug)]
 pub struct QuerySet<T: Model + FromRow> {
@@ -32,6 +43,7 @@ pub struct QuerySet<T: Model + FromRow> {
     order_by: Vec<(String, bool)>, // (column, descending)
     limit: Option<i64>,
     offset: Option<i64>,
+    for_update: Option<ForUpdate>,
     _marker: PhantomData<T>,
 }
 
@@ -42,6 +54,7 @@ impl<T: Model + FromRow> Clone for QuerySet<T> {
             order_by: self.order_by.clone(),
             limit: self.limit,
             offset: self.offset,
+            for_update: self.for_update.clone(),
             _marker: PhantomData,
         }
     }
@@ -61,6 +74,7 @@ impl<T: Model + FromRow> QuerySet<T> {
             order_by: Vec::new(),
             limit: None,
             offset: None,
+            for_update: None,
             _marker: PhantomData,
         }
     }
@@ -162,6 +176,11 @@ impl<T: Model + FromRow> QuerySet<T> {
         group_by: &[&'static str],
         aggs: Vec<(&'static str, crate::aggregate::AggExpr)>,
     ) -> Result<Vec<GroupRow>, OrmError> {
+        if self.for_update.is_some() {
+            return Err(OrmError::InvalidQuery(
+                "FOR UPDATE cannot be used with annotate/group-by queries".to_string(),
+            ));
+        }
         let dialect = db.dialect();
         let meta = T::meta();
 
@@ -248,6 +267,7 @@ impl<T: Model + FromRow> QuerySet<T> {
         mut db: E,
         fields: &[&'static str],
     ) -> Result<Vec<Vec<(&'static str, Value)>>, OrmError> {
+        self.check_for_update(&mut db)?;
         let dialect = db.dialect();
         let meta = T::meta();
 
@@ -452,6 +472,61 @@ impl<T: Model + FromRow> QuerySet<T> {
         self
     }
 
+    /// Locks the selected rows for the remainder of the transaction.
+    pub fn select_for_update(mut self) -> Self {
+        if self.for_update.is_none() {
+            self.for_update = Some(ForUpdate::default());
+        }
+        self
+    }
+
+    /// Return immediately with an error instead of waiting for a lock.
+    /// Mutually exclusive with `skip_locked`.
+    pub fn nowait(mut self) -> Self {
+        let mut fu = self.for_update.unwrap_or_default();
+        fu.nowait = true;
+        fu.skip_locked = false;
+        self.for_update = Some(fu);
+        self
+    }
+
+    /// Skip rows that are already locked rather than waiting.
+    /// Mutually exclusive with `nowait`.
+    pub fn skip_locked(mut self) -> Self {
+        let mut fu = self.for_update.unwrap_or_default();
+        fu.skip_locked = true;
+        fu.nowait = false;
+        self.for_update = Some(fu);
+        self
+    }
+
+    /// Restrict locking to the named related tables (Postgres `FOR UPDATE OF`).
+    pub fn lock_of(mut self, tables: &[&str]) -> Self {
+        let mut fu = self.for_update.unwrap_or_default();
+        fu.of = tables.iter().map(|s| s.to_string()).collect();
+        self.for_update = Some(fu);
+        self
+    }
+
+    /// Validates `for_update` requirements against the execution target.
+    pub(crate) fn check_for_update<E: djangors_db::DbExecutor>(
+        &self,
+        db: &mut E,
+    ) -> Result<(), OrmError> {
+        if let Some(ref fu) = self.for_update {
+            if !db.conn().in_transaction() {
+                return Err(OrmError::SelectForUpdateOutsideTransaction);
+            }
+            if db.dialect() == Dialect::Sqlite && (fu.nowait || fu.skip_locked || !fu.of.is_empty())
+            {
+                return Err(OrmError::UnsupportedOnDialect(
+                    "nowait, skip_locked, and lock_of are not supported on SQLite".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Compiles the query to a `SELECT *` SQL string and parameter list.
     pub fn compile_select(&self) -> (String, Vec<Value>) {
         self.compile_select_custom("*")
@@ -549,11 +624,29 @@ impl<T: Model + FromRow> QuerySet<T> {
             sql.push_str(&format!(" OFFSET {}", offset));
         }
 
+        if dialect == Dialect::Postgres {
+            if let Some(ref fu) = self.for_update {
+                sql.push_str(" FOR UPDATE");
+                if !fu.of.is_empty() {
+                    let quoted_tables: Vec<String> =
+                        fu.of.iter().map(|t| dialect.quote_ident(t)).collect();
+                    sql.push_str(" OF ");
+                    sql.push_str(&quoted_tables.join(", "));
+                }
+                if fu.nowait {
+                    sql.push_str(" NOWAIT");
+                } else if fu.skip_locked {
+                    sql.push_str(" SKIP LOCKED");
+                }
+            }
+        }
+
         (sql, params)
     }
 
     /// Executes the query and returns all matching model instances.
     pub async fn all<E: djangors_db::DbExecutor>(&self, mut db: E) -> Result<Vec<T>, OrmError> {
+        self.check_for_update(&mut db)?;
         let dialect = db.dialect();
         let (sql, params) = self.compile_select_with_order("*", true, dialect);
         let bind_values: Vec<BindValue> = params.into_iter().map(BindValue::from).collect();
@@ -594,6 +687,7 @@ impl<T: Model + FromRow> QuerySet<T> {
 
     /// Returns `true` if at least one record matches the query filters.
     pub async fn exists<E: djangors_db::DbExecutor>(&self, mut db: E) -> Result<bool, OrmError> {
+        self.check_for_update(&mut db)?;
         let mut cloned = self.clone();
         cloned.limit = Some(1);
         let dialect = db.dialect();
@@ -606,6 +700,11 @@ impl<T: Model + FromRow> QuerySet<T> {
 
     /// Returns the total count of rows matching the query filters.
     pub async fn count<E: djangors_db::DbExecutor>(&self, mut db: E) -> Result<i64, OrmError> {
+        if self.for_update.is_some() {
+            return Err(OrmError::InvalidQuery(
+                "FOR UPDATE cannot be used with aggregate queries".to_string(),
+            ));
+        }
         let dialect = db.dialect();
         let (sql, params) = self.compile_select_with_order("COUNT(*)", false, dialect);
         let bind_values: Vec<BindValue> = params.into_iter().map(BindValue::from).collect();
@@ -621,6 +720,11 @@ impl<T: Model + FromRow> QuerySet<T> {
         mut db: E,
         aggs: Vec<crate::aggregate::AggExpr>,
     ) -> Result<Vec<crate::aggregate::AggResult>, OrmError> {
+        if self.for_update.is_some() {
+            return Err(OrmError::InvalidQuery(
+                "FOR UPDATE cannot be used with aggregate queries".to_string(),
+            ));
+        }
         let dialect = db.dialect();
         let meta = T::meta();
 
@@ -1004,6 +1108,7 @@ impl<T: Model + FromRow> QuerySet<T> {
         mut db: E,
         relation_field: &'static str,
     ) -> Result<Vec<(T, Option<R>)>, OrmError> {
+        self.check_for_update(&mut db)?;
         let dialect = db.dialect();
         let meta = T::meta();
 

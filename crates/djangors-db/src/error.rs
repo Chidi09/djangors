@@ -27,4 +27,12 @@ pub enum DbError {
     /// `OrmError`'s `Display` output.
     #[error("ORM operation failed: {0}")]
     Orm(String),
+
+    /// A savepoint name was invalid.
+    #[error("Invalid savepoint name: {0}")]
+    InvalidSavepointName(String),
+
+    /// A savepoint operation was attempted outside of a transaction.
+    #[error("Savepoint operation called outside of a transaction")]
+    SavepointOutsideTransaction,
 }

@@ -608,4 +608,173 @@ mod tests {
             .unwrap();
         assert_eq!(row.try_i64(0).unwrap().unwrap(), 1);
     }
+
+    #[tokio::test]
+    async fn test_savepoint_name_validation() {
+        let sqlite_config = DatabaseConfig::new(":memory:");
+        let sqlite_db = Database::connect(&sqlite_config)
+            .await
+            .expect("connect sqlite");
+
+        sqlite_db
+            .transaction_conn(|conn| {
+                Box::pin(async move {
+                    // Invalid names:
+                    assert!(matches!(
+                        conn.savepoint("sp\"; DROP TABLE users; --").await,
+                        Err(DbError::InvalidSavepointName(_))
+                    ));
+                    assert!(matches!(
+                        conn.savepoint("1sp").await,
+                        Err(DbError::InvalidSavepointName(_))
+                    ));
+                    assert!(matches!(
+                        conn.savepoint("").await,
+                        Err(DbError::InvalidSavepointName(_))
+                    ));
+                    let long_name = "a".repeat(64);
+                    assert!(matches!(
+                        conn.savepoint(&long_name).await,
+                        Err(DbError::InvalidSavepointName(_))
+                    ));
+
+                    // Valid names:
+                    assert!(conn.savepoint("sp1").await.is_ok());
+                    assert!(conn.savepoint("_sp2").await.is_ok());
+                    assert!(conn.release_savepoint("_sp2").await.is_ok());
+                    assert!(conn.rollback_to_savepoint("sp1").await.is_ok());
+
+                    Ok::<(), DbError>(())
+                })
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_savepoint_outside_transaction() {
+        let sqlite_config = DatabaseConfig::new(":memory:");
+        let sqlite_db = Database::connect(&sqlite_config)
+            .await
+            .expect("connect sqlite");
+
+        let mut conn = sqlite_db.conn();
+        assert!(matches!(
+            conn.savepoint("sp1").await,
+            Err(DbError::SavepointOutsideTransaction)
+        ));
+        assert!(matches!(
+            conn.rollback_to_savepoint("sp1").await,
+            Err(DbError::SavepointOutsideTransaction)
+        ));
+        assert!(matches!(
+            conn.release_savepoint("sp1").await,
+            Err(DbError::SavepointOutsideTransaction)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_savepoint_roundtrip_both_backends() {
+        // 1. SQLite backend
+        let sqlite_config = DatabaseConfig::new(":memory:");
+        let sqlite_db = Database::connect(&sqlite_config)
+            .await
+            .expect("connect sqlite");
+
+        sqlite_db
+            .conn()
+            .execute("CREATE TABLE test_sp_sqlite (id INT, val TEXT)", &[])
+            .await
+            .expect("create table sqlite");
+
+        sqlite_db
+            .transaction_conn(|conn| {
+                Box::pin(async move {
+                    conn.execute("INSERT INTO test_sp_sqlite VALUES (1, 'first')", &[])
+                        .await
+                        .map_err(DbError::QueryFailed)?;
+
+                    conn.savepoint("sp1").await?;
+
+                    conn.execute("INSERT INTO test_sp_sqlite VALUES (2, 'second')", &[])
+                        .await
+                        .map_err(DbError::QueryFailed)?;
+
+                    conn.rollback_to_savepoint("sp1").await?;
+
+                    Ok::<(), DbError>(())
+                })
+            })
+            .await
+            .expect("savepoint tx sqlite");
+
+        let count_row = sqlite_db
+            .conn()
+            .fetch_one("SELECT COUNT(*) FROM test_sp_sqlite", &[])
+            .await
+            .unwrap();
+        assert_eq!(count_row.try_i64(0).unwrap().unwrap(), 1);
+
+        let row = sqlite_db
+            .conn()
+            .fetch_one("SELECT val FROM test_sp_sqlite WHERE id = 1", &[])
+            .await
+            .unwrap();
+        assert_eq!(row.try_string(0).unwrap().unwrap(), "first");
+
+        // 2. Postgres backend (if DATABASE_URL is set)
+        if let Ok(pg_url) = std::env::var("DATABASE_URL") {
+            let pg_config = DatabaseConfig::new(&pg_url);
+            let pg_db = Database::connect(&pg_config).await.expect("connect pg");
+
+            sqlx::query("DROP TABLE IF EXISTS test_sp_pg")
+                .execute(pg_db.pool())
+                .await
+                .ok();
+            sqlx::query("CREATE TABLE test_sp_pg (id INT, val TEXT)")
+                .execute(pg_db.pool())
+                .await
+                .expect("create table pg");
+
+            pg_db
+                .transaction_conn(|conn| {
+                    Box::pin(async move {
+                        conn.execute("INSERT INTO test_sp_pg VALUES (1, 'first')", &[])
+                            .await
+                            .map_err(DbError::QueryFailed)?;
+
+                        conn.savepoint("sp1").await?;
+
+                        conn.execute("INSERT INTO test_sp_pg VALUES (2, 'second')", &[])
+                            .await
+                            .map_err(DbError::QueryFailed)?;
+
+                        conn.rollback_to_savepoint("sp1").await?;
+
+                        Ok::<(), DbError>(())
+                    })
+                })
+                .await
+                .expect("savepoint tx pg");
+
+            let count_row = pg_db
+                .conn()
+                .fetch_one("SELECT COUNT(*) FROM test_sp_pg", &[])
+                .await
+                .unwrap();
+            assert_eq!(count_row.try_i64(0).unwrap().unwrap(), 1);
+
+            let row = pg_db
+                .conn()
+                .fetch_one("SELECT val FROM test_sp_pg WHERE id = 1", &[])
+                .await
+                .unwrap();
+            assert_eq!(row.try_string(0).unwrap().unwrap(), "first");
+
+            sqlx::query("DROP TABLE test_sp_pg")
+                .execute(pg_db.pool())
+                .await
+                .ok();
+        }
+    }
 }

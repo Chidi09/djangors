@@ -104,3 +104,97 @@ When interacting with the connection pool:
   * Production deployments with concurrent writes or high traffic.
   * Running the automated test suite (`djangors-test`).
   * Advanced operations such as alter column type migrations.
+
+---
+
+## Row Locking and Savepoints
+
+For banking and financial applications requiring atomic transactions, Djangors provides explicit row locking (`select_for_update`) and savepoints (`savepoint`, `rollback_to_savepoint`, `release_savepoint`).
+
+### Row Locking with `select_for_update`
+
+`QuerySet::select_for_update` locks matching rows for the duration of a transaction:
+
+```rust,illustrative
+Account::objects()
+    .filter(q!(id = sender_id))?
+    .select_for_update()
+    .get(&mut *conn)
+    .await?;
+```
+
+Modifiers allow controlling wait and table locking behavior:
+
+* **`.nowait()`**: Returns an error immediately if a row lock cannot be acquired instead of blocking.
+* **`.skip_locked()`**: Skips rows locked by concurrent transactions.
+* **`.lock_of(&["account"])`**: Limits locking to specific tables in Postgres (`FOR UPDATE OF`).
+
+> [!NOTE]
+> `select_for_update()` requires an active transaction; calling it outside a transaction returns `OrmError::SelectForUpdateOutsideTransaction`. On SQLite, `select_for_update()` degrades gracefully to a no-op because SQLite serializes writes at the database level, but modifiers (`nowait`, `skip_locked`, `lock_of`) return `OrmError::UnsupportedOnDialect`.
+
+### Savepoints
+
+Savepoints allow partial rollback within a transaction handle (`Conn`):
+
+```rust,illustrative
+conn.savepoint("transfer_checkpoint").await?;
+// Perform risky operation
+if let Err(_) = process_fee(&mut conn).await {
+    conn.rollback_to_savepoint("transfer_checkpoint").await?;
+} else {
+    conn.release_savepoint("transfer_checkpoint").await?;
+}
+```
+
+### Double-Entry Ledger Example
+
+Below is a banking transfer example that debits one account and credits another under row locking with savepoint error recovery:
+
+```rust,illustrative
+pub async fn transfer_funds(
+    db: &Database,
+    sender_id: i64,
+    receiver_id: i64,
+    amount: i64,
+) -> Result<(), DbError> {
+    db.transaction_conn(|conn| {
+        Box::pin(async move {
+            // Lock sender account
+            let mut sender = Account::objects()
+                .filter(q!(id = sender_id))
+                .map_err(OrmError::from)?
+                .select_for_update()
+                .get(&mut **conn)
+                .await?;
+
+            if sender.balance < amount {
+                return Err(DbError::TransactionFailed("Insufficient funds".into()));
+            }
+
+            // Lock receiver account
+            let mut receiver = Account::objects()
+                .filter(q!(id = receiver_id))
+                .map_err(OrmError::from)?
+                .select_for_update()
+                .get(&mut **conn)
+                .await?;
+
+            // Create a savepoint before attempting ledger operations
+            conn.savepoint("ledger_entry").await?;
+
+            sender.balance -= amount;
+            receiver.balance += amount;
+
+            // Execute debit & credit updates
+            sender.save(&mut **conn).await?;
+            receiver.save(&mut **conn).await?;
+
+            // Commit savepoint checkpoint
+            conn.release_savepoint("ledger_entry").await?;
+
+            Ok(())
+        })
+    })
+    .await
+}
+```

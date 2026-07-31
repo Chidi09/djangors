@@ -2,6 +2,7 @@ use crate::meta::{
     all_registered_models, DefaultValue, FieldKind, FieldMeta, ForeignKey, Model, ModelMeta,
     ModelRegistration, OnDelete, RelationKind, RelationMeta,
 };
+use djangors_db::DbExecutor;
 
 pub struct FictionalModel;
 
@@ -2259,4 +2260,215 @@ async fn test_sqlite_queryset_roundtrip() {
 
     let count = SqliteTestModel::objects().count(&db).await.unwrap();
     assert_eq!(count, 2);
+}
+
+#[test]
+fn test_select_for_update_sql_shapes() {
+    let sql_plain = QuerySetTestModel::objects().select_for_update().debug_sql();
+    assert_eq!(
+        sql_plain,
+        "SELECT * FROM \"test_queryset_model\" FOR UPDATE"
+    );
+
+    let sql_nowait = QuerySetTestModel::objects()
+        .select_for_update()
+        .nowait()
+        .debug_sql();
+    assert_eq!(
+        sql_nowait,
+        "SELECT * FROM \"test_queryset_model\" FOR UPDATE NOWAIT"
+    );
+
+    let sql_skip_locked = QuerySetTestModel::objects()
+        .select_for_update()
+        .skip_locked()
+        .debug_sql();
+    assert_eq!(
+        sql_skip_locked,
+        "SELECT * FROM \"test_queryset_model\" FOR UPDATE SKIP LOCKED"
+    );
+
+    let sql_of = QuerySetTestModel::objects()
+        .select_for_update()
+        .lock_of(&["test_queryset_model"])
+        .debug_sql();
+    assert_eq!(
+        sql_of,
+        "SELECT * FROM \"test_queryset_model\" FOR UPDATE OF \"test_queryset_model\""
+    );
+
+    let sql_full = QuerySetTestModel::objects()
+        .order_by("name")
+        .unwrap()
+        .limit(10)
+        .offset(5)
+        .select_for_update()
+        .skip_locked()
+        .lock_of(&["test_queryset_model", "other_table"])
+        .debug_sql();
+    assert_eq!(
+        sql_full,
+        "SELECT * FROM \"test_queryset_model\" ORDER BY \"name\" ASC LIMIT 10 OFFSET 5 FOR UPDATE OF \"test_queryset_model\", \"other_table\" SKIP LOCKED"
+    );
+}
+
+#[test]
+fn test_select_for_update_clone() {
+    let qs = QuerySetTestModel::objects()
+        .select_for_update()
+        .skip_locked()
+        .lock_of(&["test_queryset_model"]);
+    let cloned = qs.clone();
+    assert_eq!(cloned.debug_sql(), qs.debug_sql());
+}
+
+#[tokio::test]
+async fn test_select_for_update_outside_transaction_guard() {
+    let config = djangors_db::DatabaseConfig::new("sqlite::memory:");
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    let res = QuerySetTestModel::objects()
+        .select_for_update()
+        .all(&db)
+        .await;
+    assert!(matches!(
+        res,
+        Err(OrmError::SelectForUpdateOutsideTransaction)
+    ));
+}
+
+#[tokio::test]
+async fn test_select_for_update_sqlite_dialect_guards() {
+    let config = djangors_db::DatabaseConfig::new("sqlite::memory:");
+    let db = djangors_db::Database::connect(&config).await.unwrap();
+
+    sqlx::query(
+        "CREATE TABLE \"test_queryset_model\" (
+            \"id\" INTEGER PRIMARY KEY AUTOINCREMENT,
+            \"name\" TEXT NOT NULL,
+            \"is_active\" INTEGER NOT NULL
+        )",
+    )
+    .execute(db.sqlite_pool().unwrap())
+    .await
+    .unwrap();
+
+    db.transaction_conn(|conn| {
+        Box::pin(async move {
+            let res_nowait = QuerySetTestModel::objects()
+                .select_for_update()
+                .nowait()
+                .all(conn.conn())
+                .await;
+            assert!(matches!(res_nowait, Err(OrmError::UnsupportedOnDialect(_))));
+
+            let res_skip = QuerySetTestModel::objects()
+                .select_for_update()
+                .skip_locked()
+                .all(conn.conn())
+                .await;
+            assert!(matches!(res_skip, Err(OrmError::UnsupportedOnDialect(_))));
+
+            let res_of = QuerySetTestModel::objects()
+                .select_for_update()
+                .lock_of(&["test_queryset_model"])
+                .all(conn.conn())
+                .await;
+            assert!(matches!(res_of, Err(OrmError::UnsupportedOnDialect(_))));
+
+            // Plain select_for_update succeeds on SQLite:
+            let res_plain = QuerySetTestModel::objects()
+                .select_for_update()
+                .all(conn.conn())
+                .await;
+            assert!(res_plain.is_ok());
+
+            Ok::<(), OrmError>(())
+        })
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires PostgreSQL"]
+async fn test_select_for_update_postgres_concurrency_skip_locked() {
+    let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let config = djangors_db::DatabaseConfig::new(&url);
+    let db1 = djangors_db::Database::connect(&config)
+        .await
+        .expect("connect db1");
+    let db2 = djangors_db::Database::connect(&config)
+        .await
+        .expect("connect db2");
+
+    sqlx::query("DROP TABLE IF EXISTS test_queryset_model")
+        .execute(db1.pool())
+        .await
+        .ok();
+    sqlx::query("CREATE TABLE test_queryset_model (id SERIAL PRIMARY KEY, name TEXT NOT NULL, is_active BOOLEAN NOT NULL DEFAULT TRUE)")
+        .execute(db1.pool())
+        .await
+        .expect("create pg test table");
+
+    sqlx::query("INSERT INTO test_queryset_model (id, name, is_active) VALUES (1, 'row1', true), (2, 'row2', true)")
+        .execute(db1.pool())
+        .await
+        .expect("insert test rows");
+
+    // tx1 locks row 1
+    let (tx1_send, mut tx1_recv) = tokio::sync::mpsc::channel::<()>(1);
+    let (tx2_send, mut tx2_recv) = tokio::sync::mpsc::channel::<()>(1);
+
+    let handle1 = tokio::spawn(async move {
+        db1.transaction_conn(|conn| {
+            Box::pin(async move {
+                let rows = QuerySetTestModel::objects()
+                    .filter(crate::q!(id = 1))
+                    .unwrap()
+                    .select_for_update()
+                    .all(conn.conn())
+                    .await
+                    .unwrap();
+                assert_eq!(rows.len(), 1);
+
+                tx1_send.send(()).await.unwrap();
+                tx2_recv.recv().await.unwrap();
+
+                Ok::<(), OrmError>(())
+            })
+        })
+        .await
+        .unwrap();
+    });
+
+    tx1_recv.recv().await.unwrap();
+
+    // tx2 runs select_for_update().skip_locked()
+    db2.transaction_conn(|conn| {
+        Box::pin(async move {
+            let rows = QuerySetTestModel::objects()
+                .select_for_update()
+                .skip_locked()
+                .all(conn.conn())
+                .await
+                .unwrap();
+
+            // Row 1 was locked by tx1, so tx2 should only see row 2
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].id, 2);
+
+            tx2_send.send(()).await.unwrap();
+            Ok::<(), OrmError>(())
+        })
+    })
+    .await
+    .unwrap();
+
+    handle1.await.unwrap();
+
+    sqlx::query("DROP TABLE test_queryset_model")
+        .execute(db2.pool())
+        .await
+        .ok();
 }

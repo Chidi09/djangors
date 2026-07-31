@@ -35,6 +35,14 @@ pub enum OrmError {
         /// Struct name of the target model.
         model: &'static str,
     },
+
+    /// Operation is not supported on the current database dialect.
+    #[error("Unsupported on dialect: {0}")]
+    UnsupportedOnDialect(String),
+
+    /// `select_for_update` was called outside of a transaction.
+    #[error("select_for_update cannot be used outside of a transaction")]
+    SelectForUpdateOutsideTransaction,
 }
 
 /// Lets ORM calls be used directly inside
