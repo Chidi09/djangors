@@ -824,10 +824,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires PostgreSQL"]
     async fn cross_process_lock_genuinely_serializes_two_separate_connections() {
-        let Ok(url) = std::env::var("DATABASE_URL") else {
-            return;
-        };
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         // Two independent Database instances (their own separate connection
         // pools, matching two separate OS processes at the level that actually
         // matters here - Postgres session identity) racing for the SAME named

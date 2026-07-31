@@ -39,7 +39,7 @@ jobs:
           command: cargo build --workspace --all-targets
       - run:
           name: Test
-          command: cargo test --workspace
+          command: cargo test --workspace -- --include-ignored
       - run:
           name: Doc build
           command: cargo doc --workspace --no-deps
@@ -47,6 +47,32 @@ jobs:
             RUSTDOCFLAGS: "-D warnings"
       - save_cache:
           key: cargo-registry-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry
+            - target
+
+  test-sqlite:
+    docker:
+      - image: cimg/rust:1.83
+    steps:
+      - checkout
+      - run:
+          name: Install rustfmt / clippy components
+          command: rustup component add rustfmt clippy
+      - restore_cache:
+          keys:
+            - cargo-sqlite-{{ checksum "Cargo.lock" }}
+      # No DATABASE_URL is set anywhere in this job, and that is load-bearing:
+      # the test harness selects its backend by checking whether DATABASE_URL is
+      # present, so if it leaks into the environment this job silently runs
+      # against Postgres and passes while proving nothing about SQLite.
+      - run:
+          name: Test SQLite backend
+          command: env -u DATABASE_URL TEST_BACKEND=sqlite cargo test --workspace
+      # Distinct cache key from the `test` job. Sharing one key makes whichever
+      # job finishes second fail its save with "cache already exists".
+      - save_cache:
+          key: cargo-sqlite-{{ checksum "Cargo.lock" }}
           paths:
             - ~/.cargo/registry
             - target
@@ -77,4 +103,5 @@ workflows:
   build-and-test:
     jobs:
       - test
+      - test-sqlite
       - audit

@@ -342,11 +342,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires PostgreSQL"]
     async fn test_database_connect_and_query() {
-        let Ok(url) = std::env::var("DATABASE_URL") else {
-            // Requires Postgres server and DATABASE_URL.
-            return;
-        };
+        // Requires Postgres server and DATABASE_URL.
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let config = DatabaseConfig::new(&url);
         let db = Database::connect(&config).await.expect("Failed to connect");
 
@@ -374,11 +373,10 @@ mod tests {
     // risk was highest. The rollback test's regression note is retained verbatim.
 
     #[tokio::test]
+    #[ignore = "requires PostgreSQL"]
     async fn test_transaction_commit() {
-        let Ok(url) = std::env::var("DATABASE_URL") else {
-            // Requires Postgres PgConnection transaction features.
-            return;
-        };
+        // Requires Postgres PgConnection transaction features.
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let config = DatabaseConfig::new(&url);
         let db = Database::connect(&config).await.expect("Failed to connect");
 
@@ -422,11 +420,10 @@ mod tests {
     /// genuinely lands inside the transaction and the subsequent rollback is what
     /// the final count actually proves.
     #[tokio::test]
+    #[ignore = "requires PostgreSQL"]
     async fn test_transaction_rollback() {
-        let Ok(url) = std::env::var("DATABASE_URL") else {
-            // Requires Postgres PgConnection transaction features.
-            return;
-        };
+        // Requires Postgres PgConnection transaction features.
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let config = DatabaseConfig::new(&url);
         let db = Database::connect(&config).await.expect("Failed to connect");
 
@@ -477,11 +474,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires PostgreSQL"]
     async fn test_transaction_isolation_levels() {
-        let Ok(url) = std::env::var("DATABASE_URL") else {
-            // Requires Postgres-specific transaction isolation level features (SHOW transaction_isolation).
-            return;
-        };
+        // Requires Postgres-specific transaction isolation level features (SHOW transaction_isolation).
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let config = DatabaseConfig::new(&url);
         let db = Database::connect(&config).await.expect("Failed to connect");
 
