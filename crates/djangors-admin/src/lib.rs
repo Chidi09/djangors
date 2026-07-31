@@ -863,7 +863,9 @@ async fn log_action(
         Ok(_) => Ok(()),
         Err(e) => {
             let err_str = e.to_string();
-            if err_str.contains("relation \"djangors_admin_log\" does not exist") {
+            if err_str.contains("djangors_admin_log")
+                && (err_str.contains("does not exist") || err_str.contains("no such table"))
+            {
                 return Ok(());
             }
             Err(DjangorsError::Internal(err_str))
@@ -3646,10 +3648,16 @@ mod tests {
     /// everything at process exit is the intended release mechanism here, not
     /// an explicit `.release()` call.
     async fn ensure_cross_process_lock_held() {
+        if djangors_test::TestBackend::current() == djangors_test::TestBackend::Sqlite {
+            return;
+        }
         CROSS_PROCESS_LOCK
             .get_or_init(|| async {
+                let db_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+                    "postgres://postgres:postgres@localhost/djangors_test".into()
+                });
                 let db = djangors_db::Database::connect(&djangors_db::config::DatabaseConfig::new(
-                    "postgres://postgres:postgres@localhost/djangors_test",
+                    &db_url,
                 ))
                 .await
                 .expect("connect for cross-process lock");
@@ -3754,41 +3762,44 @@ mod tests {
     async fn test_admin_index_endpoints() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop tables
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_b")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_b", &[])
             .await;
 
         // Create auth_user
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
 
@@ -3804,7 +3815,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -3820,7 +3831,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -3829,16 +3840,7 @@ mod tests {
         site.register::<ModelA>();
         site.register::<ModelB>();
 
-        // Mount into a parent router, exactly like real usage -
-        // `Router::mount` never merges a sub-router's own state into the
-        // parent (see `AdminSite::urls`'s own doc comment), so testing
-        // directly against `site.urls()` alone would not catch a
-        // regression where `admin_index` went back to depending on
-        // sub-router state instead of its closure-captured registry. In
-        // real production, `Router::dispatch` (used by `Djangors::run`)
-        // automatically attaches the top-level router's own `.with_state`
-        // to every request; this test calls `.handle()` directly instead,
-        // so `Database` state is attached per-request manually below.
+        // Mount into a parent router, exactly like real usage
         let router = Router::new().mount("/admin", site.urls());
 
         // Test 1: GET /admin/ with no auth -> 401 Unauthorized
@@ -3896,7 +3898,7 @@ mod tests {
         assert!(body.contains("<li><a href=\"admin_test/modelb/\">admin_test.ModelB</a></li>"));
 
         // Clean up
-        let _ = sqlx::query("DROP TABLE auth_user").execute(db.pool()).await;
+        let _ = db.conn().execute("DROP TABLE auth_user", &[]).await;
     }
 
     #[tokio::test]
@@ -3904,63 +3906,62 @@ mod tests {
     async fn test_admin_changelist_endpoints() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop tables
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_b")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_b", &[])
             .await;
 
         // Create auth_user
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         // Create test_model_a
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
         // Create test_model_b (has ordering = "-title" meta)
-        sqlx::query(
+        let create_model_b_sql = format!(
             "CREATE TABLE test_model_b (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 title TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_b_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
 
@@ -3976,7 +3977,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -3991,7 +3992,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -4000,7 +4001,7 @@ mod tests {
             id: 0,
             name: "Normal Row".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -4008,7 +4009,7 @@ mod tests {
             id: 0,
             name: "<script>alert(1)</script>".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -4050,22 +4051,20 @@ mod tests {
 
         // Test 2: Ordering tests
         // Seed rows for sorting
-        let _ = sqlx::query("TRUNCATE test_model_a RESTART IDENTITY")
-            .execute(db.pool())
-            .await;
+        let _ = db.conn().execute("DELETE FROM test_model_a", &[]).await;
 
         let _row_a = ModelA {
             id: 0,
             name: "Row A".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let _row_b = ModelA {
             id: 0,
             name: "Row B".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -4127,31 +4126,31 @@ mod tests {
             id: 0,
             name: "Row C".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let _ = ModelA {
             id: 0,
             name: "Row D".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let _ = ModelA {
             id: 0,
             name: "Row E".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
-        // Direct trait call: admin.changelist(&db, None, 2, 2)
+        // Direct trait call: admin.changelist(db, None, 2, 2)
         let admin_a = DefaultModelAdmin::<ModelA> {
             config: ModelAdminConfig::default(),
             _marker: PhantomData,
         };
         let page_data = admin_a
-            .changelist(&db, None, 2, 2, None, &[], None)
+            .changelist(db, None, 2, 2, None, &[], None)
             .await
             .unwrap();
         assert_eq!(page_data.total, 5);
@@ -4237,14 +4236,14 @@ mod tests {
             id: 0,
             title: "Alpha".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let _ = ModelB {
             id: 0,
             title: "Beta".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -4266,16 +4265,13 @@ mod tests {
         assert!(idx_beta < idx_alpha);
 
         // Clean up
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE auth_user").execute(db.pool()).await;
-        let _ = sqlx::query("DROP TABLE test_model_a")
-            .execute(db.pool())
-            .await;
-        let _ = sqlx::query("DROP TABLE test_model_b")
-            .execute(db.pool())
-            .await;
+        let _ = db.conn().execute("DROP TABLE auth_user", &[]).await;
+        let _ = db.conn().execute("DROP TABLE test_model_a", &[]).await;
+        let _ = db.conn().execute("DROP TABLE test_model_b", &[]).await;
     }
 
     #[tokio::test]
@@ -4283,47 +4279,47 @@ mod tests {
     async fn test_admin_change_form_endpoints() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop/create tables
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -4337,7 +4333,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -4352,7 +4348,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -4410,7 +4406,7 @@ mod tests {
         let row = djangors_orm::queryset::QuerySet::<ModelA>::new()
             .filter(djangors_orm::q!(name = "New Added Row"))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await
             .unwrap();
         let new_pk = row.id;
@@ -4475,7 +4471,7 @@ mod tests {
         let row_updated = djangors_orm::queryset::QuerySet::<ModelA>::new()
             .filter(djangors_orm::q!(id = new_pk))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await
             .unwrap();
         assert_eq!(row_updated.name, "Updated Row Name");
@@ -4523,13 +4519,12 @@ mod tests {
         assert_eq!(res.unwrap_err().status_code(), StatusCode::FORBIDDEN);
 
         // Clean up
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE auth_user").execute(db.pool()).await;
-        let _ = sqlx::query("DROP TABLE test_model_a")
-            .execute(db.pool())
-            .await;
+        let _ = db.conn().execute("DROP TABLE auth_user", &[]).await;
+        let _ = db.conn().execute("DROP TABLE test_model_a", &[]).await;
     }
 
     #[tokio::test]
@@ -4537,57 +4532,55 @@ mod tests {
     async fn test_admin_delete_endpoints() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop/create tables
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_c_sql = format!(
             "CREATE TABLE test_model_c (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 parent BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_c_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -4601,7 +4594,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -4616,7 +4609,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -4633,7 +4626,7 @@ mod tests {
 
         // Insert test data
         let parent_pk = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
-            &db,
+            db,
             vec![(
                 "name",
                 djangors_orm::expr::Value::Text("Parent Object".to_string()),
@@ -4644,7 +4637,7 @@ mod tests {
 
         // Insert child referencing parent
         let child_pk = djangors_orm::queryset::QuerySet::<ModelC>::insert_raw(
-            &db,
+            db,
             vec![("parent", djangors_orm::expr::Value::I64(parent_pk))],
         )
         .await
@@ -4732,7 +4725,7 @@ mod tests {
         let child_check = djangors_orm::queryset::QuerySet::<ModelC>::new()
             .filter(djangors_orm::q!(id = child_pk))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await;
         assert!(child_check.is_err());
 
@@ -4752,13 +4745,12 @@ mod tests {
         assert_eq!(res.unwrap_err().status_code(), StatusCode::NOT_FOUND);
 
         // Clean up
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE auth_user").execute(db.pool()).await;
-        let _ = sqlx::query("DROP TABLE test_model_a")
-            .execute(db.pool())
-            .await;
+        let _ = db.conn().execute("DROP TABLE auth_user", &[]).await;
+        let _ = db.conn().execute("DROP TABLE test_model_a", &[]).await;
     }
 
     #[tokio::test]
@@ -4766,43 +4758,44 @@ mod tests {
     async fn test_phase5_list_display_and_search() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop/create tables
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        let _ = sqlx::query(
+        let create_model_d_sql = format!(
             "CREATE TABLE test_model_d (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 content TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await;
+            )"
+        );
+        db.conn().execute(&create_model_d_sql, &[]).await.unwrap();
 
-        let _ = sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username TEXT NOT NULL UNIQUE,
                 email TEXT NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await;
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -4816,7 +4809,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -4832,7 +4825,7 @@ mod tests {
         });
 
         let pk_d = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Alice".to_string())),
                 (
@@ -4888,13 +4881,11 @@ mod tests {
         assert!(res3.is_err());
 
         // Clean up rows for search tests
-        let _ = sqlx::query("TRUNCATE test_model_d RESTART IDENTITY")
-            .execute(db.pool())
-            .await;
+        let _ = db.conn().execute("DELETE FROM test_model_d", &[]).await;
 
         // Insert 3 rows
         let _ = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Apple".to_string())),
                 (
@@ -4906,7 +4897,7 @@ mod tests {
         .await
         .unwrap();
         let _ = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 (
                     "name",
@@ -4921,7 +4912,7 @@ mod tests {
         .await
         .unwrap();
         let _ = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 (
                     "name",
@@ -5006,11 +4997,13 @@ mod tests {
         assert!(body.contains("Total: 3."));
 
         // Clean up
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -5019,44 +5012,45 @@ mod tests {
     async fn test_phase5_list_filter() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop/create tables
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_e")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_e", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        let _ = sqlx::query(
+        let create_model_e_sql = format!(
             "CREATE TABLE test_model_e (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await;
+            )"
+        );
+        db.conn().execute(&create_model_e_sql, &[]).await.unwrap();
 
-        let _ = sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username TEXT NOT NULL UNIQUE,
                 email TEXT NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await;
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -5070,7 +5064,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -5086,7 +5080,7 @@ mod tests {
 
         // Insert some rows to verify matching logic later
         let _ = djangors_orm::queryset::QuerySet::<ModelE>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Alice".to_string())),
                 ("is_active", djangors_orm::expr::Value::Bool(true)),
@@ -5097,7 +5091,7 @@ mod tests {
         .unwrap();
 
         let _ = djangors_orm::queryset::QuerySet::<ModelE>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Bob".to_string())),
                 ("is_active", djangors_orm::expr::Value::Bool(true)),
@@ -5108,7 +5102,7 @@ mod tests {
         .unwrap();
 
         let _ = djangors_orm::queryset::QuerySet::<ModelE>::insert_raw(
-            &db,
+            db,
             vec![
                 (
                     "name",
@@ -5228,11 +5222,13 @@ mod tests {
         assert!(body_ignored.contains("Total: 3."));
 
         // Clean up
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_e")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_e", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -5241,42 +5237,43 @@ mod tests {
     async fn test_phase5_part6_3_bulk_delete() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop/create tables
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        let _ = sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await;
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        let _ = sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username TEXT NOT NULL UNIQUE,
                 email TEXT NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await;
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -5290,7 +5287,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -5305,7 +5302,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -5321,14 +5318,14 @@ mod tests {
 
         // Insert 3 rows
         let pk1 = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
-            &db,
+            db,
             vec![("name", djangors_orm::expr::Value::Text("First".to_string()))],
         )
         .await
         .unwrap();
 
         let pk2 = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
-            &db,
+            db,
             vec![(
                 "name",
                 djangors_orm::expr::Value::Text("Second".to_string()),
@@ -5338,7 +5335,7 @@ mod tests {
         .unwrap();
 
         let pk3 = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
-            &db,
+            db,
             vec![("name", djangors_orm::expr::Value::Text("Third".to_string()))],
         )
         .await
@@ -5374,17 +5371,17 @@ mod tests {
         let check1 = djangors_orm::queryset::QuerySet::<ModelA>::new()
             .filter(djangors_orm::q!(id = pk1))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await;
         let check2 = djangors_orm::queryset::QuerySet::<ModelA>::new()
             .filter(djangors_orm::q!(id = pk2))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await;
         let check3 = djangors_orm::queryset::QuerySet::<ModelA>::new()
             .filter(djangors_orm::q!(id = pk3))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await;
         assert!(check1.is_ok());
         assert!(check2.is_ok());
@@ -5413,17 +5410,17 @@ mod tests {
         let check1 = djangors_orm::queryset::QuerySet::<ModelA>::new()
             .filter(djangors_orm::q!(id = pk1))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await;
         let check2 = djangors_orm::queryset::QuerySet::<ModelA>::new()
             .filter(djangors_orm::q!(id = pk2))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await;
         let check3 = djangors_orm::queryset::QuerySet::<ModelA>::new()
             .filter(djangors_orm::q!(id = pk3))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await;
         assert!(check1.is_err());
         assert!(check2.is_err());
@@ -5451,7 +5448,7 @@ mod tests {
         let check3 = djangors_orm::queryset::QuerySet::<ModelA>::new()
             .filter(djangors_orm::q!(id = pk3))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await;
         assert!(check3.is_ok());
 
@@ -5506,11 +5503,13 @@ mod tests {
         );
 
         // Clean up
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -5519,43 +5518,44 @@ mod tests {
     async fn test_phase5_part6_4_date_hierarchy() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop/create tables
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_f")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_f", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        let _ = sqlx::query(
+        let create_model_f_sql = format!(
             "CREATE TABLE test_model_f (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await;
+                created_at {ts_type} NOT NULL
+            )"
+        );
+        db.conn().execute(&create_model_f_sql, &[]).await.unwrap();
 
-        let _ = sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username TEXT NOT NULL UNIQUE,
                 email TEXT NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await;
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         use chrono::{TimeZone, Utc};
 
@@ -5571,7 +5571,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -5584,7 +5584,7 @@ mod tests {
         let dt4 = Utc.with_ymd_and_hms(2025, 11, 5, 0, 0, 0).single().unwrap();
 
         let _ = djangors_orm::queryset::QuerySet::<ModelF>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Row1".to_string())),
                 ("created_at", djangors_orm::expr::Value::DateTime(dt1)),
@@ -5594,7 +5594,7 @@ mod tests {
         .unwrap();
 
         let _ = djangors_orm::queryset::QuerySet::<ModelF>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Row2".to_string())),
                 ("created_at", djangors_orm::expr::Value::DateTime(dt2)),
@@ -5604,7 +5604,7 @@ mod tests {
         .unwrap();
 
         let _ = djangors_orm::queryset::QuerySet::<ModelF>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Row3".to_string())),
                 ("created_at", djangors_orm::expr::Value::DateTime(dt3)),
@@ -5614,7 +5614,7 @@ mod tests {
         .unwrap();
 
         let _ = djangors_orm::queryset::QuerySet::<ModelF>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Row4".to_string())),
                 ("created_at", djangors_orm::expr::Value::DateTime(dt4)),
@@ -5753,11 +5753,13 @@ mod tests {
         assert!(res7.is_err());
 
         // Clean up
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_f")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_f", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -5766,57 +5768,58 @@ mod tests {
     async fn test_phase5_part6_5_list_editable() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop/create tables
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_e")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_e", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        let _ = sqlx::query(
+        let create_model_d_sql = format!(
             "CREATE TABLE test_model_d (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 content TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await;
+            )"
+        );
+        db.conn().execute(&create_model_d_sql, &[]).await.unwrap();
 
-        let _ = sqlx::query(
+        let create_model_e_sql = format!(
             "CREATE TABLE test_model_e (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await;
+            )"
+        );
+        db.conn().execute(&create_model_e_sql, &[]).await.unwrap();
 
-        let _ = sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username TEXT NOT NULL UNIQUE,
                 email TEXT NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await;
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         use chrono::Utc;
         let now = Utc::now();
@@ -5831,7 +5834,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -5839,7 +5842,7 @@ mod tests {
         session_staff.set(SESSION_USER_ID_KEY, staff.id);
 
         let pk1 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Row1".to_string())),
                 (
@@ -5852,7 +5855,7 @@ mod tests {
         .unwrap();
 
         let pk2 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Row2".to_string())),
                 (
@@ -5957,7 +5960,7 @@ mod tests {
         let check1 = djangors_orm::queryset::QuerySet::<ModelD>::new()
             .filter(djangors_orm::q!(id = pk1))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await
             .unwrap();
         assert_eq!(check1.content, "Updated1");
@@ -5979,14 +5982,14 @@ mod tests {
         let check1 = djangors_orm::queryset::QuerySet::<ModelD>::new()
             .filter(djangors_orm::q!(id = pk1))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await
             .unwrap();
         assert_eq!(check1.content, "A");
         let check2 = djangors_orm::queryset::QuerySet::<ModelD>::new()
             .filter(djangors_orm::q!(id = pk2))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await
             .unwrap();
         assert_eq!(check2.content, "B");
@@ -6010,7 +6013,7 @@ mod tests {
         let check1 = djangors_orm::queryset::QuerySet::<ModelD>::new()
             .filter(djangors_orm::q!(id = pk1))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await
             .unwrap();
         assert_eq!(check1.content, "A");
@@ -6031,7 +6034,7 @@ mod tests {
         let check1 = djangors_orm::queryset::QuerySet::<ModelD>::new()
             .filter(djangors_orm::q!(id = pk1))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await
             .unwrap();
         assert_eq!(check1.name, "Row1");
@@ -6068,14 +6071,17 @@ mod tests {
         ));
 
         // Clean up
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_e")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_e", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -6084,43 +6090,44 @@ mod tests {
     async fn test_phase5_part6_6_csv_export() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop/create tables
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        let _ = sqlx::query(
+        let create_model_d_sql = format!(
             "CREATE TABLE test_model_d (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 content TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await;
+            )"
+        );
+        db.conn().execute(&create_model_d_sql, &[]).await.unwrap();
 
-        let _ = sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username TEXT NOT NULL UNIQUE,
                 email TEXT NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await;
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         use chrono::Utc;
         let now = Utc::now();
@@ -6135,7 +6142,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -6144,7 +6151,7 @@ mod tests {
 
         // Insert 3 ModelD rows
         let _pk1 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Apple".to_string())),
                 (
@@ -6157,7 +6164,7 @@ mod tests {
         .unwrap();
 
         let _pk2 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 (
                     "name",
@@ -6173,7 +6180,7 @@ mod tests {
         .unwrap();
 
         let _pk3 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 (
                     "name",
@@ -6257,7 +6264,7 @@ mod tests {
 
         // 4. Insert row with comma:
         let _pk4 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 (
                     "name",
@@ -6306,11 +6313,13 @@ mod tests {
         ));
 
         // Clean up
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -6319,42 +6328,43 @@ mod tests {
     async fn test_phase5_computed_columns() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        let _ = sqlx::query(
+        let create_model_d_sql = format!(
             "CREATE TABLE test_model_d (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 content TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await;
+            )"
+        );
+        db.conn().execute(&create_model_d_sql, &[]).await.unwrap();
 
-        let _ = sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username TEXT NOT NULL UNIQUE,
                 email TEXT NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await;
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -6368,7 +6378,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -6390,7 +6400,7 @@ mod tests {
         }
 
         let _pk = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("Alice".to_string())),
                 (
@@ -6425,11 +6435,13 @@ mod tests {
         let body = String::from_utf8(res.body().to_vec()).unwrap();
         assert!(body.contains("Alice - Hello"));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -6438,52 +6450,52 @@ mod tests {
     async fn test_phase5_bulk_action_no_confirm() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_admin_log_sql = format!(
             "CREATE TABLE djangors_admin_log (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 user_id BIGINT NOT NULL,
-                action_time TIMESTAMPTZ NOT NULL,
+                action_time {ts_type} NOT NULL,
                 app_label VARCHAR(100) NOT NULL,
                 model_name VARCHAR(100) NOT NULL,
                 object_id BIGINT NOT NULL,
@@ -6491,11 +6503,9 @@ mod tests {
                 action_flag INTEGER NOT NULL,
                 change_message TEXT NOT NULL,
                 field_diff TEXT
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_admin_log_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -6509,7 +6519,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -6526,7 +6536,7 @@ mod tests {
         }
 
         let pk = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
-            &db,
+            db,
             vec![(
                 "name",
                 djangors_orm::expr::Value::Text("ActionTarget".to_string()),
@@ -6571,24 +6581,27 @@ mod tests {
             "/admin_test/modela/"
         );
 
-        let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
-            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message, field_diff FROM djangors_admin_log ORDER BY id ASC",
-        ))
-        .fetch_all(db.pool())
-        .await
-        .unwrap();
+        let logs = djangors_orm::queryset::QuerySet::<LogEntry>::new()
+            .order_by("id")
+            .unwrap()
+            .all(db)
+            .await
+            .unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].action_flag, ACTION_CHANGE);
         assert_eq!(logs[0].change_message, "Touch");
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
     }
 
@@ -6597,63 +6610,62 @@ mod tests {
     async fn test_phase5_bulk_action_with_confirm() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_admin_log_sql = format!(
             "CREATE TABLE djangors_admin_log (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 user_id BIGINT NOT NULL,
-                action_time TIMESTAMPTZ NOT NULL,
+                action_time {ts_type} NOT NULL,
                 app_label VARCHAR(100) NOT NULL,
                 model_name VARCHAR(100) NOT NULL,
                 object_id BIGINT NOT NULL,
                 object_repr VARCHAR(200) NOT NULL,
                 action_flag INTEGER NOT NULL,
-                change_message TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                change_message TEXT NOT NULL,
+                field_diff TEXT
+            )"
+        );
+        db.conn().execute(&create_admin_log_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -6667,7 +6679,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -6684,7 +6696,7 @@ mod tests {
         }
 
         let pk = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
-            &db,
+            db,
             vec![(
                 "name",
                 djangors_orm::expr::Value::Text("ConfirmTarget".to_string()),
@@ -6751,14 +6763,17 @@ mod tests {
             "/admin_test/modela/"
         );
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
     }
 
@@ -6767,9 +6782,10 @@ mod tests {
     async fn test_admin_permissions_enforcement() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Drop tables
         let drop_tables = [
@@ -6783,111 +6799,127 @@ mod tests {
             "test_model_b",
         ];
         for table in drop_tables {
-            let _ = sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
-                "DROP TABLE IF EXISTS {}",
-                table
-            )))
-            .execute(db.pool())
-            .await;
+            let _ = db
+                .conn()
+                .execute(&format!("DROP TABLE IF EXISTS {}", table), &[])
+                .await;
         }
 
-        // Create auth_user
-        sqlx::query(
-            "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+        // Create tables
+        db.conn()
+            .execute(
+                &format!(
+                    "CREATE TABLE auth_user (
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL UNIQUE,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
 
-        // Create auth_permission
-        sqlx::query(
-            "CREATE TABLE auth_permission (
-                id BIGSERIAL PRIMARY KEY,
+        db.conn()
+            .execute(
+                &format!(
+                    "CREATE TABLE auth_permission (
+                id {auto_pk},
                 codename VARCHAR(255) NOT NULL UNIQUE,
                 name VARCHAR(255) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
 
-        // Create auth_group
-        sqlx::query(
-            "CREATE TABLE auth_group (
-                id BIGSERIAL PRIMARY KEY,
+        db.conn()
+            .execute(
+                &format!(
+                    "CREATE TABLE auth_group (
+                id {auto_pk},
                 name VARCHAR(150) NOT NULL UNIQUE
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
 
-        // Create auth_user_groups
-        sqlx::query(
-            "CREATE TABLE auth_user_groups (
-                id BIGSERIAL PRIMARY KEY,
+        db.conn()
+            .execute(
+                &format!(
+                    "CREATE TABLE auth_user_groups (
+                id {auto_pk},
                 \"user\" BIGINT NOT NULL,
                 \"group\" BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
 
-        // Create auth_group_permissions
-        sqlx::query(
-            "CREATE TABLE auth_group_permissions (
-                id BIGSERIAL PRIMARY KEY,
+        db.conn()
+            .execute(
+                &format!(
+                    "CREATE TABLE auth_group_permissions (
+                id {auto_pk},
                 \"group\" BIGINT NOT NULL,
                 permission BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
 
-        // Create auth_user_permissions
-        sqlx::query(
-            "CREATE TABLE auth_user_permissions (
-                id BIGSERIAL PRIMARY KEY,
+        db.conn()
+            .execute(
+                &format!(
+                    "CREATE TABLE auth_user_permissions (
+                id {auto_pk},
                 \"user\" BIGINT NOT NULL,
                 permission BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
 
-        // Create test_model_a and test_model_b
-        sqlx::query(
-            "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+        db.conn()
+            .execute(
+                &format!(
+                    "CREATE TABLE test_model_a (
+                id {auto_pk},
                 name TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
 
-        sqlx::query(
-            "CREATE TABLE test_model_b (
-                id BIGSERIAL PRIMARY KEY,
+        db.conn()
+            .execute(
+                &format!(
+                    "CREATE TABLE test_model_b (
+                id {auto_pk},
                 title TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+                ),
+                &[],
+            )
+            .await
+            .unwrap();
 
         let now = chrono::Utc::now();
 
@@ -6903,7 +6935,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -6934,20 +6966,42 @@ mod tests {
 
         // Test 2: The same user, after being granted the `view` permission for that specific model -> GET changelist -> 200
         let codename_view_a = "admin_test.view_modela";
-        let perm_id: i64 = sqlx::query_scalar(
-            "INSERT INTO auth_permission (codename, name) VALUES ($1, $2) RETURNING id",
-        )
-        .bind(codename_view_a)
-        .bind("Can view modela")
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+        let p1 = db.dialect().placeholder(1);
+        let p2 = db.dialect().placeholder(2);
+        db.conn()
+            .execute(
+                &format!("INSERT INTO auth_permission (codename, name) VALUES ({p1}, {p2})"),
+                &[
+                    djangors_db::BindValue::Text(codename_view_a.into()),
+                    djangors_db::BindValue::Text("Can view modela".into()),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let perm_id: i64 = db
+            .conn()
+            .fetch_one(
+                "SELECT id FROM auth_permission WHERE codename = $1",
+                &[djangors_db::BindValue::Text(codename_view_a.into())],
+            )
+            .await
+            .unwrap()
+            .try_i64(0)
+            .unwrap()
+            .unwrap();
 
         // Link user to permission
-        sqlx::query("INSERT INTO auth_user_permissions (\"user\", permission) VALUES ($1, $2)")
-            .bind(staff_user.id)
-            .bind(perm_id)
-            .execute(db.pool())
+        db.conn()
+            .execute(
+                &format!(
+                    "INSERT INTO auth_user_permissions (\"user\", permission) VALUES ({p1}, {p2})"
+                ),
+                &[
+                    djangors_db::BindValue::I64(staff_user.id),
+                    djangors_db::BindValue::I64(perm_id),
+                ],
+            )
             .await
             .unwrap();
 
@@ -6981,32 +7035,43 @@ mod tests {
         assert_eq!(res3.unwrap_err().status_code(), StatusCode::FORBIDDEN);
 
         // Clean up direct permission for next tests
-        sqlx::query("DELETE FROM auth_user_permissions")
-            .execute(db.pool())
+        db.conn()
+            .execute("DELETE FROM auth_user_permissions", &[])
             .await
             .unwrap();
 
         // Test 4: A staff, non-superuser user granted view via group membership -> GET changelist -> 200
-        let group_id: i64 =
-            sqlx::query_scalar("INSERT INTO auth_group (name) VALUES ($1) RETURNING id")
-                .bind("Editors")
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
-
-        // Link group to permission
-        sqlx::query("INSERT INTO auth_group_permissions (\"group\", permission) VALUES ($1, $2)")
-            .bind(group_id)
-            .bind(perm_id)
-            .execute(db.pool())
+        db.conn()
+            .execute(
+                &format!("INSERT INTO auth_group (name) VALUES ({p1})"),
+                &[djangors_db::BindValue::Text("Editors".into())],
+            )
             .await
             .unwrap();
+        let group_id: i64 = db
+            .conn()
+            .fetch_one("SELECT id FROM auth_group WHERE name = 'Editors'", &[])
+            .await
+            .unwrap()
+            .try_i64(0)
+            .unwrap()
+            .unwrap();
+
+        // Link group to permission
+        db.conn().execute(
+            &format!("INSERT INTO auth_group_permissions (\"group\", permission) VALUES ({p1}, {p2})"),
+            &[djangors_db::BindValue::I64(group_id), djangors_db::BindValue::I64(perm_id)]
+        ).await.unwrap();
 
         // Link user to group
-        sqlx::query("INSERT INTO auth_user_groups (\"user\", \"group\") VALUES ($1, $2)")
-            .bind(staff_user.id)
-            .bind(group_id)
-            .execute(db.pool())
+        db.conn()
+            .execute(
+                &format!("INSERT INTO auth_user_groups (\"user\", \"group\") VALUES ({p1}, {p2})"),
+                &[
+                    djangors_db::BindValue::I64(staff_user.id),
+                    djangors_db::BindValue::I64(group_id),
+                ],
+            )
             .await
             .unwrap();
 
@@ -7037,20 +7102,20 @@ mod tests {
         assert!(!body5.contains("admin_test/modelb/"));
 
         // Clean up group membership/permissions to show that superuser succeeds without any records
-        sqlx::query("DELETE FROM auth_user_groups")
-            .execute(db.pool())
+        db.conn()
+            .execute("DELETE FROM auth_user_groups", &[])
             .await
             .unwrap();
-        sqlx::query("DELETE FROM auth_group_permissions")
-            .execute(db.pool())
+        db.conn()
+            .execute("DELETE FROM auth_group_permissions", &[])
             .await
             .unwrap();
-        sqlx::query("DELETE FROM auth_group")
-            .execute(db.pool())
+        db.conn()
+            .execute("DELETE FROM auth_group", &[])
             .await
             .unwrap();
-        sqlx::query("DELETE FROM auth_permission")
-            .execute(db.pool())
+        db.conn()
+            .execute("DELETE FROM auth_permission", &[])
             .await
             .unwrap();
 
@@ -7066,7 +7131,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -7106,12 +7171,10 @@ mod tests {
 
         // Clean up
         for table in drop_tables {
-            let _ = sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
-                "DROP TABLE IF EXISTS {}",
-                table
-            )))
-            .execute(db.pool())
-            .await;
+            let _ = db
+                .conn()
+                .execute(&format!("DROP TABLE IF EXISTS {}", table), &[])
+                .await;
         }
     }
 
@@ -7120,57 +7183,55 @@ mod tests {
     async fn test_csrf_token_wiring() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // Create auth_user and test tables if they don't exist
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(255) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_c_sql = format!(
             "CREATE TABLE test_model_c (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 parent BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_c_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -7184,15 +7245,17 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
         // Save a test row
-        sqlx::query("INSERT INTO test_model_a (id, name) VALUES (123, 'test_row')")
-            .execute(db.pool())
-            .await
-            .unwrap();
+        let _ = djangors_orm::queryset::QuerySet::<ModelA>::insert_raw(
+            db,
+            vec![("name", djangors_orm::expr::Value::Text("test_row".into()))],
+        )
+        .await
+        .unwrap();
 
         let site = AdminSite::new();
         site.register::<ModelA>();
@@ -7243,7 +7306,7 @@ mod tests {
         // 3. Change
         let req = Request::new(
             Method::GET,
-            Uri::from_static("/admin/admin_test/modela/123/change/"),
+            Uri::from_static("/admin/admin_test/modela/1/change/"),
             HeaderMap::new(),
             Bytes::new(),
         )
@@ -7258,7 +7321,7 @@ mod tests {
         // 4. Delete Confirm
         let req = Request::new(
             Method::GET,
-            Uri::from_static("/admin/admin_test/modela/123/delete/"),
+            Uri::from_static("/admin/admin_test/modela/1/delete/"),
             HeaderMap::new(),
             Bytes::new(),
         )
@@ -7280,7 +7343,7 @@ mod tests {
             Method::POST,
             Uri::from_static("/admin/admin_test/modela/bulk-delete/"),
             headers,
-            Bytes::from("selected=123"),
+            Bytes::from("selected=1"),
         )
         .with_extensions(make_ext())
         .with_state(djangors_core::state::AppState::new().insert(db.clone()));
@@ -7291,14 +7354,17 @@ mod tests {
         assert!(body.contains(&format!("value=\"{}\"", test_token)));
 
         // Cleanup
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -7338,9 +7404,10 @@ mod tests {
     async fn test_branding_overrides() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         // AdminSite with logo and accent color set
         let site = AdminSite::new()
@@ -7355,25 +7422,24 @@ mod tests {
             .mount("/admin-default", default_site.urls());
 
         // Create a staff user for authenticating
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -7387,7 +7453,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -7428,8 +7494,9 @@ mod tests {
         assert!(!body_default.contains("src=\"/static/my-logo.png\""));
         assert!(!body_default.contains("<style>:root { --accent:"));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -7438,52 +7505,52 @@ mod tests {
     async fn test_audit_log_add_change_delete() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(255) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_admin_log_sql = format!(
             "CREATE TABLE djangors_admin_log (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 user_id BIGINT NOT NULL,
-                action_time TIMESTAMPTZ NOT NULL,
+                action_time {ts_type} NOT NULL,
                 app_label VARCHAR(100) NOT NULL,
                 model_name VARCHAR(100) NOT NULL,
                 object_id BIGINT NOT NULL,
@@ -7491,11 +7558,9 @@ mod tests {
                 action_flag INTEGER NOT NULL,
                 change_message TEXT NOT NULL,
                 field_diff TEXT
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_admin_log_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -7509,7 +7574,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -7541,7 +7606,7 @@ mod tests {
         let row = djangors_orm::queryset::QuerySet::<ModelA>::new()
             .filter(djangors_orm::q!(name = "Row1"))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await
             .unwrap();
         let pk = row.id;
@@ -7568,12 +7633,12 @@ mod tests {
         let res_delete = router.handle(req_delete).await.unwrap();
         assert_eq!(res_delete.status(), StatusCode::FOUND);
 
-        let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
-            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message, field_diff FROM djangors_admin_log ORDER BY id ASC",
-        ))
-        .fetch_all(db.pool())
-        .await
-        .unwrap();
+        let logs = djangors_orm::queryset::QuerySet::<LogEntry>::new()
+            .order_by("id")
+            .unwrap()
+            .all(db)
+            .await
+            .unwrap();
 
         assert_eq!(logs.len(), 3);
         assert_eq!(logs[0].action_flag, ACTION_ADDITION);
@@ -7583,14 +7648,17 @@ mod tests {
         assert_eq!(logs[2].action_flag, ACTION_DELETION);
         assert_eq!(logs[2].object_repr, format!("ModelA object ({})", pk));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
     }
 
@@ -7599,53 +7667,53 @@ mod tests {
     async fn test_audit_log_bulk_delete_and_list_editable() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_d_sql = format!(
             "CREATE TABLE test_model_d (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 content TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_d_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_admin_log_sql = format!(
             "CREATE TABLE djangors_admin_log (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 user_id BIGINT NOT NULL,
-                action_time TIMESTAMPTZ NOT NULL,
+                action_time {ts_type} NOT NULL,
                 app_label VARCHAR(100) NOT NULL,
                 model_name VARCHAR(100) NOT NULL,
                 object_id BIGINT NOT NULL,
@@ -7653,11 +7721,9 @@ mod tests {
                 action_flag INTEGER NOT NULL,
                 change_message TEXT NOT NULL,
                 field_diff TEXT
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_admin_log_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -7671,7 +7737,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -7681,7 +7747,7 @@ mod tests {
         ext.insert(session_staff.clone());
 
         let pk1 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("R1".to_string())),
                 ("content", djangors_orm::expr::Value::Text("C1".to_string())),
@@ -7691,7 +7757,7 @@ mod tests {
         .unwrap();
 
         let pk2 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("R2".to_string())),
                 ("content", djangors_orm::expr::Value::Text("C2".to_string())),
@@ -7725,23 +7791,24 @@ mod tests {
         let res_bulk = router.handle(req_bulk).await.unwrap();
         assert_eq!(res_bulk.status(), StatusCode::FOUND);
 
-        let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
-            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message, field_diff FROM djangors_admin_log WHERE action_flag = 3 ORDER BY id ASC",
-        ))
-        .fetch_all(db.pool())
-        .await
-        .unwrap();
+        let logs = djangors_orm::queryset::QuerySet::<LogEntry>::new()
+            .filter(djangors_orm::q!(action_flag = 3))
+            .unwrap()
+            .order_by("id")
+            .unwrap()
+            .all(db)
+            .await
+            .unwrap();
         assert_eq!(logs.len(), 2);
 
-        let _ = sqlx::query("DELETE FROM djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DELETE FROM djangors_admin_log", &[])
             .await;
-        let _ = sqlx::query("DELETE FROM test_model_d")
-            .execute(db.pool())
-            .await;
+        let _ = db.conn().execute("DELETE FROM test_model_d", &[]).await;
 
         let pk3 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("R3".to_string())),
                 ("content", djangors_orm::expr::Value::Text("C3".to_string())),
@@ -7751,7 +7818,7 @@ mod tests {
         .unwrap();
 
         let pk4 = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 ("name", djangors_orm::expr::Value::Text("R4".to_string())),
                 ("content", djangors_orm::expr::Value::Text("C4".to_string())),
@@ -7774,23 +7841,28 @@ mod tests {
         let res_edit = router.handle(req_edit).await.unwrap();
         assert_eq!(res_edit.status(), StatusCode::OK);
 
-        let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
-            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message, field_diff FROM djangors_admin_log WHERE action_flag = 2 ORDER BY id ASC",
-        ))
-        .fetch_all(db.pool())
-        .await
-        .unwrap();
+        let logs = djangors_orm::queryset::QuerySet::<LogEntry>::new()
+            .filter(djangors_orm::q!(action_flag = 2))
+            .unwrap()
+            .order_by("id")
+            .unwrap()
+            .all(db)
+            .await
+            .unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].object_id, pk3);
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
     }
 
@@ -7799,42 +7871,44 @@ mod tests {
     async fn test_admin_index_recent_actions() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_admin_log_sql = format!(
             "CREATE TABLE djangors_admin_log (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 user_id BIGINT NOT NULL,
-                action_time TIMESTAMPTZ NOT NULL,
+                action_time {ts_type} NOT NULL,
                 app_label VARCHAR(100) NOT NULL,
                 model_name VARCHAR(100) NOT NULL,
                 object_id BIGINT NOT NULL,
@@ -7842,11 +7916,9 @@ mod tests {
                 action_flag INTEGER NOT NULL,
                 change_message TEXT NOT NULL,
                 field_diff TEXT
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_admin_log_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let user1 = User {
@@ -7860,7 +7932,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -7875,7 +7947,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -7891,7 +7963,7 @@ mod tests {
             change_message: "Added.".to_string(),
             field_diff: None,
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -7907,7 +7979,7 @@ mod tests {
             change_message: "Changed.".to_string(),
             field_diff: None,
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -7962,11 +8034,9 @@ mod tests {
         assert!(!body2.contains("ModelA object (100)"));
         assert!(!body2.contains("ModelA object (101)"));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
-            .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -7975,44 +8045,43 @@ mod tests {
     async fn test_phase5_fieldsets() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_d_sql = format!(
             "CREATE TABLE test_model_d (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 content TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_d_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -8026,7 +8095,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8057,11 +8126,13 @@ mod tests {
         assert!(body.contains("Section A"));
         assert!(body.contains("Section B"));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -8070,44 +8141,43 @@ mod tests {
     async fn test_phase5_readonly_fields() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_d_sql = format!(
             "CREATE TABLE test_model_d (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 content TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_d_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -8121,7 +8191,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8142,7 +8212,7 @@ mod tests {
             name: "ro_test".to_string(),
             content: "ro_content".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8160,11 +8230,13 @@ mod tests {
 
         assert!(body.contains("(readonly):"));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -8173,56 +8245,54 @@ mod tests {
     async fn test_phase5_raw_id_fields() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(255) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_c_sql = format!(
             "CREATE TABLE test_model_c (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 parent BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_c_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -8236,7 +8306,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8256,14 +8326,14 @@ mod tests {
             id: 0,
             name: "raw_target".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let _c = ModelC {
             id: 0,
             parent: djangors_orm::ForeignKey::new(a.id),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8281,14 +8351,17 @@ mod tests {
 
         assert!(body.contains("Look up"));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -8297,69 +8370,66 @@ mod tests {
     async fn test_phase5_transitive_walk_delete() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_g")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_g", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(255) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_c_sql = format!(
             "CREATE TABLE test_model_c (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 parent BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_c_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_g_sql = format!(
             "CREATE TABLE test_model_g (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 parent BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_g_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -8373,7 +8443,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8392,21 +8462,21 @@ mod tests {
             id: 0,
             name: "transitive_target".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let c = ModelC {
             id: 0,
             parent: djangors_orm::ForeignKey::new(a.id),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let _g = ModelG {
             id: 0,
             parent: djangors_orm::ForeignKey::new(c.id),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8425,17 +8495,21 @@ mod tests {
         assert!(body.contains("ModelC"));
         assert!(body.contains("ModelG"));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_c")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_c", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_g")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_g", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -8444,56 +8518,54 @@ mod tests {
     async fn test_phase5_protect_single_delete_400() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_p")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_p", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(255) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_p_sql = format!(
             "CREATE TABLE test_model_p (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 parent BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_p_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -8507,7 +8579,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8525,14 +8597,14 @@ mod tests {
             id: 0,
             name: "protect_target".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let _p = ModelP {
             id: 0,
             parent: djangors_orm::ForeignKey::new(a.id),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8555,23 +8627,31 @@ mod tests {
             Err(e) => assert!(e.to_string().contains("protected")),
         }
 
-        let still_exists: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(
-            "SELECT COUNT(*) FROM test_model_a WHERE id = $1",
-        ))
-        .bind(a.id)
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+        let p1 = db.dialect().placeholder(1);
+        let still_exists: i64 = db
+            .conn()
+            .fetch_one(
+                &format!("SELECT COUNT(*) FROM test_model_a WHERE id = {p1}"),
+                &[djangors_db::BindValue::I64(a.id)],
+            )
+            .await
+            .unwrap()
+            .try_i64(0)
+            .unwrap()
+            .unwrap();
         assert_eq!(still_exists, 1);
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_p")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_p", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -8580,56 +8660,54 @@ mod tests {
     async fn test_phase5_protect_bulk_delete_skip() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_p")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_p", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(255) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_p_sql = format!(
             "CREATE TABLE test_model_p (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 parent BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_p_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -8643,7 +8721,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8661,14 +8739,14 @@ mod tests {
             id: 0,
             name: "bulk_protected".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let a2 = ModelA {
             id: 0,
             name: "bulk_unprotected".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8676,7 +8754,7 @@ mod tests {
             id: 0,
             parent: djangors_orm::ForeignKey::new(a1.id),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8697,29 +8775,40 @@ mod tests {
         let res = router.handle(req_bulk_delete).await.unwrap();
         assert_eq!(res.status(), StatusCode::FOUND);
 
-        let remaining: i64 =
-            sqlx::query_scalar(sqlx::AssertSqlSafe("SELECT COUNT(*) FROM test_model_a"))
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
+        let remaining: i64 = db
+            .conn()
+            .fetch_one("SELECT COUNT(*) FROM test_model_a", &[])
+            .await
+            .unwrap()
+            .try_i64(0)
+            .unwrap()
+            .unwrap();
         assert_eq!(remaining, 1);
 
-        let still_alive: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(
-            "SELECT COUNT(*) FROM test_model_a WHERE name = 'bulk_protected'",
-        ))
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+        let still_alive: i64 = db
+            .conn()
+            .fetch_one(
+                "SELECT COUNT(*) FROM test_model_a WHERE name = 'bulk_protected'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .try_i64(0)
+            .unwrap()
+            .unwrap();
         assert_eq!(still_alive, 1);
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_p")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_p", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -8728,43 +8817,42 @@ mod tests {
     async fn test_phase5_base_filter() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(255) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -8778,7 +8866,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8786,14 +8874,14 @@ mod tests {
             id: 0,
             name: "apple".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let _a2 = ModelA {
             id: 0,
             name: "banana".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8830,11 +8918,13 @@ mod tests {
         assert!(body.contains("apple"));
         assert!(!body.contains("banana"));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -8843,33 +8933,34 @@ mod tests {
     async fn test_phase5_extra_route() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -8883,7 +8974,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -8916,11 +9007,13 @@ mod tests {
         let body = String::from_utf8(res.body().to_vec()).unwrap();
         assert!(body.contains("custom route works"));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
     }
 
@@ -8929,52 +9022,52 @@ mod tests {
     async fn test_phase5_history_page() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_a_sql = format!(
             "CREATE TABLE test_model_a (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(255) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_a_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_admin_log_sql = format!(
             "CREATE TABLE djangors_admin_log (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 user_id BIGINT NOT NULL,
-                action_time TIMESTAMPTZ NOT NULL,
+                action_time {ts_type} NOT NULL,
                 app_label VARCHAR(100) NOT NULL,
                 model_name VARCHAR(100) NOT NULL,
                 object_id BIGINT NOT NULL,
@@ -8982,11 +9075,9 @@ mod tests {
                 action_flag INTEGER NOT NULL,
                 change_message TEXT NOT NULL,
                 field_diff TEXT
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_admin_log_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -9000,7 +9091,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -9008,7 +9099,7 @@ mod tests {
             id: 0,
             name: "hist_test".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -9024,7 +9115,7 @@ mod tests {
             change_message: "Created.".to_string(),
             field_diff: None,
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -9053,14 +9144,17 @@ mod tests {
         assert!(body.contains("staff_hist"));
         assert!(body.contains("Created."));
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_a")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_a", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
     }
 
@@ -9069,57 +9163,56 @@ mod tests {
     async fn test_phase5_groups_permissions_admin_ui() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
         let drop_tables = ["auth_user_groups", "auth_group", "auth_user"];
         for table in drop_tables {
-            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "DROP TABLE IF EXISTS {}",
-                table
-            )))
-            .execute(db.pool())
-            .await;
+            let _ = db
+                .conn()
+                .execute(&format!("DROP TABLE IF EXISTS {}", table), &[])
+                .await;
         }
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_auth_group_sql = format!(
             "CREATE TABLE auth_group (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(150) NOT NULL UNIQUE
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn()
+            .execute(&create_auth_group_sql, &[])
+            .await
+            .unwrap();
 
-        sqlx::query(
+        let create_auth_user_groups_sql = format!(
             "CREATE TABLE auth_user_groups (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 \"user\" BIGINT NOT NULL,
                 \"group\" BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn()
+            .execute(&create_auth_user_groups_sql, &[])
+            .await
+            .unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -9133,7 +9226,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -9173,7 +9266,7 @@ mod tests {
         let group = djangors_orm::queryset::QuerySet::<djangors_auth::Group>::new()
             .filter(djangors_orm::q!(name = "Admins"))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await
             .unwrap();
 
@@ -9196,14 +9289,18 @@ mod tests {
         let res = router.handle(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::FOUND);
 
-        let membership_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM auth_user_groups WHERE \"user\" = $1 AND \"group\" = $2",
-        )
-        .bind(staff.id)
-        .bind(group.id)
-        .fetch_one(db.pool())
-        .await
-        .unwrap();
+        let p1 = db.dialect().placeholder(1);
+        let p2 = db.dialect().placeholder(2);
+        let membership_count: i64 = db.conn()
+            .fetch_one(
+                &format!("SELECT COUNT(*) FROM auth_user_groups WHERE \"user\" = {p1} AND \"group\" = {p2}"),
+                &[djangors_db::BindValue::I64(staff.id), djangors_db::BindValue::I64(group.id)],
+            )
+            .await
+            .unwrap()
+            .try_i64(0)
+            .unwrap()
+            .unwrap();
         assert_eq!(membership_count, 1);
 
         // 3. Changelist pages for both models render through the generic admin.
@@ -9224,12 +9321,10 @@ mod tests {
 
         let drop_tables = ["auth_user_groups", "auth_group", "auth_user"];
         for table in drop_tables {
-            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "DROP TABLE IF EXISTS {}",
-                table
-            )))
-            .execute(db.pool())
-            .await;
+            let _ = db
+                .conn()
+                .execute(&format!("DROP TABLE IF EXISTS {}", table), &[])
+                .await;
         }
     }
 
@@ -9238,53 +9333,53 @@ mod tests {
     async fn test_audit_diffing_and_history_rendering() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         ensure_cross_process_lock_held().await;
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS test_model_d")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS test_model_d", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS djangors_admin_log")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_admin_log", &[])
             .await;
 
-        sqlx::query(
+        let create_auth_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 username VARCHAR(150) NOT NULL,
                 email VARCHAR(254) NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_auth_user_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_model_d_sql = format!(
             "CREATE TABLE test_model_d (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 content TEXT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_model_d_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_admin_log_sql = format!(
             "CREATE TABLE djangors_admin_log (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 user_id BIGINT NOT NULL,
-                action_time TIMESTAMPTZ NOT NULL,
+                action_time {ts_type} NOT NULL,
                 app_label VARCHAR(100) NOT NULL,
                 model_name VARCHAR(100) NOT NULL,
                 object_id BIGINT NOT NULL,
@@ -9292,11 +9387,9 @@ mod tests {
                 action_flag INTEGER NOT NULL,
                 change_message TEXT NOT NULL,
                 field_diff TEXT
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_admin_log_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let staff = User {
@@ -9310,7 +9403,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -9320,7 +9413,7 @@ mod tests {
         ext.insert(session_staff.clone());
 
         let pk = djangors_orm::queryset::QuerySet::<ModelD>::insert_raw(
-            &db,
+            db,
             vec![
                 (
                     "name",
@@ -9357,12 +9450,14 @@ mod tests {
         let res_change = router.handle(req_change).await.unwrap();
         assert_eq!(res_change.status(), StatusCode::FOUND);
 
-        let logs: Vec<LogEntry> = sqlx::query_as(sqlx::AssertSqlSafe(
-            "SELECT id, user_id, action_time, app_label, model_name, object_id, object_repr, action_flag, change_message, field_diff FROM djangors_admin_log WHERE action_flag = 2 ORDER BY id ASC",
-        ))
-        .fetch_all(db.pool())
-        .await
-        .unwrap();
+        let logs = djangors_orm::queryset::QuerySet::<LogEntry>::new()
+            .filter(djangors_orm::q!(action_flag = 2))
+            .unwrap()
+            .order_by("id")
+            .unwrap()
+            .all(db)
+            .await
+            .unwrap();
         assert_eq!(logs.len(), 1);
 
         let raw_diff = logs[0]
@@ -9392,12 +9487,10 @@ mod tests {
 
         let drop_tables = ["test_model_d", "auth_user", "djangors_admin_log"];
         for table in drop_tables {
-            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
-                "DROP TABLE IF EXISTS {}",
-                table
-            )))
-            .execute(db.pool())
-            .await;
+            let _ = db
+                .conn()
+                .execute(&format!("DROP TABLE IF EXISTS {}", table), &[])
+                .await;
         }
     }
 

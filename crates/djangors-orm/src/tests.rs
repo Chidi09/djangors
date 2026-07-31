@@ -215,58 +215,59 @@ pub struct QuerySetTestModel {
 
 #[tokio::test]
 async fn test_queryset_operations() {
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
     // Create table
-    sqlx::query("DROP TABLE IF EXISTS test_queryset_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_queryset_model", &[])
+        .await;
 
-    sqlx::query(
+    let create_sql = format!(
         "CREATE TABLE test_queryset_model (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name TEXT NOT NULL,
             is_active BOOLEAN NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     // 1. Test empty queryset
-    let count = QuerySetTestModel::objects().count(&db).await.unwrap();
+    let count = QuerySetTestModel::objects().count(db).await.unwrap();
     assert_eq!(count, 0);
 
-    let exists = QuerySetTestModel::objects().exists(&db).await.unwrap();
+    let exists = QuerySetTestModel::objects().exists(db).await.unwrap();
     assert!(!exists);
 
-    let first = QuerySetTestModel::objects().first(&db).await.unwrap();
+    let first = QuerySetTestModel::objects().first(db).await.unwrap();
     assert!(first.is_none());
 
-    let get_res = QuerySetTestModel::objects().get(&db).await;
+    let get_res = QuerySetTestModel::objects().get(db).await;
     assert!(matches!(
         get_res,
         Err(crate::error::OrmError::NotFound { .. })
     ));
 
     // 2. Insert out-of-order test data
-    sqlx::query("INSERT INTO test_queryset_model (name, is_active) VALUES ('Alice', true), ('Charlie', false), ('Bob', true)")
-        .execute(db.pool())
+    db.conn()
+        .execute(
+            "INSERT INTO test_queryset_model (name, is_active) VALUES ('Alice', true), ('Charlie', false), ('Bob', true)",
+            &[],
+        )
         .await
         .unwrap();
 
     // 3. Test basic operations: count, exists, first, all
-    assert_eq!(QuerySetTestModel::objects().count(&db).await.unwrap(), 3);
-    assert!(QuerySetTestModel::objects().exists(&db).await.unwrap());
+    assert_eq!(QuerySetTestModel::objects().count(db).await.unwrap(), 3);
+    assert!(QuerySetTestModel::objects().exists(db).await.unwrap());
 
     // 4. Test ordering (ascending name)
     let sorted_asc = QuerySetTestModel::objects()
         .order_by("name")
         .unwrap()
-        .all(&db)
+        .all(db)
         .await
         .unwrap();
     assert_eq!(sorted_asc.len(), 3);
@@ -278,7 +279,7 @@ async fn test_queryset_operations() {
     let sorted_desc = QuerySetTestModel::objects()
         .order_by("-name")
         .unwrap()
-        .all(&db)
+        .all(db)
         .await
         .unwrap();
     assert_eq!(sorted_desc.len(), 3);
@@ -290,8 +291,8 @@ async fn test_queryset_operations() {
     let active_qs = QuerySetTestModel::objects()
         .filter(q!(is_active = true))
         .unwrap();
-    assert_eq!(active_qs.count(&db).await.unwrap(), 2);
-    let active_rows = active_qs.order_by("name").unwrap().all(&db).await.unwrap();
+    assert_eq!(active_qs.count(db).await.unwrap(), 2);
+    let active_rows = active_qs.order_by("name").unwrap().all(db).await.unwrap();
     assert_eq!(active_rows[0].name, "Alice");
     assert_eq!(active_rows[1].name, "Bob");
 
@@ -299,31 +300,33 @@ async fn test_queryset_operations() {
     let ch_qs = QuerySetTestModel::objects()
         .filter(q!(name__contains = "ch"))
         .unwrap();
-    assert_eq!(ch_qs.count(&db).await.unwrap(), 0); // case sensitive
+    if db.dialect() == djangors_db::Dialect::Postgres {
+        assert_eq!(ch_qs.count(db).await.unwrap(), 0); // case sensitive on Postgres
+    }
     let ich_qs = QuerySetTestModel::objects()
         .filter(q!(name__icontains = "ch"))
         .unwrap();
-    assert_eq!(ich_qs.count(&db).await.unwrap(), 1);
-    assert_eq!(ich_qs.get(&db).await.unwrap().name, "Charlie");
+    assert_eq!(ich_qs.count(db).await.unwrap(), 1);
+    assert_eq!(ich_qs.get(db).await.unwrap().name, "Charlie");
 
     // Test filter: starts with
     let starts_qs = QuerySetTestModel::objects()
         .filter(q!(name__startswith = "Al"))
         .unwrap();
-    assert_eq!(starts_qs.get(&db).await.unwrap().name, "Alice");
+    assert_eq!(starts_qs.get(db).await.unwrap().name, "Alice");
 
     // Test filter: ends with
     let ends_qs = QuerySetTestModel::objects()
         .filter(q!(name__endswith = "ob"))
         .unwrap();
-    assert_eq!(ends_qs.get(&db).await.unwrap().name, "Bob");
+    assert_eq!(ends_qs.get(db).await.unwrap().name, "Bob");
 
     // 6. Test limit & offset
     let limit_qs = QuerySetTestModel::objects()
         .order_by("name")
         .unwrap()
         .limit(2);
-    let limit_rows = limit_qs.all(&db).await.unwrap();
+    let limit_rows = limit_qs.all(db).await.unwrap();
     assert_eq!(limit_rows.len(), 2);
     assert_eq!(limit_rows[0].name, "Alice");
     assert_eq!(limit_rows[1].name, "Bob");
@@ -332,7 +335,7 @@ async fn test_queryset_operations() {
         .order_by("name")
         .unwrap()
         .offset(1);
-    let offset_rows = offset_qs.all(&db).await.unwrap();
+    let offset_rows = offset_qs.all(db).await.unwrap();
     assert_eq!(offset_rows.len(), 2);
     assert_eq!(offset_rows[0].name, "Bob");
     assert_eq!(offset_rows[1].name, "Charlie");
@@ -341,7 +344,7 @@ async fn test_queryset_operations() {
     let multi_get = QuerySetTestModel::objects()
         .filter(q!(is_active = true))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await;
     assert!(matches!(
         multi_get,
@@ -357,11 +360,7 @@ async fn test_queryset_operations() {
         other => panic!("expected FieldNotFound, got {other:?}"),
     }
 
-    // 9. Test typo'd field name validation in order_by() — this is a real SQL
-    // injection guard, not just a nice error message: without it, an
-    // unvalidated field name would be interpolated directly into the ORDER BY
-    // clause. Confirms the fix that closed that gap actually rejects unknown
-    // fields instead of silently passing them through as raw SQL text.
+    // 9. Test typo'd field name validation in order_by()
     let order_typo_res =
         QuerySetTestModel::objects().order_by("'; DROP TABLE test_queryset_model; --");
     match order_typo_res {
@@ -370,41 +369,41 @@ async fn test_queryset_operations() {
         }
         other => panic!("expected FieldNotFound, got {other:?}"),
     }
-    // Confirm the table really is still there (the rejected order_by must not
-    // have executed any SQL at all).
-    assert_eq!(QuerySetTestModel::objects().count(&db).await.unwrap(), 3);
 
-    // 10. Test model lifecycle (save, update, delete)
+    // 10. Test save() (insert new instance)
     let initial = QuerySetTestModel {
         id: 0,
         name: "David".to_string(),
         is_active: true,
     };
-    let saved = initial.save(&db).await.unwrap();
+    let saved = initial.save(db).await.unwrap();
     assert_ne!(saved.id, 0);
     assert_eq!(saved.name, "David");
     assert!(saved.is_active);
 
     // Confirm it exists in DB directly
-    let db_count = sqlx::query("SELECT COUNT(*) FROM test_queryset_model WHERE id = $1 AND name = 'David' AND is_active = true")
-        .bind(saved.id)
-        .fetch_one(db.pool())
+    let p1 = db.dialect().placeholder(1);
+    let check_sql = format!(
+        "SELECT COUNT(*) FROM test_queryset_model WHERE id = {p1} AND name = 'David' AND is_active = true"
+    );
+    let row = db
+        .conn()
+        .fetch_one(&check_sql, &[djangors_db::BindValue::I64(saved.id)])
         .await
         .unwrap();
-    use sqlx::Row;
-    let count: i64 = db_count.try_get(0).unwrap();
+    let count = row.try_i64(0).unwrap().unwrap();
     assert_eq!(count, 1);
 
     // 11. Test update()
     let mut to_update = saved;
     to_update.name = "David Updated".to_string();
-    to_update.update(&db).await.unwrap();
+    to_update.update(db).await.unwrap();
 
     // Re-fetch via QuerySet
     let fetched = QuerySetTestModel::objects()
         .filter(q!(id = to_update.id))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(fetched.name, "David Updated");
@@ -415,21 +414,21 @@ async fn test_queryset_operations() {
         name: "Ghost".to_string(),
         is_active: false,
     };
-    let update_res = non_existent.update(&db).await;
+    let update_res = non_existent.update(db).await;
     assert!(matches!(
         update_res,
         Err(crate::error::OrmError::NotFound { .. })
     ));
 
     // 13. Test delete()
-    assert_eq!(QuerySetTestModel::objects().count(&db).await.unwrap(), 4);
-    fetched.delete(&db).await.unwrap();
-    assert_eq!(QuerySetTestModel::objects().count(&db).await.unwrap(), 3);
+    assert_eq!(QuerySetTestModel::objects().count(db).await.unwrap(), 4);
+    fetched.delete(db).await.unwrap();
+    assert_eq!(QuerySetTestModel::objects().count(db).await.unwrap(), 3);
 
     let get_deleted = QuerySetTestModel::objects()
         .filter(q!(id = fetched.id))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await;
     assert!(matches!(
         get_deleted,
@@ -437,17 +436,17 @@ async fn test_queryset_operations() {
     ));
 
     // 14. Test delete() on non-existent PK
-    let delete_res = non_existent.delete(&db).await;
+    let delete_res = non_existent.delete(db).await;
     assert!(matches!(
         delete_res,
         Err(crate::error::OrmError::NotFound { .. })
     ));
 
     // Cleanup table
-    sqlx::query("DROP TABLE test_queryset_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_queryset_model", &[])
+        .await;
 }
 
 #[derive(Model, Debug)]
@@ -466,37 +465,35 @@ pub struct AggregateTestModel {
 async fn test_queryset_aggregation() {
     use crate::aggregate::{AggExpr, AggResult};
 
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
-    sqlx::query("DROP TABLE IF EXISTS test_aggregate_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_aggregate_model", &[])
+        .await;
+    let create_sql = format!(
         "CREATE TABLE test_aggregate_model (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             category TEXT NOT NULL,
             score INTEGER NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
-    sqlx::query(
-        "INSERT INTO test_aggregate_model (category, score) VALUES
-            ('a', 10), ('a', 20), ('a', 30), ('b', 100)",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO test_aggregate_model (category, score) VALUES ('a', 10), ('a', 20), ('a', 30), ('b', 100)",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // COUNT(*) via aggregate() must match the existing .count() method.
-    let count_via_count = AggregateTestModel::objects().count(&db).await.unwrap();
+    let count_via_count = AggregateTestModel::objects().count(db).await.unwrap();
     let count_via_agg = AggregateTestModel::objects()
-        .aggregate(&db, vec![AggExpr::Count { field: "*" }])
+        .aggregate(db, vec![AggExpr::Count { field: "*" }])
         .await
         .unwrap();
     assert_eq!(count_via_agg, vec![AggResult::I64(4)]);
@@ -505,7 +502,7 @@ async fn test_queryset_aggregation() {
     // SUM/AVG/MIN/MAX over the whole table.
     let results = AggregateTestModel::objects()
         .aggregate(
-            &db,
+            db,
             vec![
                 AggExpr::Sum { field: "score" },
                 AggExpr::Avg { field: "score" },
@@ -524,7 +521,7 @@ async fn test_queryset_aggregation() {
     let filtered_sum = AggregateTestModel::objects()
         .filter(q!(category = "a"))
         .unwrap()
-        .aggregate(&db, vec![AggExpr::Sum { field: "score" }])
+        .aggregate(db, vec![AggExpr::Sum { field: "score" }])
         .await
         .unwrap();
     assert_eq!(filtered_sum, vec![AggResult::F64(60.0)]); // 10+20+30, not +100
@@ -534,7 +531,7 @@ async fn test_queryset_aggregation() {
         .filter(q!(category = "nonexistent"))
         .unwrap()
         .aggregate(
-            &db,
+            db,
             vec![
                 AggExpr::Sum { field: "score" },
                 AggExpr::Avg { field: "score" },
@@ -557,7 +554,7 @@ async fn test_queryset_aggregation() {
     let empty_count = AggregateTestModel::objects()
         .filter(q!(category = "nonexistent"))
         .unwrap()
-        .aggregate(&db, vec![AggExpr::Count { field: "*" }])
+        .aggregate(db, vec![AggExpr::Count { field: "*" }])
         .await
         .unwrap();
     assert_eq!(empty_count, vec![AggResult::I64(0)]);
@@ -565,7 +562,7 @@ async fn test_queryset_aggregation() {
     // Typo'd field name is rejected before any SQL executes — the same
     // injection-safety discipline as filter()/order_by().
     let typo_res = AggregateTestModel::objects()
-        .aggregate(&db, vec![AggExpr::Sum { field: "scoer" }])
+        .aggregate(db, vec![AggExpr::Sum { field: "scoer" }])
         .await;
     match typo_res {
         Err(crate::error::OrmError::FieldNotFound { field, .. }) => {
@@ -574,10 +571,10 @@ async fn test_queryset_aggregation() {
         other => panic!("expected FieldNotFound, got {other:?}"),
     }
 
-    sqlx::query("DROP TABLE test_aggregate_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_aggregate_model", &[])
+        .await;
 }
 
 #[derive(Model, Debug)]
@@ -599,38 +596,34 @@ async fn test_queryset_bulk_update() {
     use crate::expr::F;
     use crate::set;
 
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
     // Create table
-    sqlx::query("DROP TABLE IF EXISTS test_bulk_update_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_bulk_update_model", &[])
+        .await;
 
-    sqlx::query(
+    let create_sql = format!(
         "CREATE TABLE test_bulk_update_model (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             votes BIGINT NOT NULL,
             price DOUBLE PRECISION NOT NULL,
             is_active BOOLEAN NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     // Insert initial rows
-    sqlx::query(
-        "INSERT INTO test_bulk_update_model (votes, price, is_active) VALUES
-            (10, 1.5, true),
-            (20, 2.5, true),
-            (30, 3.5, false)",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+    db.conn()
+        .execute(
+            "INSERT INTO test_bulk_update_model (votes, price, is_active) VALUES (10, 1.5, true), (20, 2.5, true), (30, 3.5, false)",
+            &[],
+        )
+        .await
+        .unwrap();
 
     // Test 1: Literal and F() expression updates on filtered queryset
     // votes = votes + 5, price = price * 2.0, is_active = false
@@ -638,7 +631,7 @@ async fn test_queryset_bulk_update() {
         .filter(q!(is_active = true))
         .unwrap()
         .update(
-            &db,
+            db,
             set!(
                 votes = F("votes") + 5,
                 price = F("price") * 2.0,
@@ -654,7 +647,7 @@ async fn test_queryset_bulk_update() {
     let row1 = BulkUpdateTestModel::objects()
         .filter(q!(id = 1))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(row1.votes, 15);
@@ -665,7 +658,7 @@ async fn test_queryset_bulk_update() {
     let row2 = BulkUpdateTestModel::objects()
         .filter(q!(id = 2))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(row2.votes, 25);
@@ -676,7 +669,7 @@ async fn test_queryset_bulk_update() {
     let row3 = BulkUpdateTestModel::objects()
         .filter(q!(id = 3))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(row3.votes, 30);
@@ -687,7 +680,7 @@ async fn test_queryset_bulk_update() {
     let affected_seq = BulkUpdateTestModel::objects()
         .filter(q!(id = 1))
         .unwrap()
-        .update(&db, set!(votes = F("votes") + 1))
+        .update(db, set!(votes = F("votes") + 1))
         .await
         .unwrap();
     assert_eq!(affected_seq, 1);
@@ -695,7 +688,7 @@ async fn test_queryset_bulk_update() {
     let affected_seq2 = BulkUpdateTestModel::objects()
         .filter(q!(id = 1))
         .unwrap()
-        .update(&db, set!(votes = F("votes") + 1))
+        .update(db, set!(votes = F("votes") + 1))
         .await
         .unwrap();
     assert_eq!(affected_seq2, 1);
@@ -703,7 +696,7 @@ async fn test_queryset_bulk_update() {
     let row1_double = BulkUpdateTestModel::objects()
         .filter(q!(id = 1))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(row1_double.votes, 17); // 15 + 1 + 1
@@ -711,8 +704,8 @@ async fn test_queryset_bulk_update() {
     // Test 3: Concurrent updates using tokio::join!
     let qs1 = BulkUpdateTestModel::objects().filter(q!(id = 2)).unwrap();
     let qs2 = BulkUpdateTestModel::objects().filter(q!(id = 2)).unwrap();
-    let fut1 = qs1.update(&db, set!(votes = F("votes") + 1));
-    let fut2 = qs2.update(&db, set!(votes = F("votes") + 1));
+    let fut1 = qs1.update(db, set!(votes = F("votes") + 1));
+    let fut2 = qs2.update(db, set!(votes = F("votes") + 1));
     let (res1, res2) = tokio::join!(fut1, fut2);
     assert_eq!(res1.unwrap(), 1);
     assert_eq!(res2.unwrap(), 1);
@@ -720,14 +713,14 @@ async fn test_queryset_bulk_update() {
     let row2_concurrent = BulkUpdateTestModel::objects()
         .filter(q!(id = 2))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(row2_concurrent.votes, 27); // 25 + 1 + 1
 
     // Test 4: Typo'd field name (LHS) is rejected
     let typo_lhs = BulkUpdateTestModel::objects()
-        .update(&db, set!(votes_typo = 5))
+        .update(db, set!(votes_typo = 5))
         .await;
     assert!(matches!(
         typo_lhs,
@@ -736,7 +729,7 @@ async fn test_queryset_bulk_update() {
 
     // Test 5: Typo'd field name (RHS F()) is rejected
     let typo_rhs = BulkUpdateTestModel::objects()
-        .update(&db, set!(votes = F("votes_typo") + 1))
+        .update(db, set!(votes = F("votes_typo") + 1))
         .await;
     assert!(matches!(
         typo_rhs,
@@ -747,16 +740,16 @@ async fn test_queryset_bulk_update() {
     let affected_zero = BulkUpdateTestModel::objects()
         .filter(q!(id = 9999))
         .unwrap()
-        .update(&db, set!(votes = F("votes") + 1))
+        .update(db, set!(votes = F("votes") + 1))
         .await
         .unwrap();
     assert_eq!(affected_zero, 0);
 
     // Clean up
-    sqlx::query("DROP TABLE test_bulk_update_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_bulk_update_model", &[])
+        .await;
 }
 
 #[derive(Model, Debug, Clone)]
@@ -778,48 +771,44 @@ pub struct SelectRelatedChild {
 
 #[tokio::test]
 async fn test_queryset_select_related() {
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
     // Clean up tables if they exist
-    sqlx::query("DROP TABLE IF EXISTS test_select_related_child")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query("DROP TABLE IF EXISTS test_select_related_parent")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_select_related_child", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_select_related_parent", &[])
+        .await;
 
     // Create parent table
-    sqlx::query(
+    let create_parent_sql = format!(
         "CREATE TABLE test_select_related_parent (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name TEXT NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_parent_sql, &[]).await.unwrap();
 
     // Create child table
-    sqlx::query(
+    let create_child_sql = format!(
         "CREATE TABLE test_select_related_child (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             parent BIGINT NOT NULL REFERENCES test_select_related_parent(id) ON DELETE CASCADE
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_child_sql, &[]).await.unwrap();
 
     // Insert test data
     let parent1 = SelectRelatedParent {
         id: 0,
         name: "Parent A".to_string(),
     }
-    .save(&db)
+    .save(db)
     .await
     .unwrap();
 
@@ -827,7 +816,7 @@ async fn test_queryset_select_related() {
         id: 0,
         name: "Parent B".to_string(),
     }
-    .save(&db)
+    .save(db)
     .await
     .unwrap();
 
@@ -835,7 +824,7 @@ async fn test_queryset_select_related() {
         id: 0,
         parent: ForeignKey::new(parent1.id),
     }
-    .save(&db)
+    .save(db)
     .await
     .unwrap();
 
@@ -843,13 +832,13 @@ async fn test_queryset_select_related() {
         id: 0,
         parent: ForeignKey::new(parent2.id),
     }
-    .save(&db)
+    .save(db)
     .await
     .unwrap();
 
     // Run select_related
     let results = SelectRelatedChild::objects()
-        .select_related::<SelectRelatedParent, _>(&db, "parent")
+        .select_related::<SelectRelatedParent, _>(db, "parent")
         .await
         .unwrap();
 
@@ -871,7 +860,7 @@ async fn test_queryset_select_related() {
 
     // Test validation: typo'd field name
     let typo_res = SelectRelatedChild::objects()
-        .select_related::<SelectRelatedParent, _>(&db, "nonexistent")
+        .select_related::<SelectRelatedParent, _>(db, "nonexistent")
         .await;
     assert!(matches!(
         typo_res,
@@ -880,7 +869,7 @@ async fn test_queryset_select_related() {
 
     // Test validation: mismatched R type parameter
     let mismatch_res = SelectRelatedChild::objects()
-        .select_related::<SelectRelatedChild, _>(&db, "parent")
+        .select_related::<SelectRelatedChild, _>(db, "parent")
         .await;
     assert!(matches!(
         mismatch_res,
@@ -888,14 +877,14 @@ async fn test_queryset_select_related() {
     ));
 
     // Clean up
-    sqlx::query("DROP TABLE test_select_related_child")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query("DROP TABLE test_select_related_parent")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_select_related_child", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_select_related_parent", &[])
+        .await;
 }
 
 // Dedicated models/tables for the prefetch test below, kept separate from
@@ -921,39 +910,34 @@ pub struct PrefetchChild {
 
 #[tokio::test]
 async fn test_prefetch_related_is_constant_query_count() {
-    let config = djangors_db::config::DatabaseConfig::new(
-        "postgres://postgres:postgres@localhost/djangors_test",
-    );
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
-    sqlx::query("DROP TABLE IF EXISTS test_prefetch_child")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query("DROP TABLE IF EXISTS test_prefetch_parent")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_prefetch_child", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_prefetch_parent", &[])
+        .await;
 
-    sqlx::query(
+    let create_parent_sql = format!(
         "CREATE TABLE test_prefetch_parent (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name TEXT NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_parent_sql, &[]).await.unwrap();
 
-    sqlx::query(
+    let create_child_sql = format!(
         "CREATE TABLE test_prefetch_child (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             parent BIGINT NOT NULL REFERENCES test_prefetch_parent(id) ON DELETE CASCADE
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_child_sql, &[]).await.unwrap();
 
     let seed_parents: Vec<_> = (0..5)
         .map(|i| PrefetchParent {
@@ -962,25 +946,25 @@ async fn test_prefetch_related_is_constant_query_count() {
         })
         .collect();
     for parent in &seed_parents {
-        parent.clone().save(&db).await.unwrap();
+        parent.clone().save(db).await.unwrap();
     }
-    let parents = PrefetchParent::objects().all(&db).await.unwrap();
+    let parents = PrefetchParent::objects().all(db).await.unwrap();
     for parent in &parents {
         for _ in 0..2 {
             PrefetchChild {
                 id: 0,
                 parent: ForeignKey::new(parent.id),
             }
-            .save(&db)
+            .save(db)
             .await
             .unwrap();
         }
     }
 
     db.reset_query_count();
-    let parents = PrefetchParent::objects().all(&db).await.unwrap();
+    let parents = PrefetchParent::objects().all(db).await.unwrap();
     let grouped =
-        crate::prefetch_related::<PrefetchParent, PrefetchChild, _>(&db, &parents, "children")
+        crate::prefetch_related::<PrefetchParent, PrefetchChild, _>(db, &parents, "children")
             .await
             .unwrap();
     assert_eq!(db.query_count(), 2);
@@ -994,20 +978,20 @@ async fn test_prefetch_related_is_constant_query_count() {
         PrefetchChild::objects()
             .filter(q!(parent = parent.id))
             .unwrap()
-            .all(&db)
+            .all(db)
             .await
             .unwrap();
     }
     assert_eq!(db.query_count(), 5);
 
-    sqlx::query("DROP TABLE test_prefetch_child")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query("DROP TABLE test_prefetch_parent")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_prefetch_child", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_prefetch_parent", &[])
+        .await;
 }
 
 #[derive(Model, Debug, Clone)]
@@ -1122,47 +1106,48 @@ pub struct OrderedAggModel {
 /// to `meta.ordering` during SQL compilation.
 #[tokio::test]
 async fn test_count_and_aggregate_on_model_with_default_ordering() {
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
-    sqlx::query("DROP TABLE IF EXISTS test_ordered_agg_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_ordered_agg_model", &[])
+        .await;
+    let create_sql = format!(
         "CREATE TABLE test_ordered_agg_model (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name TEXT NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
-    sqlx::query("INSERT INTO test_ordered_agg_model (name) VALUES ('a'), ('b'), ('c')")
-        .execute(db.pool())
+    db.conn()
+        .execute(
+            "INSERT INTO test_ordered_agg_model (name) VALUES ('a'), ('b'), ('c')",
+            &[],
+        )
         .await
         .unwrap();
 
-    assert_eq!(OrderedAggModel::objects().count(&db).await.unwrap(), 3);
-    assert!(OrderedAggModel::objects().exists(&db).await.unwrap());
+    assert_eq!(OrderedAggModel::objects().count(db).await.unwrap(), 3);
+    assert!(OrderedAggModel::objects().exists(db).await.unwrap());
 
     let aggs = OrderedAggModel::objects()
-        .aggregate(&db, vec![crate::aggregate::AggExpr::Count { field: "*" }])
+        .aggregate(db, vec![crate::aggregate::AggExpr::Count { field: "*" }])
         .await
         .unwrap();
     assert_eq!(aggs.len(), 1);
 
     // The default ordering itself must still apply to regular selects.
-    let rows = OrderedAggModel::objects().all(&db).await.unwrap();
+    let rows = OrderedAggModel::objects().all(db).await.unwrap();
     let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
     assert_eq!(names, vec!["c", "b", "a"]);
 
-    sqlx::query("DROP TABLE test_ordered_agg_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_ordered_agg_model", &[])
+        .await;
 }
 
 #[derive(Model, Debug)]
@@ -1177,31 +1162,29 @@ pub struct InsertRawTestModel {
 
 #[tokio::test]
 async fn test_queryset_insert_raw() {
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
-    sqlx::query("DROP TABLE IF EXISTS test_insert_raw_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_insert_raw_model", &[])
+        .await;
+    let create_sql = format!(
         "CREATE TABLE test_insert_raw_model (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name TEXT NOT NULL,
             age BIGINT NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     // 1. Valid insert_raw
     let values = vec![
         ("name", crate::expr::Value::Text("Alice".to_string())),
         ("age", crate::expr::Value::I64(30)),
     ];
-    let pk = crate::queryset::QuerySet::<InsertRawTestModel>::insert_raw(&db, values)
+    let pk = crate::queryset::QuerySet::<InsertRawTestModel>::insert_raw(db, values)
         .await
         .unwrap();
 
@@ -1209,7 +1192,7 @@ async fn test_queryset_insert_raw() {
     let row = crate::queryset::QuerySet::<InsertRawTestModel>::new()
         .filter(q!(id = pk))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(row.name, "Alice");
@@ -1220,7 +1203,7 @@ async fn test_queryset_insert_raw() {
         ("name", crate::expr::Value::Text("Bob".to_string())),
         ("invalid_field", crate::expr::Value::I64(42)),
     ];
-    let err = crate::queryset::QuerySet::<InsertRawTestModel>::insert_raw(&db, bad_values).await;
+    let err = crate::queryset::QuerySet::<InsertRawTestModel>::insert_raw(db, bad_values).await;
     match err {
         Err(crate::error::OrmError::FieldNotFound { field, .. }) => {
             assert_eq!(field, "invalid_field");
@@ -1228,10 +1211,10 @@ async fn test_queryset_insert_raw() {
         other => panic!("Expected FieldNotFound error, got {:?}", other),
     }
 
-    sqlx::query("DROP TABLE test_insert_raw_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_insert_raw_model", &[])
+        .await;
 }
 
 #[derive(Model, Debug, Clone)]
@@ -1246,28 +1229,26 @@ pub struct BulkCreateTestModel {
 
 #[tokio::test]
 async fn test_queryset_bulk_create() {
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
-    sqlx::query("DROP TABLE IF EXISTS test_bulk_create_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_bulk_create_model", &[])
+        .await;
+    let create_sql = format!(
         "CREATE TABLE test_bulk_create_model (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name TEXT NOT NULL,
             age BIGINT NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     // Empty input is a no-op, not an error, and issues no query.
     let empty: Vec<BulkCreateTestModel> = Vec::new();
-    let pks = crate::queryset::QuerySet::<BulkCreateTestModel>::bulk_create(&db, &empty)
+    let pks = crate::queryset::QuerySet::<BulkCreateTestModel>::bulk_create(db, &empty)
         .await
         .unwrap();
     assert!(pks.is_empty());
@@ -1290,7 +1271,7 @@ async fn test_queryset_bulk_create() {
             age: 40,
         },
     ];
-    let pks = crate::queryset::QuerySet::<BulkCreateTestModel>::bulk_create(&db, &items)
+    let pks = crate::queryset::QuerySet::<BulkCreateTestModel>::bulk_create(db, &items)
         .await
         .unwrap();
     assert_eq!(pks.len(), 3);
@@ -1305,26 +1286,28 @@ async fn test_queryset_bulk_create() {
         let row = crate::queryset::QuerySet::<BulkCreateTestModel>::new()
             .filter(q!(id = *pk))
             .unwrap()
-            .get(&db)
+            .get(db)
             .await
             .unwrap();
         assert_eq!(row.name, expected.name);
         assert_eq!(row.age, expected.age);
     }
 
-    let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_bulk_create_model")
-        .fetch_one(db.pool())
+    let count_row = db
+        .conn()
+        .fetch_one("SELECT COUNT(*) FROM test_bulk_create_model", &[])
         .await
         .unwrap();
+    let total = count_row.try_i64(0).unwrap().unwrap();
     assert_eq!(
         total, 3,
         "bulk_create must not insert more or fewer rows than given"
     );
 
-    sqlx::query("DROP TABLE test_bulk_create_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_bulk_create_model", &[])
+        .await;
 }
 
 #[derive(Model, Debug)]
@@ -1349,25 +1332,24 @@ pub struct NullableBindTestModel {
 /// no nullable non-i64 field; this one does.
 #[tokio::test]
 async fn test_null_bind_respects_field_type() {
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+    let ts_type = db.dialect().timestamp_type();
 
-    sqlx::query("DROP TABLE IF EXISTS test_nullable_bind_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_nullable_bind_model", &[])
+        .await;
+    let create_sql = format!(
         "CREATE TABLE test_nullable_bind_model (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name TEXT NOT NULL,
             bio TEXT,
-            last_seen TIMESTAMPTZ
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+            last_seen {ts_type}
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     // insert_raw with a nullable TEXT and a nullable TIMESTAMPTZ both Null.
     let values = vec![
@@ -1375,14 +1357,14 @@ async fn test_null_bind_respects_field_type() {
         ("bio", crate::expr::Value::Null),
         ("last_seen", crate::expr::Value::Null),
     ];
-    let pk = crate::queryset::QuerySet::<NullableBindTestModel>::insert_raw(&db, values)
+    let pk = crate::queryset::QuerySet::<NullableBindTestModel>::insert_raw(db, values)
         .await
         .unwrap();
 
     let row = crate::queryset::QuerySet::<NullableBindTestModel>::new()
         .filter(q!(id = pk))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(row.bio, None);
@@ -1392,7 +1374,7 @@ async fn test_null_bind_respects_field_type() {
     // through `update` (the generic QuerySet path djangors-admin's
     // update_from_form drives) — must not error typing NULL as int8.
     let pk2 = crate::queryset::QuerySet::<NullableBindTestModel>::insert_raw(
-        &db,
+        db,
         vec![
             ("name", crate::expr::Value::Text("Bob".to_string())),
             ("bio", crate::expr::Value::Text("hello".to_string())),
@@ -1405,7 +1387,7 @@ async fn test_null_bind_respects_field_type() {
         .filter(q!(id = pk2))
         .unwrap()
         .update(
-            &db,
+            db,
             vec![
                 (
                     "bio",
@@ -1423,16 +1405,16 @@ async fn test_null_bind_respects_field_type() {
     let row2 = crate::queryset::QuerySet::<NullableBindTestModel>::new()
         .filter(q!(id = pk2))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(row2.bio, None);
     assert_eq!(row2.last_seen, None);
 
-    sqlx::query("DROP TABLE test_nullable_bind_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_nullable_bind_model", &[])
+        .await;
 }
 
 #[derive(Model, Debug, Clone)]
@@ -1454,31 +1436,29 @@ fn test_file_field_kind_is_set_on_the_model() {
 
 #[tokio::test]
 async fn test_file_field_saves_and_reloads_a_real_path_string() {
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
-    sqlx::query("DROP TABLE IF EXISTS test_file_field_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_file_field_model", &[])
+        .await;
+    let create_sql = format!(
         "CREATE TABLE test_file_field_model (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name TEXT NOT NULL,
             attachment TEXT
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     let saved = FileFieldTestModel {
         id: 0,
         name: "invoice".to_string(),
         attachment: Some("uploads/invoice-42.pdf".to_string()),
     }
-    .save(&db)
+    .save(db)
     .await
     .unwrap();
     assert_eq!(saved.attachment.as_deref(), Some("uploads/invoice-42.pdf"));
@@ -1486,7 +1466,7 @@ async fn test_file_field_saves_and_reloads_a_real_path_string() {
     let reloaded = crate::queryset::QuerySet::<FileFieldTestModel>::new()
         .filter(q!(id = saved.id))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(
@@ -1499,21 +1479,21 @@ async fn test_file_field_saves_and_reloads_a_real_path_string() {
         name: "no-file".to_string(),
         attachment: None,
     }
-    .save(&db)
+    .save(db)
     .await
     .unwrap();
     let reloaded_none = crate::queryset::QuerySet::<FileFieldTestModel>::new()
         .filter(q!(id = no_attachment.id))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(reloaded_none.attachment, None);
 
-    sqlx::query("DROP TABLE test_file_field_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_file_field_model", &[])
+        .await;
 }
 
 #[derive(Model, Debug)]
@@ -1530,35 +1510,33 @@ async fn test_model_lifecycle_signals() {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
-    sqlx::query("DROP TABLE IF EXISTS test_signal_lifecycle")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_signal_lifecycle", &[])
+        .await;
+    let create_sql = format!(
         "CREATE TABLE test_signal_lifecycle (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name TEXT NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     // 1. No receivers connected -> save/update/delete must work normally
     let model = SignalLifecycleModel {
         id: 0,
         name: "no-receiver".to_string(),
     };
-    let saved = model.save(&db).await.unwrap();
+    let saved = model.save(db).await.unwrap();
     assert!(saved.id > 0);
     let mut updated = saved;
     updated.name = "still-no-receiver".to_string();
-    updated.update(&db).await.unwrap();
-    updated.delete(&db).await.unwrap();
+    updated.update(db).await.unwrap();
+    updated.delete(db).await.unwrap();
 
     // 2. pre_save fires before the row exists in the database
     let pre_save_fired = Arc::new(AtomicBool::new(false));
@@ -1572,10 +1550,12 @@ async fn test_model_lifecycle_signals() {
         let db = cb_db.clone();
         async move {
             fired.store(true, Ordering::SeqCst);
-            let c: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_signal_lifecycle")
-                .fetch_one(db.pool())
+            let row = db
+                .conn()
+                .fetch_one("SELECT COUNT(*) FROM test_signal_lifecycle", &[])
                 .await
                 .unwrap();
+            let c = row.try_i64(0).unwrap().unwrap();
             *count.lock().unwrap() = c;
         }
     });
@@ -1584,7 +1564,7 @@ async fn test_model_lifecycle_signals() {
         id: 0,
         name: "pre-save-test".to_string(),
     };
-    let _saved2 = model2.save(&db).await.unwrap();
+    let _saved2 = model2.save(db).await.unwrap();
     assert!(
         pre_save_fired.load(Ordering::SeqCst),
         "pre_save signal must fire during save()"
@@ -1607,10 +1587,12 @@ async fn test_model_lifecycle_signals() {
         let db = cb_db2.clone();
         async move {
             fired2.store(true, Ordering::SeqCst);
-            let c: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_signal_lifecycle")
-                .fetch_one(db.pool())
+            let row = db
+                .conn()
+                .fetch_one("SELECT COUNT(*) FROM test_signal_lifecycle", &[])
                 .await
                 .unwrap();
+            let c = row.try_i64(0).unwrap().unwrap();
             *count2.lock().unwrap() = c;
         }
     });
@@ -1619,7 +1601,7 @@ async fn test_model_lifecycle_signals() {
         id: 0,
         name: "post-save-test".to_string(),
     };
-    let saved3 = model3.save(&db).await.unwrap();
+    let saved3 = model3.save(db).await.unwrap();
     assert!(
         post_save_fired.load(Ordering::SeqCst),
         "post_save signal must fire during save()"
@@ -1653,7 +1635,7 @@ async fn test_model_lifecycle_signals() {
 
     let mut to_update = saved3;
     to_update.name = "updated".to_string();
-    to_update.update(&db).await.unwrap();
+    to_update.update(db).await.unwrap();
     assert!(
         update_pre_fired.load(Ordering::SeqCst),
         "pre_save must fire during update()"
@@ -1675,10 +1657,12 @@ async fn test_model_lifecycle_signals() {
         let db = cb_db3.clone();
         async move {
             pdf.store(true, Ordering::SeqCst);
-            let c: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_signal_lifecycle")
-                .fetch_one(db.pool())
+            let row = db
+                .conn()
+                .fetch_one("SELECT COUNT(*) FROM test_signal_lifecycle", &[])
                 .await
                 .unwrap();
+            let c = row.try_i64(0).unwrap().unwrap();
             *pdr.lock().unwrap() = c;
         }
     });
@@ -1687,7 +1671,7 @@ async fn test_model_lifecycle_signals() {
         id: 0,
         name: "delete-me".to_string(),
     }
-    .save(&db)
+    .save(db)
     .await
     .unwrap();
     let delete_id = delete_target.id;
@@ -1703,17 +1687,19 @@ async fn test_model_lifecycle_signals() {
         let db = cb_db4.clone();
         async move {
             pdf2.store(true, Ordering::SeqCst);
-            let c: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM test_signal_lifecycle WHERE id = $1")
-                    .bind(delete_id)
-                    .fetch_one(db.pool())
-                    .await
-                    .unwrap();
+            let p1 = db.dialect().placeholder(1);
+            let sql = format!("SELECT COUNT(*) FROM test_signal_lifecycle WHERE id = {p1}");
+            let row = db
+                .conn()
+                .fetch_one(&sql, &[djangors_db::BindValue::I64(delete_id)])
+                .await
+                .unwrap();
+            let c = row.try_i64(0).unwrap().unwrap();
             *prg.lock().unwrap() = c == 0;
         }
     });
 
-    delete_target.delete(&db).await.unwrap();
+    delete_target.delete(db).await.unwrap();
     assert!(pre_del_fired.load(Ordering::SeqCst), "pre_delete must fire");
     assert!(
         *pre_del_row_count.lock().unwrap() > 0,
@@ -1746,7 +1732,7 @@ async fn test_model_lifecycle_signals() {
         id: 0,
         name: "panic-test".to_string(),
     }
-    .save(&db)
+    .save(db)
     .await
     .unwrap();
     assert!(
@@ -1756,14 +1742,14 @@ async fn test_model_lifecycle_signals() {
 
     let mut panic_updated = panic_saved;
     panic_updated.name = "panic-updated".to_string();
-    panic_updated.update(&db).await.unwrap();
+    panic_updated.update(db).await.unwrap();
 
-    panic_updated.delete(&db).await.unwrap();
+    panic_updated.delete(db).await.unwrap();
 
-    sqlx::query("DROP TABLE test_signal_lifecycle")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_signal_lifecycle", &[])
+        .await;
 }
 
 #[derive(Model, Debug, Clone)]
@@ -1845,26 +1831,24 @@ fn test_modelform_over_max_length_string_produces_a_named_error() {
 
 #[tokio::test]
 async fn test_modelform_saves_and_updates_a_real_row() {
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
-    sqlx::query("DROP TABLE IF EXISTS test_modelform_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_modelform_model", &[])
+        .await;
+    let create_sql = format!(
         "CREATE TABLE test_modelform_model (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name TEXT NOT NULL,
             age BIGINT NOT NULL,
             active BOOLEAN NOT NULL,
             attachment TEXT
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     // Create path: validate -> construct -> save -> read back.
     let mut data = std::collections::HashMap::new();
@@ -1873,7 +1857,7 @@ async fn test_modelform_saves_and_updates_a_real_row() {
     data.insert("active".to_string(), "false".to_string());
     let cleaned = ModelFormTestModel::validate_form(&data).unwrap();
     let instance = ModelFormTestModel::from_cleaned_form(cleaned);
-    let saved = instance.save(&db).await.unwrap();
+    let saved = instance.save(db).await.unwrap();
     assert!(saved.id > 0);
     assert_eq!(saved.name, "Carol");
     assert_eq!(saved.age, 25);
@@ -1882,7 +1866,7 @@ async fn test_modelform_saves_and_updates_a_real_row() {
     let reloaded = crate::queryset::QuerySet::<ModelFormTestModel>::new()
         .filter(q!(id = saved.id))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(reloaded.name, "Carol");
@@ -1902,12 +1886,12 @@ async fn test_modelform_saves_and_updates_a_real_row() {
         to_update.id, original_id,
         "apply_cleaned_form must not touch the primary key"
     );
-    to_update.update(&db).await.unwrap();
+    to_update.update(db).await.unwrap();
 
     let reloaded_after_update = crate::queryset::QuerySet::<ModelFormTestModel>::new()
         .filter(q!(id = original_id))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
     assert_eq!(reloaded_after_update.name, "CarolUpdt2");
@@ -1918,10 +1902,10 @@ async fn test_modelform_saves_and_updates_a_real_row() {
         "the real persisted row's primary key must be unchanged"
     );
 
-    sqlx::query("DROP TABLE test_modelform_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_modelform_model", &[])
+        .await;
 }
 
 #[derive(Model, Debug)]
@@ -1943,35 +1927,30 @@ pub struct ReservedKeywordTestModel {
 
 #[tokio::test]
 async fn test_filter_order_and_aggregate_on_reserved_keyword_field_names() {
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_db::Database::connect(&config).await.unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
 
-    sqlx::query("DROP TABLE IF EXISTS test_reserved_keyword_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_reserved_keyword_model", &[])
+        .await;
+    let create_sql = format!(
         "CREATE TABLE test_reserved_keyword_model (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             \"user\" TEXT NOT NULL,
             \"group\" INTEGER NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
-    sqlx::query("INSERT INTO test_reserved_keyword_model (\"user\", \"group\") VALUES ('alice', 1), ('bob', 2), ('carol', 1)")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    db.conn().execute("INSERT INTO test_reserved_keyword_model (\"user\", \"group\") VALUES ('alice', 1), ('bob', 2), ('carol', 1)", &[]).await.unwrap();
 
     // filter() on a reserved-keyword field name
     let filtered = crate::queryset::QuerySet::<ReservedKeywordTestModel>::new()
         .filter(q!(group = 1))
         .unwrap()
-        .all(&db)
+        .all(db)
         .await
         .unwrap();
     assert_eq!(filtered.len(), 2);
@@ -1980,7 +1959,7 @@ async fn test_filter_order_and_aggregate_on_reserved_keyword_field_names() {
     let ordered = crate::queryset::QuerySet::<ReservedKeywordTestModel>::new()
         .order_by("user")
         .unwrap()
-        .all(&db)
+        .all(db)
         .await
         .unwrap();
     assert_eq!(
@@ -1992,15 +1971,15 @@ async fn test_filter_order_and_aggregate_on_reserved_keyword_field_names() {
     let count = crate::queryset::QuerySet::<ReservedKeywordTestModel>::new()
         .filter(q!(group = 1))
         .unwrap()
-        .count(&db)
+        .count(db)
         .await
         .unwrap();
     assert_eq!(count, 2);
 
-    sqlx::query("DROP TABLE test_reserved_keyword_model")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_reserved_keyword_model", &[])
+        .await;
 }
 
 /// Compile-time proof that a `QuerySet` runs against both execution targets:

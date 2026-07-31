@@ -322,24 +322,22 @@ mod tests {
     static TEST_DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     async fn setup() -> (djangors_db::Database, tempfile::TempDir, TemplateEngine) {
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database().clone();
+        let auto_pk = db.dialect().auto_pk_type();
 
-        sqlx::query("DROP TABLE IF EXISTS test_cbv_model")
-            .execute(db.pool())
+        db.conn()
+            .execute("DROP TABLE IF EXISTS test_cbv_model", &[])
             .await
             .unwrap();
-        sqlx::query(
+        let create_sql = format!(
             "CREATE TABLE test_cbv_model (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name TEXT NOT NULL,
                 age BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_sql, &[]).await.unwrap();
 
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(
@@ -410,7 +408,7 @@ mod tests {
             template_name: "list.html",
             success_url: "/",
         };
-        let req = make_request(Method::GET, "", db);
+        let req = make_request(Method::GET, "", db.clone());
         let res = ListView::<CbvTestModel>::list(req, PathParams::new(), &config)
             .await
             .unwrap();
@@ -418,17 +416,10 @@ mod tests {
         assert!(body.contains("Alice:30"), "body was: {body}");
         assert!(body.contains("Bob:25"), "body was: {body}");
 
-        sqlx::query("DROP TABLE test_cbv_model")
-            .execute(
-                djangors_db::Database::connect(&djangors_db::config::DatabaseConfig::new(
-                    "postgres://postgres:postgres@localhost/djangors_test",
-                ))
-                .await
-                .unwrap()
-                .pool(),
-            )
+        db.conn()
+            .execute("DROP TABLE test_cbv_model", &[])
             .await
-            .unwrap();
+            .ok();
     }
 
     #[tokio::test]
@@ -456,10 +447,10 @@ mod tests {
         let body = String::from_utf8(res.body().to_vec()).unwrap();
         assert_eq!(body, "Carol:40");
 
-        sqlx::query("DROP TABLE test_cbv_model")
-            .execute(db.pool())
+        db.conn()
+            .execute("DROP TABLE test_cbv_model", &[])
             .await
-            .unwrap();
+            .ok();
     }
 
     #[tokio::test]
@@ -479,11 +470,14 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::FOUND);
         assert_eq!(res.headers().get(hyper::header::LOCATION).unwrap(), "/done");
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_cbv_model WHERE name = $1")
-            .bind("Dave")
-            .fetch_one(db.pool())
+        let ph = db.dialect().placeholder(1);
+        let sql = format!("SELECT COUNT(*) FROM test_cbv_model WHERE name = {ph}");
+        let row = db
+            .conn()
+            .fetch_one(&sql, &[djangors_db::BindValue::Text("Dave".to_string())])
             .await
             .unwrap();
+        let count = row.try_i64(0).unwrap().unwrap();
         assert_eq!(count, 1, "the valid submission must actually insert a row");
 
         // Invalid data (missing required `name`) does not insert a row and re-renders with errors.
@@ -494,16 +488,18 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = String::from_utf8(res.body().to_vec()).unwrap();
         assert!(body.contains("ERRORS"), "body was: {body}");
-        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_cbv_model")
-            .fetch_one(db.pool())
+        let row_total = db
+            .conn()
+            .fetch_one("SELECT COUNT(*) FROM test_cbv_model", &[])
             .await
             .unwrap();
+        let total = row_total.try_i64(0).unwrap().unwrap();
         assert_eq!(total, 1, "invalid submission must not insert any row");
 
-        sqlx::query("DROP TABLE test_cbv_model")
-            .execute(db.pool())
+        db.conn()
+            .execute("DROP TABLE test_cbv_model", &[])
             .await
-            .unwrap();
+            .ok();
     }
 
     #[tokio::test]
@@ -535,19 +531,22 @@ mod tests {
             "/updated"
         );
 
-        let row: (String, i64) =
-            sqlx::query_as("SELECT name, age FROM test_cbv_model WHERE id = $1")
-                .bind(original_id)
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
-        assert_eq!(row.0, "EveUpdated");
-        assert_eq!(row.1, 51);
-
-        sqlx::query("DROP TABLE test_cbv_model")
-            .execute(db.pool())
+        let ph = db.dialect().placeholder(1);
+        let sql = format!("SELECT name, age FROM test_cbv_model WHERE id = {ph}");
+        let row = db
+            .conn()
+            .fetch_one(&sql, &[djangors_db::BindValue::I64(original_id)])
             .await
             .unwrap();
+        let name = row.try_string_by_name("name").unwrap().unwrap();
+        let age = row.try_i64_by_name("age").unwrap().unwrap();
+        assert_eq!(name, "EveUpdated");
+        assert_eq!(age, 51);
+
+        db.conn()
+            .execute("DROP TABLE test_cbv_model", &[])
+            .await
+            .ok();
     }
 
     #[tokio::test]
@@ -576,12 +575,15 @@ mod tests {
             .unwrap();
         let body = String::from_utf8(res.body().to_vec()).unwrap();
         assert!(body.contains("Frank"), "body was: {body}");
-        let still_there: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM test_cbv_model WHERE id = $1")
-                .bind(saved.id)
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
+
+        let ph = db.dialect().placeholder(1);
+        let sql = format!("SELECT COUNT(*) FROM test_cbv_model WHERE id = {ph}");
+        let row = db
+            .conn()
+            .fetch_one(&sql, &[djangors_db::BindValue::I64(saved.id)])
+            .await
+            .unwrap();
+        let still_there = row.try_i64(0).unwrap().unwrap();
         assert_eq!(still_there, 1, "GET must not delete anything");
 
         // POST actually deletes the row.
@@ -590,16 +592,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FOUND);
-        let gone: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM test_cbv_model WHERE id = $1")
-            .bind(saved.id)
-            .fetch_one(db.pool())
+        let row_gone = db
+            .conn()
+            .fetch_one(&sql, &[djangors_db::BindValue::I64(saved.id)])
             .await
             .unwrap();
+        let gone = row_gone.try_i64(0).unwrap().unwrap();
         assert_eq!(gone, 0, "POST must actually delete the row");
 
-        sqlx::query("DROP TABLE test_cbv_model")
-            .execute(db.pool())
+        db.conn()
+            .execute("DROP TABLE test_cbv_model", &[])
             .await
-            .unwrap();
+            .ok();
     }
 }

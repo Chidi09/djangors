@@ -249,9 +249,11 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_guardian_has_perm_for_object() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let dialect = db.dialect();
+        let auto_pk = dialect.auto_pk_type();
+        let ts_type = dialect.timestamp_type();
 
         let drop_tables = [
             "djangors_object_permission",
@@ -263,98 +265,89 @@ mod tests {
             "auth_user",
         ];
         for table in drop_tables {
-            let _ = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
-                "DROP TABLE IF EXISTS {}",
-                table
-            )))
-            .execute(db.pool())
-            .await;
+            let sql = format!("DROP TABLE IF EXISTS {table}");
+            let _ = db.conn().execute(&sql, &[]).await;
         }
 
-        djangors_orm::sqlx::query(
+        let create_user_sql = format!(
             "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
-                username VARCHAR(150) NOT NULL,
-                email VARCHAR(254) NOT NULL,
+                id {auto_pk},
+                username TEXT NOT NULL,
+                email TEXT NOT NULL,
                 password TEXT NOT NULL,
                 is_active BOOLEAN NOT NULL,
                 is_staff BOOLEAN NOT NULL,
                 is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                date_joined {ts_type} NOT NULL,
+                last_login {ts_type}
+            )"
+        );
+        db.conn().execute(&create_user_sql, &[]).await.unwrap();
 
-        djangors_orm::sqlx::query(
+        let create_perm_sql = format!(
             "CREATE TABLE auth_permission (
-                id BIGSERIAL PRIMARY KEY,
-                codename VARCHAR(255) NOT NULL UNIQUE,
-                name VARCHAR(255) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                id {auto_pk},
+                codename TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL
+            )"
+        );
+        db.conn().execute(&create_perm_sql, &[]).await.unwrap();
 
-        djangors_orm::sqlx::query(
+        let create_user_perms_sql = format!(
             "CREATE TABLE auth_user_permissions (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 \"user\" BIGINT NOT NULL REFERENCES auth_user(id),
                 permission BIGINT NOT NULL REFERENCES auth_permission(id)
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn()
+            .execute(&create_user_perms_sql, &[])
+            .await
+            .unwrap();
 
-        djangors_orm::sqlx::query(
+        let create_group_sql = format!(
             "CREATE TABLE auth_group (
-                id BIGSERIAL PRIMARY KEY,
-                name VARCHAR(150) NOT NULL UNIQUE
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+                id {auto_pk},
+                name TEXT NOT NULL UNIQUE
+            )"
+        );
+        db.conn().execute(&create_group_sql, &[]).await.unwrap();
 
-        djangors_orm::sqlx::query(
+        let create_user_groups_sql = format!(
             "CREATE TABLE auth_user_groups (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 \"user\" BIGINT NOT NULL REFERENCES auth_user(id),
                 \"group\" BIGINT NOT NULL REFERENCES auth_group(id)
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn()
+            .execute(&create_user_groups_sql, &[])
+            .await
+            .unwrap();
 
-        djangors_orm::sqlx::query(
+        let create_group_perms_sql = format!(
             "CREATE TABLE auth_group_permissions (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 \"group\" BIGINT NOT NULL REFERENCES auth_group(id),
                 permission BIGINT NOT NULL REFERENCES auth_permission(id)
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn()
+            .execute(&create_group_perms_sql, &[])
+            .await
+            .unwrap();
 
-        djangors_orm::sqlx::query(
+        let create_obj_perm_sql = format!(
             "CREATE TABLE djangors_object_permission (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 \"user\" BIGINT NOT NULL REFERENCES auth_user(id),
                 permission BIGINT NOT NULL REFERENCES auth_permission(id),
-                app_label VARCHAR(100) NOT NULL,
-                model_name VARCHAR(100) NOT NULL,
+                app_label TEXT NOT NULL,
+                model_name TEXT NOT NULL,
                 object_id BIGINT NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_obj_perm_sql, &[]).await.unwrap();
 
         let now = chrono::Utc::now();
         let user1 = User {
@@ -368,7 +361,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -383,7 +376,7 @@ mod tests {
             date_joined: now,
             last_login: Some(now),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -392,22 +385,29 @@ mod tests {
             codename: "change_document".to_string(),
             name: "Can change document".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
         // 1. Model-level grant alone gives true for user1
-        djangors_orm::sqlx::query(
-            "INSERT INTO auth_user_permissions (\"user\", permission) VALUES ($1, $2)",
-        )
-        .bind(user1.id)
-        .bind(perm1.id)
-        .execute(db.pool())
-        .await
-        .unwrap();
+        let insert_user_perm_sql = format!(
+            "INSERT INTO auth_user_permissions (\"user\", permission) VALUES ({}, {})",
+            dialect.placeholder(1),
+            dialect.placeholder(2)
+        );
+        db.conn()
+            .execute(
+                &insert_user_perm_sql,
+                &[
+                    djangors_db::BindValue::I64(user1.id),
+                    djangors_db::BindValue::I64(perm1.id),
+                ],
+            )
+            .await
+            .unwrap();
 
         let has_perm_u1 =
-            has_perm_for_object(&db, user1.id, "change_document", "docs", "Document", 100)
+            has_perm_for_object(db, user1.id, "change_document", "docs", "Document", 100)
                 .await
                 .unwrap();
         assert!(
@@ -417,18 +417,18 @@ mod tests {
 
         // 2. User2 has NO model-level perm initially
         let has_perm_u2_before =
-            has_perm_for_object(&db, user2.id, "change_document", "docs", "Document", 100)
+            has_perm_for_object(db, user2.id, "change_document", "docs", "Document", 100)
                 .await
                 .unwrap();
         assert!(!has_perm_u2_before, "User2 has no permissions initially");
 
         // 3. Grant object-specific perm for user2 on object 100
-        grant_object_permission(&db, user2.id, "change_document", "docs", "Document", 100)
+        grant_object_permission(db, user2.id, "change_document", "docs", "Document", 100)
             .await
             .unwrap();
 
         let has_perm_u2_obj100 =
-            has_perm_for_object(&db, user2.id, "change_document", "docs", "Document", 100)
+            has_perm_for_object(db, user2.id, "change_document", "docs", "Document", 100)
                 .await
                 .unwrap();
         assert!(
@@ -438,7 +438,7 @@ mod tests {
 
         // 4. User2 on a DIFFERENT object id (200) should be FALSE
         let has_perm_u2_obj200 =
-            has_perm_for_object(&db, user2.id, "change_document", "docs", "Document", 200)
+            has_perm_for_object(db, user2.id, "change_document", "docs", "Document", 200)
                 .await
                 .unwrap();
         assert!(
@@ -448,24 +448,20 @@ mod tests {
 
         // 5. Test revoke_object_permission
         let revoked =
-            revoke_object_permission(&db, user2.id, "change_document", "docs", "Document", 100)
+            revoke_object_permission(db, user2.id, "change_document", "docs", "Document", 100)
                 .await
                 .unwrap();
         assert!(revoked, "Revoking object perm returned true");
 
         let has_perm_u2_after_revoke =
-            has_perm_for_object(&db, user2.id, "change_document", "docs", "Document", 100)
+            has_perm_for_object(db, user2.id, "change_document", "docs", "Document", 100)
                 .await
                 .unwrap();
         assert!(!has_perm_u2_after_revoke, "User2 has no perm after revoke");
 
         for table in drop_tables {
-            let _ = djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
-                "DROP TABLE IF EXISTS {}",
-                table
-            )))
-            .execute(db.pool())
-            .await;
+            let sql = format!("DROP TABLE IF EXISTS {table}");
+            let _ = db.conn().execute(&sql, &[]).await;
         }
     }
 }

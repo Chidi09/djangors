@@ -12,6 +12,9 @@ static CROSS_PROCESS_LOCK: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::co
 /// deliberately so the two crates' test binaries actually exclude each other,
 /// not just their own internal tests.
 async fn ensure_cross_process_lock_held() {
+    if djangors_test::TestBackend::current() == djangors_test::TestBackend::Sqlite {
+        return;
+    }
     CROSS_PROCESS_LOCK
         .get_or_init(|| async {
             let db = djangors_db::Database::connect(&djangors_db::config::DatabaseConfig::new(
@@ -151,43 +154,34 @@ fn test_verify_password_malformed_hash() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_user_db_round_trip() {
-    let _guard = DB_MUTEX.lock().unwrap();
+    let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     ensure_cross_process_lock_held().await;
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
-
-    // Connect to database
-    let db = match djangors_orm::djangors_db::Database::connect(&config).await {
-        Ok(db) => db,
-        Err(e) => {
-            // If DB is unreachable, fail as expected in the environment
-            panic!("Could not connect to database: {:?}", e);
-        }
-    };
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+    let ts_type = db.dialect().timestamp_type();
 
     // Clean up test table
-    djangors_orm::sqlx::query("DROP TABLE IF EXISTS test_auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_auth_user", &[])
+        .await;
 
     // Create test table
-    djangors_orm::sqlx::query(
+    let create_sql = format!(
         "CREATE TABLE test_auth_user (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             username VARCHAR(150) NOT NULL,
             email VARCHAR(254) NOT NULL,
             password TEXT NOT NULL,
             is_active BOOLEAN NOT NULL,
             is_staff BOOLEAN NOT NULL,
             is_superuser BOOLEAN NOT NULL,
-            date_joined TIMESTAMPTZ NOT NULL,
-            last_login TIMESTAMPTZ
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+            date_joined {ts_type} NOT NULL,
+            last_login {ts_type}
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     // Construct a User with a hashed password
     let plaintext = "supersecret";
@@ -208,7 +202,7 @@ async fn test_user_db_round_trip() {
     user.set_password_hash(hash);
 
     // Save user
-    let saved_user = user.save(&db).await.unwrap();
+    let saved_user = user.save(db).await.unwrap();
     assert_ne!(saved_user.id, 0);
     assert_eq!(saved_user.username, "testuser");
     assert_eq!(saved_user.email, "test@example.com");
@@ -220,7 +214,7 @@ async fn test_user_db_round_trip() {
     let fetched_user = TestUser::objects()
         .filter(q!(id = saved_user.id))
         .unwrap()
-        .get(&db)
+        .get(db)
         .await
         .unwrap();
 
@@ -229,44 +223,38 @@ async fn test_user_db_round_trip() {
     assert!(verified);
 
     // Cleanup
-    djangors_orm::sqlx::query("DROP TABLE test_auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db.conn().execute("DROP TABLE test_auth_user", &[]).await;
 }
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_model_backend_authenticate() {
-    let _guard = DB_MUTEX.lock().unwrap();
+    let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     ensure_cross_process_lock_held().await;
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_orm::djangors_db::Database::connect(&config)
-        .await
-        .unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+    let ts_type = db.dialect().timestamp_type();
 
-    djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS auth_user", &[])
+        .await;
 
-    djangors_orm::sqlx::query(
+    let create_sql = format!(
         "CREATE TABLE auth_user (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             username VARCHAR(150) NOT NULL,
             email VARCHAR(254) NOT NULL,
             password TEXT NOT NULL,
             is_active BOOLEAN NOT NULL,
             is_staff BOOLEAN NOT NULL,
             is_superuser BOOLEAN NOT NULL,
-            date_joined TIMESTAMPTZ NOT NULL,
-            last_login TIMESTAMPTZ
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+            date_joined {ts_type} NOT NULL,
+            last_login {ts_type}
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     let plaintext = "correct_password";
     let hash = hash_password(plaintext).unwrap();
@@ -284,7 +272,7 @@ async fn test_model_backend_authenticate() {
         date_joined: now,
         last_login: Some(now),
     };
-    let _active_user = active_user_raw.save(&db).await.unwrap();
+    let _active_user = active_user_raw.save(db).await.unwrap();
 
     // 2. Create an inactive user
     let inactive_user_raw = User {
@@ -298,13 +286,13 @@ async fn test_model_backend_authenticate() {
         date_joined: now,
         last_login: Some(now),
     };
-    let _ = inactive_user_raw.save(&db).await.unwrap();
+    let _ = inactive_user_raw.save(db).await.unwrap();
 
     let backend = ModelBackend;
 
     // Test correct credentials -> Some(user)
     let auth_res = backend
-        .authenticate(&db, "active_user", plaintext)
+        .authenticate(db, "active_user", plaintext)
         .await
         .unwrap();
     assert!(auth_res.is_some());
@@ -312,30 +300,27 @@ async fn test_model_backend_authenticate() {
 
     // Test wrong password -> None
     let auth_res = backend
-        .authenticate(&db, "active_user", "wrong_password")
+        .authenticate(db, "active_user", "wrong_password")
         .await
         .unwrap();
     assert!(auth_res.is_none());
 
     // Test nonexistent username -> None
     let auth_res = backend
-        .authenticate(&db, "nonexistent", plaintext)
+        .authenticate(db, "nonexistent", plaintext)
         .await
         .unwrap();
     assert!(auth_res.is_none());
 
     // Test inactive user with correct password -> None
     let auth_res = backend
-        .authenticate(&db, "inactive_user", plaintext)
+        .authenticate(db, "inactive_user", plaintext)
         .await
         .unwrap();
     assert!(auth_res.is_none());
 
     // Cleanup
-    djangors_orm::sqlx::query("DROP TABLE auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db.conn().execute("DROP TABLE auth_user", &[]).await;
 }
 
 #[test]
@@ -386,40 +371,37 @@ async fn test_logout_session_mechanics() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_auth_extractor() {
-    let _guard = DB_MUTEX.lock().unwrap();
+    let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     ensure_cross_process_lock_held().await;
     use bytes::Bytes;
     use djangors_core::extract::FromRequest;
     use djangors_core::Request;
     use hyper::http::{Extensions, HeaderMap, Method, Uri};
 
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_orm::djangors_db::Database::connect(&config)
-        .await
-        .unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+    let ts_type = db.dialect().timestamp_type();
 
-    djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS auth_user", &[])
+        .await;
 
-    djangors_orm::sqlx::query(
+    let create_sql = format!(
         "CREATE TABLE auth_user (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             username VARCHAR(150) NOT NULL,
             email VARCHAR(254) NOT NULL,
             password TEXT NOT NULL,
             is_active BOOLEAN NOT NULL,
             is_staff BOOLEAN NOT NULL,
             is_superuser BOOLEAN NOT NULL,
-            date_joined TIMESTAMPTZ NOT NULL,
-            last_login TIMESTAMPTZ
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+            date_joined {ts_type} NOT NULL,
+            last_login {ts_type}
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     let now = chrono::Utc::now();
     let active_user_raw = User {
@@ -433,7 +415,7 @@ async fn test_auth_extractor() {
         date_joined: now,
         last_login: Some(now),
     };
-    let active_user = active_user_raw.save(&db).await.unwrap();
+    let active_user = active_user_raw.save(db).await.unwrap();
 
     let inactive_user_raw = User {
         id: 0,
@@ -446,7 +428,7 @@ async fn test_auth_extractor() {
         date_joined: now,
         last_login: Some(now),
     };
-    let inactive_user = inactive_user_raw.save(&db).await.unwrap();
+    let inactive_user = inactive_user_raw.save(db).await.unwrap();
 
     // 1. no session extension present -> Err(Unauthorized)
     let req_no_session = Request::new(
@@ -542,44 +524,38 @@ async fn test_auth_extractor() {
     ));
 
     // Cleanup
-    djangors_orm::sqlx::query("DROP TABLE auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db.conn().execute("DROP TABLE auth_user", &[]).await;
 }
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_audit_signals_succeeded_and_failed() {
-    let _guard = DB_MUTEX.lock().unwrap();
+    let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     ensure_cross_process_lock_held().await;
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_orm::djangors_db::Database::connect(&config)
-        .await
-        .unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+    let ts_type = db.dialect().timestamp_type();
 
-    djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS auth_user", &[])
+        .await;
 
-    djangors_orm::sqlx::query(
+    let create_sql = format!(
         "CREATE TABLE auth_user (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             username VARCHAR(150) NOT NULL,
             email VARCHAR(254) NOT NULL,
             password TEXT NOT NULL,
             is_active BOOLEAN NOT NULL,
             is_staff BOOLEAN NOT NULL,
             is_superuser BOOLEAN NOT NULL,
-            date_joined TIMESTAMPTZ NOT NULL,
-            last_login TIMESTAMPTZ
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+            date_joined {ts_type} NOT NULL,
+            last_login {ts_type}
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     let plaintext = "correct_password";
     let hash = hash_password(plaintext).unwrap();
@@ -597,7 +573,7 @@ async fn test_audit_signals_succeeded_and_failed() {
         date_joined: now,
         last_login: Some(now),
     };
-    let _active_user = active_user_raw.save(&db).await.unwrap();
+    let _active_user = active_user_raw.save(db).await.unwrap();
 
     // 2. Create an inactive user
     let inactive_user_raw = User {
@@ -611,7 +587,7 @@ async fn test_audit_signals_succeeded_and_failed() {
         date_joined: now,
         last_login: Some(now),
     };
-    let _ = inactive_user_raw.save(&db).await.unwrap();
+    let _ = inactive_user_raw.save(db).await.unwrap();
 
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -646,7 +622,7 @@ async fn test_audit_signals_succeeded_and_failed() {
 
     // Test correct credentials -> LOGIN_SUCCEEDED fires
     let auth_res = backend
-        .authenticate(&db, "sig_active_user", plaintext)
+        .authenticate(db, "sig_active_user", plaintext)
         .await
         .unwrap();
     assert!(auth_res.is_some());
@@ -655,7 +631,7 @@ async fn test_audit_signals_succeeded_and_failed() {
 
     // Test wrong password -> LOGIN_FAILED fires
     let auth_res = backend
-        .authenticate(&db, "sig_active_user", "wrong_password")
+        .authenticate(db, "sig_active_user", "wrong_password")
         .await
         .unwrap();
     assert!(auth_res.is_none());
@@ -664,7 +640,7 @@ async fn test_audit_signals_succeeded_and_failed() {
 
     // Test nonexistent username -> LOGIN_FAILED fires
     let auth_res = backend
-        .authenticate(&db, "sig_nonexistent", plaintext)
+        .authenticate(db, "sig_nonexistent", plaintext)
         .await
         .unwrap();
     assert!(auth_res.is_none());
@@ -673,7 +649,7 @@ async fn test_audit_signals_succeeded_and_failed() {
 
     // Test inactive user with correct password -> LOGIN_FAILED fires
     let auth_res = backend
-        .authenticate(&db, "sig_inactive_user", plaintext)
+        .authenticate(db, "sig_inactive_user", plaintext)
         .await
         .unwrap();
     assert!(auth_res.is_none());
@@ -681,10 +657,7 @@ async fn test_audit_signals_succeeded_and_failed() {
     assert_eq!(failed_counter.load(Ordering::SeqCst), 3);
 
     // Cleanup
-    djangors_orm::sqlx::query("DROP TABLE auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db.conn().execute("DROP TABLE auth_user", &[]).await;
 }
 
 #[tokio::test]
@@ -742,49 +715,44 @@ impl AuthBackend for TestDoubleBackend {
 async fn test_persistent_lockout_backend_locks_even_correct_credentials_and_resets_on_expiry() {
     let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     ensure_cross_process_lock_held().await;
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_orm::djangors_db::Database::connect(&config)
-        .await
-        .unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+    let ts_type = db.dialect().timestamp_type();
 
-    djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    djangors_orm::sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS auth_user", &[])
+        .await;
+    let create_user_sql = format!(
         "CREATE TABLE auth_user (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             username VARCHAR(150) NOT NULL,
             email VARCHAR(254) NOT NULL,
             password TEXT NOT NULL,
             is_active BOOLEAN NOT NULL,
             is_staff BOOLEAN NOT NULL,
             is_superuser BOOLEAN NOT NULL,
-            date_joined TIMESTAMPTZ NOT NULL,
-            last_login TIMESTAMPTZ
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+            date_joined {ts_type} NOT NULL,
+            last_login {ts_type}
+        )"
+    );
+    db.conn().execute(&create_user_sql, &[]).await.unwrap();
 
-    djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_login_lockout")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    djangors_orm::sqlx::query(
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS auth_login_lockout", &[])
+        .await;
+    let create_lockout_sql = format!(
         "CREATE TABLE auth_login_lockout (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             username VARCHAR(150) NOT NULL UNIQUE,
             failed_attempts INTEGER NOT NULL,
-            first_failed_at TIMESTAMPTZ NOT NULL,
-            locked_until TIMESTAMPTZ
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+            first_failed_at {ts_type} NOT NULL,
+            locked_until {ts_type}
+        )"
+    );
+    db.conn().execute(&create_lockout_sql, &[]).await.unwrap();
 
     let plaintext = "correct_password";
     let hash = hash_password(plaintext).unwrap();
@@ -800,7 +768,7 @@ async fn test_persistent_lockout_backend_locks_even_correct_credentials_and_rese
         date_joined: now,
         last_login: None,
     };
-    user.save(&db).await.unwrap();
+    user.save(db).await.unwrap();
 
     let backend =
         PersistentLockoutBackend::new(ModelBackend, 3, std::time::Duration::from_secs(3600));
@@ -808,7 +776,7 @@ async fn test_persistent_lockout_backend_locks_even_correct_credentials_and_rese
     // 1st and 2nd failures: wrong password, not yet locked.
     for _ in 0..2 {
         let res = backend
-            .authenticate(&db, "lockout_user", "wrong")
+            .authenticate(db, "lockout_user", "wrong")
             .await
             .unwrap();
         assert!(res.is_none());
@@ -816,7 +784,7 @@ async fn test_persistent_lockout_backend_locks_even_correct_credentials_and_rese
 
     // 3rd failure crosses max_attempts=3 - now locked.
     let res = backend
-        .authenticate(&db, "lockout_user", "wrong")
+        .authenticate(db, "lockout_user", "wrong")
         .await
         .unwrap();
     assert!(res.is_none());
@@ -824,7 +792,7 @@ async fn test_persistent_lockout_backend_locks_even_correct_credentials_and_rese
     // Even the CORRECT password is now rejected - this is what distinguishes a
     // lockout from plain rate limiting.
     let err = backend
-        .authenticate(&db, "lockout_user", plaintext)
+        .authenticate(db, "lockout_user", plaintext)
         .await
         .unwrap_err();
     match err {
@@ -835,17 +803,20 @@ async fn test_persistent_lockout_backend_locks_even_correct_credentials_and_rese
     }
 
     // Simulate the lockout window expiring (avoids a real 1-hour test sleep).
-    djangors_orm::sqlx::query(
-        "UPDATE auth_login_lockout SET locked_until = now() - interval '1 minute' WHERE username = 'lockout_user'",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+    let p1 = db.dialect().placeholder(1);
+    let sql = format!(
+        "UPDATE auth_login_lockout SET locked_until = {p1} WHERE username = 'lockout_user'"
+    );
+    let overdue = chrono::Utc::now() - chrono::Duration::minutes(1);
+    db.conn()
+        .execute(&sql, &[djangors_db::BindValue::DateTime(overdue)])
+        .await
+        .unwrap();
 
     // An expired lockout no longer rejects correct credentials, and a successful
     // login clears the failure streak entirely.
     let res = backend
-        .authenticate(&db, "lockout_user", plaintext)
+        .authenticate(db, "lockout_user", plaintext)
         .await
         .unwrap();
     assert!(res.is_some());
@@ -853,7 +824,7 @@ async fn test_persistent_lockout_backend_locks_even_correct_credentials_and_rese
     let remaining = LoginLockout::objects()
         .filter(djangors_orm::q!(username = "lockout_user"))
         .unwrap()
-        .first(&db)
+        .first(db)
         .await
         .unwrap();
     assert!(
@@ -861,14 +832,11 @@ async fn test_persistent_lockout_backend_locks_even_correct_credentials_and_rese
         "a successful login must clear the lockout row entirely"
     );
 
-    djangors_orm::sqlx::query("DROP TABLE auth_login_lockout")
-        .execute(db.pool())
-        .await
-        .unwrap();
-    djangors_orm::sqlx::query("DROP TABLE auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE auth_login_lockout", &[])
+        .await;
+    let _ = db.conn().execute("DROP TABLE auth_user", &[]).await;
 }
 
 #[tokio::test]
@@ -881,11 +849,8 @@ async fn test_rate_limited_backend_limits_attempts() {
     };
     let backend = RateLimitedBackend::new(inner, 3, Duration::from_millis(50));
 
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_orm::djangors_db::Database::connect(&config)
-        .await
-        .unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
 
     let failed_counter = Arc::new(AtomicUsize::new(0));
     let failed_clone = failed_counter.clone();
@@ -899,22 +864,22 @@ async fn test_rate_limited_backend_limits_attempts() {
     });
 
     // 1st attempt: success (reaches inner)
-    let res = backend.authenticate(&db, "throttled_user", "pass").await;
+    let res = backend.authenticate(db, "throttled_user", "pass").await;
     assert!(res.unwrap().is_none());
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
 
     // 2nd attempt: success (reaches inner)
-    let res = backend.authenticate(&db, "throttled_user", "pass").await;
+    let res = backend.authenticate(db, "throttled_user", "pass").await;
     assert!(res.unwrap().is_none());
     assert_eq!(call_count.load(Ordering::SeqCst), 2);
 
     // 3rd attempt: success (reaches inner)
-    let res = backend.authenticate(&db, "throttled_user", "pass").await;
+    let res = backend.authenticate(db, "throttled_user", "pass").await;
     assert!(res.unwrap().is_none());
     assert_eq!(call_count.load(Ordering::SeqCst), 3);
 
     // 4th attempt: rate limited (fails without reaching inner)
-    let res = backend.authenticate(&db, "throttled_user", "pass").await;
+    let res = backend.authenticate(db, "throttled_user", "pass").await;
     assert!(matches!(res.err().unwrap(), AuthError::RateLimited));
     assert_eq!(call_count.load(Ordering::SeqCst), 3);
 
@@ -922,13 +887,13 @@ async fn test_rate_limited_backend_limits_attempts() {
     assert_eq!(failed_counter.load(Ordering::SeqCst), 4);
 
     // Different user is unaffected
-    let res_diff = backend.authenticate(&db, "other_user", "pass").await;
+    let res_diff = backend.authenticate(db, "other_user", "pass").await;
     assert!(res_diff.unwrap().is_none());
     assert_eq!(call_count.load(Ordering::SeqCst), 4);
 
     // After window elapses, we can attempt again
     tokio::time::sleep(Duration::from_millis(60)).await;
-    let res = backend.authenticate(&db, "throttled_user", "pass").await;
+    let res = backend.authenticate(db, "throttled_user", "pass").await;
     assert!(res.unwrap().is_none());
     assert_eq!(call_count.load(Ordering::SeqCst), 5);
 }
@@ -990,37 +955,34 @@ fn test_password_reset_token_roundtrip_and_invalidation() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_db_password_reset_flow() {
-    let _guard = DB_MUTEX.lock().unwrap();
+    let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     ensure_cross_process_lock_held().await;
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_orm::djangors_db::Database::connect(&config)
-        .await
-        .unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+    let ts_type = db.dialect().timestamp_type();
 
     // Clean up test table
-    djangors_orm::sqlx::query("DROP TABLE IF EXISTS test_auth_user")
-        .execute(db.pool())
-        .await
-        .unwrap();
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_auth_user", &[])
+        .await;
 
     // Create test table
-    djangors_orm::sqlx::query(
+    let create_sql = format!(
         "CREATE TABLE test_auth_user (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             username VARCHAR(150) NOT NULL,
             email VARCHAR(254) NOT NULL,
             password TEXT NOT NULL,
             is_active BOOLEAN NOT NULL,
             is_staff BOOLEAN NOT NULL,
             is_superuser BOOLEAN NOT NULL,
-            date_joined TIMESTAMPTZ NOT NULL,
-            last_login TIMESTAMPTZ
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+            date_joined {ts_type} NOT NULL,
+            last_login {ts_type}
+        )"
+    );
+    db.conn().execute(&create_sql, &[]).await.unwrap();
 
     // Create an active user
     let raw_hash = hash_password("original_password").unwrap();
@@ -1035,14 +997,14 @@ async fn test_db_password_reset_flow() {
         date_joined: chrono::Utc::now(),
         last_login: Some(chrono::Utc::now()),
     };
-    let user = user.save(&db).await.unwrap();
+    let user = user.save(db).await.unwrap();
 
     let secret = b"my_password_reset_secret";
     let mail_backend = TestMailBackend::new();
 
     // 5. request_password_reset with an existing active user calls MailBackend::send with a message containing the token
     request_password_reset::<TestUser>(
-        &db,
+        db,
         &mail_backend,
         "alice@example.com",
         secret,
@@ -1069,7 +1031,7 @@ async fn test_db_password_reset_flow() {
     // 6. request_password_reset with a nonexistent email does NOT call send, but still returns Ok(())
     let mail_backend_nonexistent = TestMailBackend::new();
     let res = request_password_reset::<TestUser>(
-        &db,
+        db,
         &mail_backend_nonexistent,
         "nonexistent@example.com",
         secret,
@@ -1084,7 +1046,7 @@ async fn test_db_password_reset_flow() {
         .is_empty());
 
     // 7. confirm_password_reset with a valid token and new password actually changes the user's password
-    confirm_password_reset::<TestUser>(&db, user.id, token, "new_shiny_password", secret)
+    confirm_password_reset::<TestUser>(db, user.id, token, "new_shiny_password", secret)
         .await
         .unwrap();
 
@@ -1092,7 +1054,7 @@ async fn test_db_password_reset_flow() {
     let updated_users = TestUser::objects()
         .filter(q!(id = user.id))
         .unwrap()
-        .all(&db)
+        .all(db)
         .await
         .unwrap();
     assert_eq!(updated_users.len(), 1);
@@ -1103,7 +1065,7 @@ async fn test_db_password_reset_flow() {
     // 8. confirm_password_reset with an invalid/expired token leaves the password unchanged and returns an error
     let invalid_token = "invalid.token.here";
     let res_invalid =
-        confirm_password_reset::<TestUser>(&db, user.id, invalid_token, "another_password", secret)
+        confirm_password_reset::<TestUser>(db, user.id, invalid_token, "another_password", secret)
             .await;
     assert!(res_invalid.is_err());
 
@@ -1111,7 +1073,7 @@ async fn test_db_password_reset_flow() {
     let final_users = TestUser::objects()
         .filter(q!(id = user.id))
         .unwrap()
-        .all(&db)
+        .all(db)
         .await
         .unwrap();
     let final_user = &final_users[0];
@@ -1122,13 +1084,12 @@ async fn test_db_password_reset_flow() {
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn test_permissions_and_groups() {
-    let _guard = DB_MUTEX.lock().unwrap();
+    let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
     ensure_cross_process_lock_held().await;
-    let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-    let config = djangors_orm::djangors_db::config::DatabaseConfig::new(db_url);
-    let db = djangors_orm::djangors_db::Database::connect(&config)
-        .await
-        .unwrap();
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+    let ts_type = db.dialect().timestamp_type();
 
     // Drop tables if they exist (in reverse dependency order)
     let drop_tables = [
@@ -1140,97 +1101,91 @@ async fn test_permissions_and_groups() {
         "auth_user",
     ];
     for table in drop_tables {
-        djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
-            "DROP TABLE IF EXISTS {}",
-            table
-        )))
-        .execute(db.pool())
-        .await
-        .unwrap();
+        let sql = format!("DROP TABLE IF EXISTS {table}");
+        let _ = db.conn().execute(&sql, &[]).await;
     }
 
     // Create tables
-    djangors_orm::sqlx::query(
+    let create_user_sql = format!(
         "CREATE TABLE auth_user (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             username VARCHAR(150) NOT NULL UNIQUE,
             email VARCHAR(254) NOT NULL,
             password TEXT NOT NULL,
             is_active BOOLEAN NOT NULL,
             is_staff BOOLEAN NOT NULL,
             is_superuser BOOLEAN NOT NULL,
-            date_joined TIMESTAMPTZ NOT NULL,
-            last_login TIMESTAMPTZ
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+            date_joined {ts_type} NOT NULL,
+            last_login {ts_type}
+        )"
+    );
+    db.conn().execute(&create_user_sql, &[]).await.unwrap();
 
-    djangors_orm::sqlx::query(
+    let create_perm_sql = format!(
         "CREATE TABLE auth_permission (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             codename VARCHAR(255) NOT NULL UNIQUE,
             name VARCHAR(255) NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_perm_sql, &[]).await.unwrap();
 
-    djangors_orm::sqlx::query(
+    let create_group_sql = format!(
         "CREATE TABLE auth_group (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             name VARCHAR(150) NOT NULL UNIQUE
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn().execute(&create_group_sql, &[]).await.unwrap();
 
-    djangors_orm::sqlx::query(
+    let create_user_groups_sql = format!(
         "CREATE TABLE auth_user_groups (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             \"user\" BIGINT NOT NULL,
             \"group\" BIGINT NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn()
+        .execute(&create_user_groups_sql, &[])
+        .await
+        .unwrap();
 
-    djangors_orm::sqlx::query(
+    let create_group_perms_sql = format!(
         "CREATE TABLE auth_group_permissions (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             \"group\" BIGINT NOT NULL,
             permission BIGINT NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn()
+        .execute(&create_group_perms_sql, &[])
+        .await
+        .unwrap();
 
-    djangors_orm::sqlx::query(
+    let create_user_perms_sql = format!(
         "CREATE TABLE auth_user_permissions (
-            id BIGSERIAL PRIMARY KEY,
+            id {auto_pk},
             \"user\" BIGINT NOT NULL,
             permission BIGINT NOT NULL
-        )",
-    )
-    .execute(db.pool())
-    .await
-    .unwrap();
+        )"
+    );
+    db.conn()
+        .execute(&create_user_perms_sql, &[])
+        .await
+        .unwrap();
 
     // 1. Call sync_permissions → expect exactly 4 permissions per registered model
     let models: Vec<_> = djangors_orm::meta::all_registered_models().collect();
     let expected_count = models.len() * 4;
-    let synced = sync_permissions(&db).await.unwrap();
+    let synced = sync_permissions(db).await.unwrap();
     assert_eq!(synced, expected_count);
 
-    let count_db: i64 = djangors_orm::sqlx::query_scalar("SELECT COUNT(*) FROM auth_permission")
-        .fetch_one(db.pool())
+    let row_count = db
+        .conn()
+        .fetch_one("SELECT COUNT(*) FROM auth_permission", &[])
         .await
         .unwrap();
+    let count_db = row_count.try_i64(0).unwrap().unwrap();
     assert_eq!(count_db, expected_count as i64);
 
     // Verify codenames conform to the convention
@@ -1239,122 +1194,157 @@ async fn test_permissions_and_groups() {
         models[0].app_label,
         models[0].struct_name.to_lowercase()
     );
-    let codename_exists: bool = djangors_orm::sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM auth_permission WHERE codename = $1)",
-    )
-    .bind(&sample_codename)
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
+    let p1 = db.dialect().placeholder(1);
+    let sql_exists = format!("SELECT COUNT(*) FROM auth_permission WHERE codename = {p1}");
+    let row_exists = db
+        .conn()
+        .fetch_one(
+            &sql_exists,
+            &[djangors_db::BindValue::Text(sample_codename.clone())],
+        )
+        .await
+        .unwrap();
+    let codename_count = row_exists.try_i64(0).unwrap().unwrap();
     assert!(
-        codename_exists,
+        codename_count > 0,
         "Expected codename {} to exist",
         sample_codename
     );
 
     // 2. Call sync_permissions twice → idempotent, no error, same count
-    let synced_again = sync_permissions(&db).await.unwrap();
+    let synced_again = sync_permissions(db).await.unwrap();
     assert_eq!(synced_again, expected_count);
 
-    let count_db_again: i64 =
-        djangors_orm::sqlx::query_scalar("SELECT COUNT(*) FROM auth_permission")
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
+    let row_count_again = db
+        .conn()
+        .fetch_one("SELECT COUNT(*) FROM auth_permission", &[])
+        .await
+        .unwrap();
+    let count_db_again = row_count_again.try_i64(0).unwrap().unwrap();
     assert_eq!(count_db_again, expected_count as i64);
 
     // Create a test user in auth_user
     let now = chrono::Utc::now();
-    let user_id: i64 = djangors_orm::sqlx::query_scalar(
+    let p1 = db.dialect().placeholder(1);
+    let p2 = db.dialect().placeholder(2);
+    let p3 = db.dialect().placeholder(3);
+    let p4 = db.dialect().placeholder(4);
+    let p5 = db.dialect().placeholder(5);
+    let p6 = db.dialect().placeholder(6);
+    let p7 = db.dialect().placeholder(7);
+    let insert_user_sql = format!(
         "INSERT INTO auth_user (username, email, password, is_active, is_staff, is_superuser, date_joined) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id"
-    )
-    .bind("testpermuser")
-    .bind("test@example.com")
-    .bind("password_hash")
-    .bind(true)
-    .bind(false)
-    .bind(false)
-    .bind(now)
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
+         VALUES ({p1}, {p2}, {p3}, {p4}, {p5}, {p6}, {p7}) RETURNING id"
+    );
+    let row_u = db
+        .conn()
+        .fetch_one(
+            &insert_user_sql,
+            &[
+                djangors_db::BindValue::Text("testpermuser".to_string()),
+                djangors_db::BindValue::Text("test@example.com".to_string()),
+                djangors_db::BindValue::Text("password_hash".to_string()),
+                djangors_db::BindValue::Bool(true),
+                djangors_db::BindValue::Bool(false),
+                djangors_db::BindValue::Bool(false),
+                djangors_db::BindValue::DateTime(now),
+            ],
+        )
+        .await
+        .unwrap();
+    let user_id = row_u.try_i64(0).unwrap().unwrap();
 
     let check_codename = "djangors_auth.add_user";
 
-    // Get the permission id for check_codename
-    let perm_id: i64 =
-        djangors_orm::sqlx::query_scalar("SELECT id FROM auth_permission WHERE codename = $1")
-            .bind(check_codename)
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
+    let sel_perm_sql = format!("SELECT id FROM auth_permission WHERE codename = {p1}");
+    let row_p = db
+        .conn()
+        .fetch_one(
+            &sel_perm_sql,
+            &[djangors_db::BindValue::Text(check_codename.to_string())],
+        )
+        .await
+        .unwrap();
+    let perm_id = row_p.try_i64(0).unwrap().unwrap();
 
     // 3. has_perm false with no grants
-    let has = has_perm(&db, user_id, check_codename).await.unwrap();
+    let has = has_perm(db, user_id, check_codename).await.unwrap();
     assert!(!has);
 
     // 4. has_perm true via direct UserPermission
-    djangors_orm::sqlx::query(
-        "INSERT INTO auth_user_permissions (\"user\", permission) VALUES ($1, $2)",
-    )
-    .bind(user_id)
-    .bind(perm_id)
-    .execute(db.pool())
-    .await
-    .unwrap();
-    let has = has_perm(&db, user_id, check_codename).await.unwrap();
+    let insert_up_sql =
+        format!("INSERT INTO auth_user_permissions (\"user\", permission) VALUES ({p1}, {p2})");
+    db.conn()
+        .execute(
+            &insert_up_sql,
+            &[
+                djangors_db::BindValue::I64(user_id),
+                djangors_db::BindValue::I64(perm_id),
+            ],
+        )
+        .await
+        .unwrap();
+    let has = has_perm(db, user_id, check_codename).await.unwrap();
     assert!(has);
 
     // Clean up direct UserPermission for next tests
-    djangors_orm::sqlx::query("DELETE FROM auth_user_permissions WHERE \"user\" = $1")
-        .bind(user_id)
-        .execute(db.pool())
+    let del_up_sql = format!("DELETE FROM auth_user_permissions WHERE \"user\" = {p1}");
+    db.conn()
+        .execute(&del_up_sql, &[djangors_db::BindValue::I64(user_id)])
         .await
         .unwrap();
-    let has = has_perm(&db, user_id, check_codename).await.unwrap();
+    let has = has_perm(db, user_id, check_codename).await.unwrap();
     assert!(!has);
 
     // 5. has_perm true via group membership (this exercises join chain and quotes)
-    let group_id: i64 =
-        djangors_orm::sqlx::query_scalar("INSERT INTO auth_group (name) VALUES ($1) RETURNING id")
-            .bind("testgroup")
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
+    let insert_group_sql = format!("INSERT INTO auth_group (name) VALUES ({p1}) RETURNING id");
+    let row_g = db
+        .conn()
+        .fetch_one(
+            &insert_group_sql,
+            &[djangors_db::BindValue::Text("testgroup".to_string())],
+        )
+        .await
+        .unwrap();
+    let group_id = row_g.try_i64(0).unwrap().unwrap();
 
-    djangors_orm::sqlx::query("INSERT INTO auth_user_groups (\"user\", \"group\") VALUES ($1, $2)")
-        .bind(user_id)
-        .bind(group_id)
-        .execute(db.pool())
+    let insert_ug_sql =
+        format!("INSERT INTO auth_user_groups (\"user\", \"group\") VALUES ({p1}, {p2})");
+    db.conn()
+        .execute(
+            &insert_ug_sql,
+            &[
+                djangors_db::BindValue::I64(user_id),
+                djangors_db::BindValue::I64(group_id),
+            ],
+        )
         .await
         .unwrap();
 
-    djangors_orm::sqlx::query(
-        "INSERT INTO auth_group_permissions (\"group\", permission) VALUES ($1, $2)",
-    )
-    .bind(group_id)
-    .bind(perm_id)
-    .execute(db.pool())
-    .await
-    .unwrap();
+    let insert_gp_sql =
+        format!("INSERT INTO auth_group_permissions (\"group\", permission) VALUES ({p1}, {p2})");
+    db.conn()
+        .execute(
+            &insert_gp_sql,
+            &[
+                djangors_db::BindValue::I64(group_id),
+                djangors_db::BindValue::I64(perm_id),
+            ],
+        )
+        .await
+        .unwrap();
 
-    let has = has_perm(&db, user_id, check_codename).await.unwrap();
+    let has = has_perm(db, user_id, check_codename).await.unwrap();
     assert!(has);
 
     // 6. has_perm false when checking a different non-matching permission
     let non_matching_codename = "djangors_auth.delete_user";
-    let has_non_matching = has_perm(&db, user_id, non_matching_codename).await.unwrap();
+    let has_non_matching = has_perm(db, user_id, non_matching_codename).await.unwrap();
     assert!(!has_non_matching);
 
     // Clean up all tables
     for table in drop_tables {
-        djangors_orm::sqlx::query(djangors_orm::sqlx::AssertSqlSafe(format!(
-            "DROP TABLE IF EXISTS {}",
-            table
-        )))
-        .execute(db.pool())
-        .await
-        .unwrap();
+        let sql = format!("DROP TABLE IF EXISTS {table}");
+        let _ = db.conn().execute(&sql, &[]).await;
     }
 }

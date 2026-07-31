@@ -543,6 +543,9 @@ impl<T: Model + FromRow> QuerySet<T> {
             sql.push_str(&format!(" LIMIT {}", limit));
         }
         if let Some(offset) = self.offset {
+            if self.limit.is_none() && dialect == Dialect::Sqlite {
+                sql.push_str(" LIMIT -1");
+            }
             sql.push_str(&format!(" OFFSET {}", offset));
         }
 

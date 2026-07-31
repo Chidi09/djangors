@@ -213,46 +213,45 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_viewset_crud_end_to_end() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_article")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_article", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_category")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_category", &[])
             .await;
 
-        sqlx::query(
+        let create_cat_sql = format!(
             "CREATE TABLE rest_test_category (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(100) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_cat_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_art_sql = format!(
             "CREATE TABLE rest_test_article (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 title VARCHAR(200) NOT NULL,
                 view_count BIGINT NOT NULL,
                 is_published BOOLEAN NOT NULL,
-                published_at TIMESTAMPTZ NOT NULL,
+                published_at {ts_type} NOT NULL,
                 category BIGINT NOT NULL REFERENCES rest_test_category(id) ON DELETE CASCADE
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_art_sql, &[]).await.unwrap();
 
         let cat = TestCategory {
             id: 0,
             name: "Tech".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -277,9 +276,6 @@ mod tests {
             Bytes::from(serde_json::to_vec(&invalid_create_body).unwrap()),
         )
         .with_state(djangors_core::state::AppState::new().insert(db.clone()));
-        // Validation failures now surface as a structured `DjangorsError::Api`
-        // rather than an ad-hoc `{"errors": ...}` body, so the field map
-        // survives to the client instead of being flattened into prose.
         let err = router.handle(req).await.unwrap_err();
         assert_eq!(err.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(err.code(), VALIDATION_ERROR_CODE);
@@ -402,63 +398,73 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_viewset_pagination() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_article")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_article", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_category")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_category", &[])
             .await;
 
-        sqlx::query(
+        let create_cat_sql = format!(
             "CREATE TABLE rest_test_category (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(100) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_cat_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_art_sql = format!(
             "CREATE TABLE rest_test_article (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 title VARCHAR(200) NOT NULL,
                 view_count BIGINT NOT NULL,
                 is_published BOOLEAN NOT NULL,
-                published_at TIMESTAMPTZ NOT NULL,
+                published_at {ts_type} NOT NULL,
                 category BIGINT NOT NULL REFERENCES rest_test_category(id) ON DELETE CASCADE
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_art_sql, &[]).await.unwrap();
 
         let cat = TestCategory {
             id: 0,
             name: "Tech".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
         let now = chrono::Utc::now();
+        let p1 = db.dialect().placeholder(1);
+        let p2 = db.dialect().placeholder(2);
+        let p3 = db.dialect().placeholder(3);
+        let p4 = db.dialect().placeholder(4);
+        let p5 = db.dialect().placeholder(5);
+        let ins_art_sql = format!(
+            "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ({p1}, {p2}, {p3}, {p4}, {p5})"
+        );
+
         // Insert 105 articles to span 2 pages (REST_PER_PAGE = 100)
         for i in 1..=105 {
-            sqlx::query(
-                "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ($1, $2, $3, $4, $5)"
-            )
-            .bind(format!("Article {i}"))
-            .bind(i as i64)
-            .bind(true)
-            .bind(now)
-            .bind(cat.id)
-            .execute(db.pool())
-            .await
-            .unwrap();
+            db.conn()
+                .execute(
+                    &ins_art_sql,
+                    &[
+                        djangors_db::BindValue::Text(format!("Article {i}")),
+                        djangors_db::BindValue::I64(i as i64),
+                        djangors_db::BindValue::Bool(true),
+                        djangors_db::BindValue::DateTime(now),
+                        djangors_db::BindValue::I64(cat.id),
+                    ],
+                )
+                .await
+                .unwrap();
         }
 
         let router = viewset_routes_with_permission::<TestArticle, _>(
@@ -564,90 +570,104 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_viewset_filtering_and_ordering_end_to_end() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_article")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_article", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_category")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_category", &[])
             .await;
 
-        sqlx::query(
+        let create_cat_sql = format!(
             "CREATE TABLE rest_test_category (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 name VARCHAR(100) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_cat_sql, &[]).await.unwrap();
 
-        sqlx::query(
+        let create_art_sql = format!(
             "CREATE TABLE rest_test_article (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 title VARCHAR(200) NOT NULL,
                 view_count BIGINT NOT NULL,
                 is_published BOOLEAN NOT NULL,
-                published_at TIMESTAMPTZ NOT NULL,
+                published_at {ts_type} NOT NULL,
                 category BIGINT NOT NULL REFERENCES rest_test_category(id) ON DELETE CASCADE
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_art_sql, &[]).await.unwrap();
 
         let cat = TestCategory {
             id: 0,
             name: "Tech".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
         let now = chrono::Utc::now();
 
+        let p1 = db.dialect().placeholder(1);
+        let p2 = db.dialect().placeholder(2);
+        let p3 = db.dialect().placeholder(3);
+        let p4 = db.dialect().placeholder(4);
+        let p5 = db.dialect().placeholder(5);
+        let ins_art_sql = format!(
+            "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ({p1}, {p2}, {p3}, {p4}, {p5})"
+        );
+
         // Seed 3 articles:
         // A: title="Alpha", view_count=30, is_published=true
         // B: title="Beta", view_count=10, is_published=true
         // C: title="Gamma", view_count=20, is_published=false
-        sqlx::query(
-            "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ($1, $2, $3, $4, $5)"
-        )
-        .bind("Alpha")
-        .bind(30_i64)
-        .bind(true)
-        .bind(now)
-        .bind(cat.id)
-        .execute(db.pool())
-        .await
-        .unwrap();
+        db.conn()
+            .execute(
+                &ins_art_sql,
+                &[
+                    djangors_db::BindValue::Text("Alpha".into()),
+                    djangors_db::BindValue::I64(30),
+                    djangors_db::BindValue::Bool(true),
+                    djangors_db::BindValue::DateTime(now),
+                    djangors_db::BindValue::I64(cat.id),
+                ],
+            )
+            .await
+            .unwrap();
 
-        sqlx::query(
-            "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ($1, $2, $3, $4, $5)"
-        )
-        .bind("Beta")
-        .bind(10_i64)
-        .bind(true)
-        .bind(now)
-        .bind(cat.id)
-        .execute(db.pool())
-        .await
-        .unwrap();
+        db.conn()
+            .execute(
+                &ins_art_sql,
+                &[
+                    djangors_db::BindValue::Text("Beta".into()),
+                    djangors_db::BindValue::I64(10),
+                    djangors_db::BindValue::Bool(true),
+                    djangors_db::BindValue::DateTime(now),
+                    djangors_db::BindValue::I64(cat.id),
+                ],
+            )
+            .await
+            .unwrap();
 
-        sqlx::query(
-            "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ($1, $2, $3, $4, $5)"
-        )
-        .bind("Gamma")
-        .bind(20_i64)
-        .bind(false)
-        .bind(now)
-        .bind(cat.id)
-        .execute(db.pool())
-        .await
-        .unwrap();
+        db.conn()
+            .execute(
+                &ins_art_sql,
+                &[
+                    djangors_db::BindValue::Text("Gamma".into()),
+                    djangors_db::BindValue::I64(20),
+                    djangors_db::BindValue::Bool(false),
+                    djangors_db::BindValue::DateTime(now),
+                    djangors_db::BindValue::I64(cat.id),
+                ],
+            )
+            .await
+            .unwrap();
 
         let viewset_config = ViewSetConfig {
             filterable_fields: &["is_published", "title"],
@@ -749,67 +769,71 @@ mod tests {
         assert_eq!(json["count"], 3);
     }
 
-    /// REST_PER_PAGE is a fixed 100-row page size, so to actually exercise a cursor boundary
-    /// (as opposed to a single page that happens to contain everything) these tests seed just
-    /// over 100 rows and force the tie/insert of interest to sit right at that boundary.
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_cursor_pagination_handles_duplicate_ordering_values() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_article")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_article", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_category")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_category", &[])
             .await;
-        sqlx::query(
-            "CREATE TABLE rest_test_category (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL)",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
-        sqlx::query(
+        let create_cat_sql =
+            format!("CREATE TABLE rest_test_category (id {auto_pk}, name TEXT NOT NULL)");
+        db.conn().execute(&create_cat_sql, &[]).await.unwrap();
+
+        let create_art_sql = format!(
             "CREATE TABLE rest_test_article (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 title VARCHAR(200) NOT NULL,
                 view_count BIGINT NOT NULL,
                 is_published BOOLEAN NOT NULL,
-                published_at TIMESTAMPTZ NOT NULL,
+                published_at {ts_type} NOT NULL,
                 category BIGINT NOT NULL REFERENCES rest_test_category(id) ON DELETE CASCADE
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_art_sql, &[]).await.unwrap();
         let cat = TestCategory {
             id: 0,
             name: "Tech".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let now = chrono::Utc::now();
 
-        // 105 rows, ALL sharing the same view_count: the page-100 boundary necessarily falls
-        // inside one giant tie group, which is exactly the failure mode a missing pk-tiebreaker
-        // in QuerySet::after would expose (a skipped or duplicated row at the boundary).
+        // 105 rows, ALL sharing the same view_count
         let total_rows = 105;
+        let p1 = db.dialect().placeholder(1);
+        let p2 = db.dialect().placeholder(2);
+        let p3 = db.dialect().placeholder(3);
+        let p4 = db.dialect().placeholder(4);
+        let p5 = db.dialect().placeholder(5);
+        let ins_art_sql = format!(
+            "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ({p1}, {p2}, {p3}, {p4}, {p5})"
+        );
         for i in 0..total_rows {
-            sqlx::query(
-                "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ($1, $2, $3, $4, $5)"
-            )
-            .bind(format!("Row-{i}"))
-            .bind(10_i64)
-            .bind(true)
-            .bind(now)
-            .bind(cat.id)
-            .execute(db.pool())
-            .await
-            .unwrap();
+            db.conn()
+                .execute(
+                    &ins_art_sql,
+                    &[
+                        djangors_db::BindValue::Text(format!("Row-{i}")),
+                        djangors_db::BindValue::I64(10),
+                        djangors_db::BindValue::Bool(true),
+                        djangors_db::BindValue::DateTime(now),
+                        djangors_db::BindValue::I64(cat.id),
+                    ],
+                )
+                .await
+                .unwrap();
         }
 
         let viewset_config = ViewSetConfig {
@@ -818,8 +842,6 @@ mod tests {
             ..Default::default()
         };
 
-        // First page has no cursor param supplied at all (only ?ordering=), matching a client's
-        // very first request.
         let req1 = Request::new(
             Method::GET,
             Uri::from_static("/api/articles?ordering=view_count"),
@@ -879,57 +901,67 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_cursor_pagination_stable_under_concurrent_insert() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_article")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_article", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_category")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_category", &[])
             .await;
-        sqlx::query(
-            "CREATE TABLE rest_test_category (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL)",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
-        sqlx::query(
+        let create_cat_sql =
+            format!("CREATE TABLE rest_test_category (id {auto_pk}, name TEXT NOT NULL)");
+        db.conn().execute(&create_cat_sql, &[]).await.unwrap();
+
+        let create_art_sql = format!(
             "CREATE TABLE rest_test_article (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 title VARCHAR(200) NOT NULL,
                 view_count BIGINT NOT NULL,
                 is_published BOOLEAN NOT NULL,
-                published_at TIMESTAMPTZ NOT NULL,
+                published_at {ts_type} NOT NULL,
                 category BIGINT NOT NULL REFERENCES rest_test_category(id) ON DELETE CASCADE
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_art_sql, &[]).await.unwrap();
         let cat = TestCategory {
             id: 0,
             name: "Tech".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         let now = chrono::Utc::now();
 
+        let p1 = db.dialect().placeholder(1);
+        let p2 = db.dialect().placeholder(2);
+        let p3 = db.dialect().placeholder(3);
+        let p4 = db.dialect().placeholder(4);
+        let p5 = db.dialect().placeholder(5);
+        let ins_art_sql = format!(
+            "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ({p1}, {p2}, {p3}, {p4}, {p5})"
+        );
+
         // 102 rows with distinct, ascending view_count values 1..=102.
         for i in 1..=102_i64 {
-            sqlx::query(
-                "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ($1, $2, $3, $4, $5)"
-            )
-            .bind(format!("Row-{i}"))
-            .bind(i)
-            .bind(true)
-            .bind(now)
-            .bind(cat.id)
-            .execute(db.pool())
-            .await
-            .unwrap();
+            db.conn()
+                .execute(
+                    &ins_art_sql,
+                    &[
+                        djangors_db::BindValue::Text(format!("Row-{i}")),
+                        djangors_db::BindValue::I64(i),
+                        djangors_db::BindValue::Bool(true),
+                        djangors_db::BindValue::DateTime(now),
+                        djangors_db::BindValue::I64(cat.id),
+                    ],
+                )
+                .await
+                .unwrap();
         }
 
         let viewset_config = ViewSetConfig {
@@ -955,23 +987,23 @@ mod tests {
 
         // Concurrent write: insert a new row that sorts BEFORE the cursor position
         // (view_count = 50, well within page 1's already-served range).
-        sqlx::query(
-            "INSERT INTO rest_test_article (title, view_count, is_published, published_at, category) VALUES ($1, $2, $3, $4, $5)"
-        )
-        .bind("Inserted-After-Page-1")
-        .bind(50_i64)
-        .bind(true)
-        .bind(now)
-        .bind(cat.id)
-        .execute(db.pool())
-        .await
-        .unwrap();
+        db.conn()
+            .execute(
+                &ins_art_sql,
+                &[
+                    djangors_db::BindValue::Text("Inserted-After-Page-1".into()),
+                    djangors_db::BindValue::I64(50),
+                    djangors_db::BindValue::Bool(true),
+                    djangors_db::BindValue::DateTime(now),
+                    djangors_db::BindValue::I64(cat.id),
+                ],
+            )
+            .await
+            .unwrap();
 
         // Page 2 via the cursor from page 1: must be exactly the original 2 remaining rows
         // (view_count 101, 102) - the new row must not leak in (it sorts before the cursor
-        // position), and neither of the 2 tail rows may be skipped or duplicated. This is
-        // exactly what offset pagination would get wrong (the new row would shift everything
-        // and either duplicate or skip a row depending on where OFFSET lands).
+        // position), and neither of the 2 tail rows may be skipped or duplicated.
         let req2 = Request::new(
             Method::GET,
             Uri::from_static(Box::leak(
@@ -1000,40 +1032,39 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_cursor_pagination_rejects_malformed_cursor_and_non_allowlisted_field() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
+        let ts_type = db.dialect().timestamp_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_article")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_article", &[])
             .await;
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_category")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_category", &[])
             .await;
-        sqlx::query(
-            "CREATE TABLE rest_test_category (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL)",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
-        sqlx::query(
+        let create_cat_sql =
+            format!("CREATE TABLE rest_test_category (id {auto_pk}, name TEXT NOT NULL)");
+        db.conn().execute(&create_cat_sql, &[]).await.unwrap();
+
+        let create_art_sql = format!(
             "CREATE TABLE rest_test_article (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 title VARCHAR(200) NOT NULL,
                 view_count BIGINT NOT NULL,
                 is_published BOOLEAN NOT NULL,
-                published_at TIMESTAMPTZ NOT NULL,
+                published_at {ts_type} NOT NULL,
                 category BIGINT NOT NULL REFERENCES rest_test_category(id) ON DELETE CASCADE
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_art_sql, &[]).await.unwrap();
         let cat = TestCategory {
             id: 0,
             name: "Tech".to_string(),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
         TestArticle {
@@ -1044,7 +1075,7 @@ mod tests {
             published_at: chrono::Utc::now(),
             category: djangors_orm::ForeignKey::new(cat.id),
         }
-        .save(&db)
+        .save(db)
         .await
         .unwrap();
 
@@ -1100,8 +1131,6 @@ mod tests {
         assert!(matches!(res, Err(DjangorsError::BadRequest(_))));
 
         // A syntactically valid cursor, but `?ordering=` names a field NOT in orderable_fields
-        // (title isn't allowlisted here) - cursor pagination must be rejected, not silently
-        // fall back to page 1 / an unscoped ordering.
         let valid_cursor =
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, "1|1");
         let req = Request::new(
@@ -1132,9 +1161,7 @@ mod tests {
         assert!(matches!(res, Err(DjangorsError::BadRequest(_))));
     }
 
-    /// A per-request "current owner" marker, inserted into a request's [`AppState`](djangors_core::state::AppState)
-    /// to simulate an authenticated caller's identity (the same way a real app would insert the
-    /// authenticated user/tenant after running its own auth middleware).
+    /// A per-request "current owner" marker
     #[derive(Clone, Copy)]
     struct CurrentOwner(i64);
 
@@ -1160,77 +1187,64 @@ mod tests {
         }
     }
 
-    // Compile-time "impossible to misuse" proof (not a runnable test — this is deliberately
-    // commented out; uncommenting it reproduces the real compiler error below):
-    //
-    //     fn assert_scoped_viewset_requires_scoped<M: Scoped>() {}
-    //     fn try_it() {
-    //         assert_scoped_viewset_requires_scoped::<TestCategory>();
-    //     }
-    //
-    // `TestCategory` (defined above) has no `impl Scoped for TestCategory`, so this fails to
-    // compile with:
-    //
-    //     error[E0277]: the trait bound `TestCategory: Scoped` is not satisfied
-    //        --> crates/djangors-rest/src/lib.rs
-    //         |
-    //         |     assert_scoped_viewset_requires_scoped::<TestCategory>();
-    //         |                                             ^^^^^^^^^^^^ the trait `Scoped` is not implemented for `TestCategory`
-    //
-    // The same happens if `TestCategory` is used directly as `ScopedViewSet<TestCategory>` or
-    // passed to `scoped_viewset_routes::<TestCategory>(...)` — both are generic over `M: Scoped`,
-    // so any model missing the `impl Scoped` simply won't compile against either. This was
-    // verified for real during development by temporarily pasting the block above into this file
-    // and confirming `cargo check` produced exactly that E0277 error, then removing it again.
-
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_scoped_viewset_enforces_owner_isolation_end_to_end() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_note")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_note", &[])
             .await;
 
-        sqlx::query(
+        let create_note_sql = format!(
             "CREATE TABLE rest_test_note (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 owner_id BIGINT NOT NULL,
                 body VARCHAR(200) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_note_sql, &[]).await.unwrap();
+
+        let p1 = db.dialect().placeholder(1);
+        let p2 = db.dialect().placeholder(2);
+        let ins_note_sql =
+            format!("INSERT INTO rest_test_note (owner_id, body) VALUES ({p1}, {p2})");
 
         // Seed two tenants' rows directly (owner 1: two notes, owner 2: one note).
-        sqlx::query("INSERT INTO rest_test_note (owner_id, body) VALUES ($1, $2)")
-            .bind(1_i64)
-            .bind("owner1-note-a")
-            .execute(db.pool())
+        db.conn()
+            .execute(
+                &ins_note_sql,
+                &[
+                    djangors_db::BindValue::I64(1),
+                    djangors_db::BindValue::Text("owner1-note-a".into()),
+                ],
+            )
             .await
             .unwrap();
-        sqlx::query("INSERT INTO rest_test_note (owner_id, body) VALUES ($1, $2)")
-            .bind(1_i64)
-            .bind("owner1-note-b")
-            .execute(db.pool())
+        db.conn()
+            .execute(
+                &ins_note_sql,
+                &[
+                    djangors_db::BindValue::I64(1),
+                    djangors_db::BindValue::Text("owner1-note-b".into()),
+                ],
+            )
             .await
             .unwrap();
-        sqlx::query("INSERT INTO rest_test_note (owner_id, body) VALUES ($1, $2)")
-            .bind(2_i64)
-            .bind("owner2-note-a")
-            .execute(db.pool())
+        db.conn()
+            .execute(
+                &ins_note_sql,
+                &[
+                    djangors_db::BindValue::I64(2),
+                    djangors_db::BindValue::Text("owner2-note-a".into()),
+                ],
+            )
             .await
             .unwrap();
-
-        // Exercised directly against `ScopedViewSet<TestNote>`'s handlers (rather than through
-        // `scoped_viewset_routes`'s router, which additionally requires `IsAuthenticated` —
-        // already covered separately by `viewset_routes_require_authentication_by_default`, and
-        // wired identically for the scoped case). This isolates exactly the property under
-        // test: that `Scoped::scope` genuinely constrains every operation.
 
         // Owner 1 lists notes: must see exactly their own 2 rows, never owner 2's row.
         let req = Request::new(
@@ -1282,11 +1296,15 @@ mod tests {
 
         // Owner 2 tries to retrieve one of owner 1's rows by primary key directly: must be
         // treated as not found, never leaked, even though the row genuinely exists in the table.
-        let owner1_note_a_id: i64 =
-            sqlx::query_scalar("SELECT id FROM rest_test_note WHERE body = 'owner1-note-a'")
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
+        let row = db
+            .conn()
+            .fetch_one(
+                "SELECT id FROM rest_test_note WHERE body = 'owner1-note-a'",
+                &[],
+            )
+            .await
+            .unwrap();
+        let owner1_note_a_id = row.try_i64(0).unwrap().unwrap();
         let mut params = PathParams::new();
         params.insert("pk", &owner1_note_a_id.to_string());
         let req = Request::new(
@@ -1339,39 +1357,50 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_scoped_viewset_cursor_pagination_preserves_isolation_across_pages() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = djangors_db::Database::connect(&config).await.unwrap();
+        let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+        let db = test_db.database();
+        let auto_pk = db.dialect().auto_pk_type();
 
-        let _ = sqlx::query("DROP TABLE IF EXISTS rest_test_note")
-            .execute(db.pool())
+        let _ = db
+            .conn()
+            .execute("DROP TABLE IF EXISTS rest_test_note", &[])
             .await;
-        sqlx::query(
+        let create_note_sql = format!(
             "CREATE TABLE rest_test_note (
-                id BIGSERIAL PRIMARY KEY,
+                id {auto_pk},
                 owner_id BIGINT NOT NULL,
                 body VARCHAR(200) NOT NULL
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+            )"
+        );
+        db.conn().execute(&create_note_sql, &[]).await.unwrap();
 
-        // Owner 1 gets 105 rows (forces a real cursor-page boundary at REST_PER_PAGE=100),
-        // owner 2 gets 5 rows.
+        let p1 = db.dialect().placeholder(1);
+        let p2 = db.dialect().placeholder(2);
+        let ins_note_sql =
+            format!("INSERT INTO rest_test_note (owner_id, body) VALUES ({p1}, {p2})");
+
+        // Owner 1 gets 105 rows, owner 2 gets 5 rows.
         for i in 0..105 {
-            sqlx::query("INSERT INTO rest_test_note (owner_id, body) VALUES ($1, $2)")
-                .bind(1_i64)
-                .bind(format!("owner1-note-{i}"))
-                .execute(db.pool())
+            db.conn()
+                .execute(
+                    &ins_note_sql,
+                    &[
+                        djangors_db::BindValue::I64(1),
+                        djangors_db::BindValue::Text(format!("owner1-note-{i}")),
+                    ],
+                )
                 .await
                 .unwrap();
         }
         for i in 0..5 {
-            sqlx::query("INSERT INTO rest_test_note (owner_id, body) VALUES ($1, $2)")
-                .bind(2_i64)
-                .bind(format!("owner2-note-{i}"))
-                .execute(db.pool())
+            db.conn()
+                .execute(
+                    &ins_note_sql,
+                    &[
+                        djangors_db::BindValue::I64(2),
+                        djangors_db::BindValue::Text(format!("owner2-note-{i}")),
+                    ],
+                )
                 .await
                 .unwrap();
         }
@@ -1409,7 +1438,7 @@ mod tests {
         assert!(page1.iter().all(|b| b.starts_with("owner1-note-")));
         let next_cursor = json["next_cursor"].as_str().unwrap().to_string();
 
-        // Owner 1, page 2 via cursor: the remaining 5 rows, still all owner1's, never owner2's.
+        // Owner 1, page 2 via cursor: the remaining 5 rows, still all owner1's
         let req = Request::new(
             Method::GET,
             Uri::from_static(Box::leak(
@@ -1447,8 +1476,7 @@ mod tests {
             "owner1 must see all 105 of their own rows exactly once"
         );
 
-        // Owner 2: must only ever see their own 5 rows, never owner1's, even on the same
-        // cursor-paginated endpoint.
+        // Owner 2: must only ever see their own 5 rows
         let req = Request::new(
             Method::GET,
             Uri::from_static("/api/notes?ordering=id"),

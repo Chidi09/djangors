@@ -17,3 +17,4 @@ tokio = { version = "1.53.0", features = ["rt", "macros"] }
 
 [dev-dependencies]
 djangors-macros = { path = "../djangors-macros" }
+djangors-test = { path = "../djangors-test" }

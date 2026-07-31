@@ -177,6 +177,36 @@ fn generate_db_name() -> String {
     format!("djangors_test_{pid}_{count}_{nanos}")
 }
 
+/// Which backend a test database is provisioned against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestBackend {
+    /// PostgreSQL database backend.
+    Postgres,
+    /// SQLite database backend (in-memory).
+    Sqlite,
+}
+
+impl TestBackend {
+    /// Detects the active test backend based on environment variables:
+    /// 1. `TEST_BACKEND=sqlite` -> `TestBackend::Sqlite`
+    /// 2. `TEST_BACKEND=postgres` -> `TestBackend::Postgres`
+    /// 3. If `TEST_BACKEND` is unset: `DATABASE_URL` set -> `Postgres`, unset -> `Sqlite`.
+    pub fn current() -> Self {
+        if let Ok(var) = std::env::var("TEST_BACKEND") {
+            match var.to_lowercase().as_str() {
+                "sqlite" => return TestBackend::Sqlite,
+                "postgres" => return TestBackend::Postgres,
+                _ => {}
+            }
+        }
+        if std::env::var("DATABASE_URL").is_ok() {
+            TestBackend::Postgres
+        } else {
+            TestBackend::Sqlite
+        }
+    }
+}
+
 /// A thin database fixture. It intentionally does not provide transactional rollback:
 /// ORM querysets currently require `&Database` and execute directly through its pool.
 ///
@@ -192,12 +222,44 @@ pub struct TestDatabase {
 }
 
 impl TestDatabase {
-    /// Connects to the database specified by the `DATABASE_URL` environment variable.
+    /// Provisions a database for one test, honouring `backend`.
+    pub async fn new_for_backend(backend: TestBackend) -> Result<Self, DbError> {
+        match backend {
+            TestBackend::Sqlite => {
+                // SQLite in-memory database: every pooled connection is a separate database when using sqlite::memory:.
+                // Therefore max_connections MUST be set to 1 so that setup DDL executed on one connection
+                // is visible to subsequent queries on the same pooled connection handle.
+                let config = DatabaseConfig::new("sqlite::memory:".to_string())
+                    .max_connections(1)
+                    .min_connections(1);
+                let database = Database::connect(&config).await?;
+                Ok(Self {
+                    database,
+                    db_name: None,
+                    admin_base_url: String::new(),
+                    is_isolated: true,
+                })
+            }
+            TestBackend::Postgres => {
+                let url = std::env::var("DATABASE_URL").map_err(|_| {
+                    DbError::ConnectionFailed("DATABASE_URL environment variable is not set".into())
+                })?;
+                Self::isolated_url(&url).await
+            }
+        }
+    }
+
+    /// Connects to the database specified by the environment configuration (`TEST_BACKEND` or `DATABASE_URL`).
     pub async fn connect() -> Result<Self, DbError> {
-        let url = std::env::var("DATABASE_URL").map_err(|_| {
-            DbError::ConnectionFailed("DATABASE_URL environment variable is not set".into())
-        })?;
-        Self::connect_url(&url).await
+        match TestBackend::current() {
+            TestBackend::Sqlite => Self::new_for_backend(TestBackend::Sqlite).await,
+            TestBackend::Postgres => {
+                let url = std::env::var("DATABASE_URL").map_err(|_| {
+                    DbError::ConnectionFailed("DATABASE_URL environment variable is not set".into())
+                })?;
+                Self::connect_url(&url).await
+            }
+        }
     }
 
     /// Connects to a database at the specified URL string.
@@ -217,20 +279,13 @@ impl TestDatabase {
 
     /// Executes raw DDL SQL to create a table.
     pub async fn create_table(&self, sql: &str) -> Result<(), sqlx::Error> {
-        sqlx::QueryBuilder::<sqlx::Postgres>::new(sql)
-            .build()
-            .execute(self.database.pool())
-            .await
-            .map(|_| ())
+        self.database.conn().execute(sql, &[]).await.map(|_| ())
     }
 
     /// Drops a table by name if it exists.
     pub async fn drop_table(&self, name: &str) -> Result<(), sqlx::Error> {
-        sqlx::QueryBuilder::<sqlx::Postgres>::new(format!("DROP TABLE IF EXISTS {name}"))
-            .build()
-            .execute(self.database.pool())
-            .await
-            .map(|_| ())
+        let sql = format!("DROP TABLE IF EXISTS \"{name}\"");
+        self.database.conn().execute(&sql, &[]).await.map(|_| ())
     }
 
     /// Drops each table in `tables` sequentially.
@@ -244,19 +299,38 @@ impl TestDatabase {
     /// Creates a uniquely-named throwaway database, connects to it, and returns a
     /// [`TestDatabase`] backed by that isolated database.
     ///
-    /// The base connection is determined by the `DATABASE_URL` environment variable.
-    /// The throwaway database is dropped by calling [`TestDatabase::cleanup`] explicitly
-    /// (the primary mechanism), or as a best-effort fallback in `Drop`.
+    /// The base connection is determined by `TEST_BACKEND` or `DATABASE_URL`.
     pub async fn isolated() -> Result<Self, DbError> {
-        let url = std::env::var("DATABASE_URL").map_err(|_| {
-            DbError::ConnectionFailed("DATABASE_URL environment variable is not set".into())
-        })?;
-        Self::isolated_url(&url).await
+        match TestBackend::current() {
+            TestBackend::Sqlite => Self::new_for_backend(TestBackend::Sqlite).await,
+            TestBackend::Postgres => {
+                let url = std::env::var("DATABASE_URL").map_err(|_| {
+                    DbError::ConnectionFailed("DATABASE_URL environment variable is not set".into())
+                })?;
+                Self::isolated_url(&url).await
+            }
+        }
     }
 
     /// Like [`TestDatabase::isolated`] but connects to the given URL string for the
     /// base connection instead of reading `DATABASE_URL`.
     pub async fn isolated_url(url: &str) -> Result<Self, DbError> {
+        if matches!(
+            djangors_db::Dialect::from_url(url),
+            djangors_db::Dialect::Sqlite
+        ) {
+            let config = DatabaseConfig::new("sqlite::memory:".to_string())
+                .max_connections(1)
+                .min_connections(1);
+            let database = Database::connect(&config).await?;
+            return Ok(Self {
+                database,
+                db_name: None,
+                admin_base_url: String::new(),
+                is_isolated: true,
+            });
+        }
+
         let db_name = generate_db_name();
 
         let admin_url = replace_db_name(url, "postgres");
@@ -283,18 +357,17 @@ impl TestDatabase {
 
     /// Explicitly drops the throwaway database backing this [`TestDatabase`].
     ///
-    /// This is the **primary cleanup mechanism** for isolated databases. The method
-    /// terminates any lingering connections to the database, issues `DROP DATABASE IF EXISTS`,
-    /// and consumes `self` so the connection pool is closed before the drop.
-    ///
-    /// Returns an error if called on a non-isolated [`TestDatabase`] (i.e., one created
-    /// via [`TestDatabase::connect`] or [`TestDatabase::connect_url`]).
+    /// This is the **primary cleanup mechanism** for isolated databases.
     pub async fn cleanup(self) -> Result<(), TestError> {
-        let db_name = self
-            .db_name
-            .as_ref()
-            .ok_or_else(|| TestError::Other("cleanup called on non-isolated TestDatabase".into()))?
-            .clone();
+        if self.database.dialect() == djangors_db::Dialect::Sqlite {
+            // SQLite in-memory database dies automatically with the connection handle.
+            return Ok(());
+        }
+
+        let db_name = match self.db_name.as_ref() {
+            Some(name) => name.clone(),
+            None => return Ok(()),
+        };
         let admin_base_url = self.admin_base_url.clone();
 
         drop(self);
@@ -346,7 +419,7 @@ impl Drop for TestDatabase {
     /// [`TestDatabase::cleanup`] method is the primary mechanism; this is only a
     /// safety net for tests that forget to call it.
     fn drop(&mut self) {
-        if !self.is_isolated {
+        if !self.is_isolated || self.database.dialect() == djangors_db::Dialect::Sqlite {
             return;
         }
         if let Some(ref db_name) = self.db_name {
@@ -504,6 +577,11 @@ mod tests {
 
     #[tokio::test]
     async fn isolated_databases_are_separate() {
+        if TestBackend::current() == TestBackend::Sqlite {
+            // Requires Postgres current_database() function and separate named database catalog.
+            return;
+        }
+
         let db1 = TestDatabase::isolated()
             .await
             .expect("db1 isolation failed");
@@ -562,6 +640,11 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_actually_drops_database() {
+        if TestBackend::current() == TestBackend::Sqlite {
+            // Requires Postgres catalog pg_database and server drop database functionality.
+            return;
+        }
+
         let db = TestDatabase::isolated()
             .await
             .expect("isolated for cleanup test");
@@ -708,8 +791,9 @@ mod tests {
             .await
             .expect("isolated for fixtures test");
 
+        let auto_pk = db.database().dialect().auto_pk_type();
         db.create_table(
-            "CREATE TABLE test_fixtures_model (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, value BIGINT NOT NULL)",
+            &format!("CREATE TABLE test_fixtures_model (id {auto_pk}, name TEXT NOT NULL, value BIGINT NOT NULL)"),
         )
         .await
         .expect("create fixtures table");
