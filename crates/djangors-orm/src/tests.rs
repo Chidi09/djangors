@@ -2472,3 +2472,352 @@ async fn test_select_for_update_postgres_concurrency_skip_locked() {
         .await
         .ok();
 }
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_subquery_author")]
+pub struct SubqueryAuthorModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+
+    pub name: String,
+
+    pub active: bool,
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_subquery_post")]
+pub struct SubqueryPostModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+
+    pub author_id: i64,
+
+    pub published: bool,
+
+    pub title: String,
+}
+
+#[test]
+fn test_subquery_exists_sql_shape() {
+    // OuterRef is imported here (unlike the other subquery tests) because this test calls it
+    // directly to exercise the macro's bound-variable branch, not only the inline branch.
+    use crate::{q_outer, Exists, NotExists, OuterRef};
+
+    // Test inline OuterRef("id") macro branch
+    let qs_exists = SubqueryAuthorModel::objects()
+        .filter(
+            Exists::<SubqueryPostModel>::new()
+                .filter(q_outer!(author_id = OuterRef("id")))
+                .unwrap()
+                .filter(q!(published = true))
+                .unwrap(),
+        )
+        .unwrap();
+
+    let sql = qs_exists.debug_sql();
+    // The doubled parentheses are expected, not a bug: each `.filter()` call appends its own
+    // `Expr::And([..])`, and `compile_expr_sql` parenthesises both the And and each leaf compare.
+    // That predates this slice - it is simply the first time a test asserted the full string of a
+    // subquery. The SQL is valid and semantically identical either way.
+    assert_eq!(
+        sql,
+        "SELECT * FROM \"test_subquery_author\" WHERE (EXISTS (SELECT 1 FROM \"test_subquery_post\" WHERE ((\"test_subquery_post\".\"author_id\" = \"test_subquery_author\".\"id\")) AND ((\"test_subquery_post\".\"published\" = $1))))"
+    );
+
+    // Test binding variable holding OuterRef macro branch
+    let oref = OuterRef("id");
+    let qs_not_exists = SubqueryAuthorModel::objects()
+        .filter(
+            NotExists::<SubqueryPostModel>::new()
+                .filter(q_outer!(author_id = oref))
+                .unwrap()
+                .filter(q!(published = true))
+                .unwrap(),
+        )
+        .unwrap();
+
+    let sql_not = qs_not_exists.debug_sql();
+    assert_eq!(
+        sql_not,
+        "SELECT * FROM \"test_subquery_author\" WHERE (NOT EXISTS (SELECT 1 FROM \"test_subquery_post\" WHERE ((\"test_subquery_post\".\"author_id\" = \"test_subquery_author\".\"id\")) AND ((\"test_subquery_post\".\"published\" = $1))))"
+    );
+}
+
+#[test]
+fn test_subquery_parameter_ordering_before_and_after() {
+    use crate::{q_outer, Exists, Value};
+
+    let qs = SubqueryAuthorModel::objects()
+        .filter(q!(active = true))
+        .unwrap()
+        .filter(
+            Exists::<SubqueryPostModel>::new()
+                .filter(q_outer!(author_id = OuterRef("id")))
+                .unwrap()
+                .filter(q!(published = true))
+                .unwrap(),
+        )
+        .unwrap()
+        .filter(q!(name = "Alice"))
+        .unwrap();
+
+    let sql = qs.debug_sql();
+    let params = qs.debug_params();
+
+    // Same parenthesisation note as test_subquery_exists_sql_shape. What this test actually pins
+    // is the PLACEHOLDER NUMBERING: $1 before the subquery, $2 inside it, $3 after. If the
+    // subquery did not continue the outer query's param counter, this would still be executable
+    // SQL that silently bound the right number of values in the wrong order.
+    assert_eq!(
+        sql,
+        "SELECT * FROM \"test_subquery_author\" WHERE ((\"active\" = $1)) AND (EXISTS (SELECT 1 FROM \"test_subquery_post\" WHERE ((\"test_subquery_post\".\"author_id\" = \"test_subquery_author\".\"id\")) AND ((\"test_subquery_post\".\"published\" = $2)))) AND ((\"name\" = $3))"
+    );
+
+    assert_eq!(
+        params,
+        vec![
+            Value::Bool(true),
+            Value::Bool(true),
+            Value::Text("Alice".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn test_outerref_outside_subquery_error() {
+    use crate::q_outer;
+    let res = SubqueryAuthorModel::objects().filter(q_outer!(id = OuterRef("id")));
+    assert!(matches!(
+        res,
+        Err(crate::error::OrmError::InvalidQuery(msg)) if msg.contains("OuterRef can only be used within a subquery")
+    ));
+}
+
+// The two subquery round-trip tests below share the SAME two models, so they necessarily share
+// the same two tables. Unique table names cannot separate them; only serialisation can. Without
+// this, cargo's parallel test threads race on Postgres and produce "relation already exists" in
+// one test and "relation does not exist" in the other - a confusing failure that looks like a
+// subquery bug and is not one. SQLite is unaffected (each in-memory handle is its own database),
+// which is exactly why this only ever failed on the Postgres leg.
+// tokio's Mutex, not std's: these are async tests and the guard is deliberately held across
+// `.await` points. A std::sync::MutexGuard held across an await is a real deadlock hazard (and
+// clippy::await_holding_lock rejects it), because the guard would pin a blocking lock to a task
+// that can be parked and resumed on a different thread.
+static SUBQUERY_DB_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[tokio::test]
+async fn test_subquery_exists_roundtrip() {
+    let _guard = SUBQUERY_DB_MUTEX.lock().await;
+    use crate::{q_outer, Exists, NotExists};
+
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_subquery_post", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_subquery_author", &[])
+        .await;
+
+    let create_author_sql = format!(
+        "CREATE TABLE test_subquery_author (
+            id {auto_pk},
+            name TEXT NOT NULL,
+            active BOOLEAN NOT NULL
+        )"
+    );
+    let create_post_sql = format!(
+        "CREATE TABLE test_subquery_post (
+            id {auto_pk},
+            author_id BIGINT NOT NULL,
+            published BOOLEAN NOT NULL,
+            title TEXT NOT NULL
+        )"
+    );
+
+    db.conn().execute(&create_author_sql, &[]).await.unwrap();
+    db.conn().execute(&create_post_sql, &[]).await.unwrap();
+
+    db.conn()
+        .execute(
+            "INSERT INTO test_subquery_author (name, active) VALUES ('Alice', true), ('Bob', true), ('Charlie', true)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    db.conn()
+        .execute(
+            "INSERT INTO test_subquery_post (author_id, published, title) VALUES (1, true, 'Post 1'), (3, false, 'Draft 1')",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let authors_with_published = SubqueryAuthorModel::objects()
+        .filter(
+            Exists::<SubqueryPostModel>::new()
+                .filter(q_outer!(author_id = OuterRef("id")))
+                .unwrap()
+                .filter(q!(published = true))
+                .unwrap(),
+        )
+        .unwrap()
+        .order_by("id")
+        .unwrap()
+        .all(db)
+        .await
+        .unwrap();
+
+    assert_eq!(authors_with_published.len(), 1);
+    assert_eq!(authors_with_published[0].name, "Alice");
+
+    let authors_without_published = SubqueryAuthorModel::objects()
+        .filter(
+            NotExists::<SubqueryPostModel>::new()
+                .filter(q_outer!(author_id = OuterRef("id")))
+                .unwrap()
+                .filter(q!(published = true))
+                .unwrap(),
+        )
+        .unwrap()
+        .order_by("id")
+        .unwrap()
+        .all(db)
+        .await
+        .unwrap();
+
+    assert_eq!(authors_without_published.len(), 2);
+    assert_eq!(authors_without_published[0].name, "Bob");
+    assert_eq!(authors_without_published[1].name, "Charlie");
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_subquery_post", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_subquery_author", &[])
+        .await;
+}
+
+#[tokio::test]
+async fn test_subquery_nested_filters_and_count_aggregate() {
+    let _guard = SUBQUERY_DB_MUTEX.lock().await;
+    use crate::{q_outer, Exists};
+
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_subquery_post", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_subquery_author", &[])
+        .await;
+
+    let create_author_sql = format!(
+        "CREATE TABLE test_subquery_author (
+            id {auto_pk},
+            name TEXT NOT NULL,
+            active BOOLEAN NOT NULL
+        )"
+    );
+    let create_post_sql = format!(
+        "CREATE TABLE test_subquery_post (
+            id {auto_pk},
+            author_id BIGINT NOT NULL,
+            published BOOLEAN NOT NULL,
+            title TEXT NOT NULL
+        )"
+    );
+
+    db.conn().execute(&create_author_sql, &[]).await.unwrap();
+    db.conn().execute(&create_post_sql, &[]).await.unwrap();
+
+    db.conn()
+        .execute(
+            "INSERT INTO test_subquery_author (name, active) VALUES ('Alice', true), ('Aaron', true), ('Bob', false)",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    db.conn()
+        .execute(
+            "INSERT INTO test_subquery_post (author_id, published, title) VALUES (1, true, 'Post 1'), (2, true, 'Post 2')",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let active_authors_with_posts = SubqueryAuthorModel::objects()
+        .filter(q!(active = true))
+        .unwrap()
+        .filter(q!(name__startswith = "A"))
+        .unwrap()
+        .filter(
+            Exists::<SubqueryPostModel>::new()
+                .filter(q_outer!(author_id = OuterRef("id")))
+                .unwrap()
+                .filter(q!(published = true))
+                .unwrap(),
+        )
+        .unwrap()
+        .order_by("-name")
+        .unwrap()
+        .limit(1)
+        .all(db)
+        .await
+        .unwrap();
+
+    assert_eq!(active_authors_with_posts.len(), 1);
+    assert_eq!(active_authors_with_posts[0].name, "Alice");
+
+    let count = SubqueryAuthorModel::objects()
+        .filter(
+            Exists::<SubqueryPostModel>::new()
+                .filter(q_outer!(author_id = OuterRef("id")))
+                .unwrap()
+                .filter(q!(published = true))
+                .unwrap(),
+        )
+        .unwrap()
+        .count(db)
+        .await
+        .unwrap();
+
+    assert_eq!(count, 2);
+
+    use crate::aggregate::AggExpr;
+    let agg = SubqueryAuthorModel::objects()
+        .filter(
+            Exists::<SubqueryPostModel>::new()
+                .filter(q_outer!(author_id = OuterRef("id")))
+                .unwrap()
+                .filter(q!(published = true))
+                .unwrap(),
+        )
+        .unwrap()
+        .aggregate(db, vec![AggExpr::Count { field: "*" }])
+        .await
+        .unwrap();
+
+    assert_eq!(agg, vec![crate::aggregate::AggResult::I64(2)]);
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_subquery_post", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_subquery_author", &[])
+        .await;
+}

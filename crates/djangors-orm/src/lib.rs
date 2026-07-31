@@ -33,7 +33,8 @@ pub use meta::{
 pub use aggregate::{AggExpr, AggResult};
 pub use error::{FromRow, OrmError};
 pub use expr::{
-    ArithOp, CompareOp, Expr, IntoSetExpr, SetExpr, UnresolvedCompare, UnresolvedExpr, Value, F,
+    ArithOp, CompareOp, Exists, Expr, IntoSetExpr, NotExists, OuterRef, SetExpr, UnresolvedCompare,
+    UnresolvedExpr, UnresolvedFieldCompare, UnresolvedOuterCompare, Value, F,
 };
 pub use queryset::{prefetch_related, QuerySet};
 

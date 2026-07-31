@@ -170,6 +170,37 @@ let qs = Choice::objects().filter(q_f!(id__ne votes))?;
 # }
 ```
 
+### Correlated Subqueries: `Exists`, `NotExists`, `OuterRef`, `q_outer!`
+
+Use `Exists` or `NotExists` with `q_outer!` and `OuterRef` to construct correlated subqueries:
+
+```rust,illustrative
+# use polls::models::{Question, Choice};
+# use djangors_orm::{q, q_outer, Exists, NotExists, OuterRef, Model};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+// Questions with at least one choice with votes > 0:
+let popular_questions = Question::objects()
+    .filter(
+        Exists::<Choice>::new()
+            .filter(q_outer!(question = OuterRef("id")))?
+            .filter(q!(votes__gt = 0i32))?,
+    )?;
+
+// Questions without choice with votes > 0:
+let unpopular_questions = Question::objects()
+    .filter(
+        NotExists::<Choice>::new()
+            .filter(q_outer!(question = OuterRef("id")))?
+            .filter(q!(votes__gt = 0i32))?,
+    )?;
+# let _ = (popular_questions, unpopular_questions);
+# Ok(())
+# }
+```
+
+> [!NOTE]
+> An `Exists` or `NotExists` subquery whose filters contain no `OuterRef` is an uncorrelated subquery. It evaluates once for the entire query and does not correlate rows between the subquery and outer query.
+
 ### Grouping: `annotate` and `values`
 
 `.annotate()` is Django's `.values(...).annotate(...)`: it groups by the given
