@@ -18,6 +18,7 @@ tower = { version = "0.5.3", features = ["util"] }
 tokio = { version = "1.53.0", features = ["full"] }
 http-body-util = "0.1.4"
 bytes = "1.12.1"
+multer = "3.1.0"
 
 [[bin]]
 name = "query_string"
@@ -37,6 +38,13 @@ path = "fuzz_targets/session_cookie_decode.rs"
 test = false
 doc = false
 
+[[bin]]
+name = "multipart"
+path = "fuzz_targets/multipart.rs"
+test = false
+doc = false
+
 [workspace]
 # Empty workspace to avoid cargo parent workspace error
+
 

@@ -1,23 +1,69 @@
-# Threat model — Djangors (as of Phase 4 part 4e)
+# Threat model — Djangors
 
-**Status:** living document, revisited every phase that adds new attack surface (next expected
-update: Phase 8, when token/JWT auth and WebSockets add trust boundaries that don't exist yet).
+**Status:** living document. Last substantive revision 2026-07-31 (v0.6.0, post-Phase-14).
 Everything below describes **real, already-committed code** — file/function references are exact,
 not aspirational. Where a mitigation is intentionally partial, that's stated explicitly rather than
 rounded up to "done."
 
+The per-subsystem sections below were written during Phase 4 and remain accurate for the
+subsystems they cover. The Assets, Adversaries, and Residual Risk sections were added in 15.x, and
+the trust-boundary section was rewritten then: the original said Djangors had exactly one
+untrusted-input surface and no multipart parsing, no token auth, and no tenancy. All three of those
+statements have since become false, which is precisely the failure mode a living document exists to
+prevent.
+
+## Assets
+
+What an attacker is actually after:
+
+- **The session signing key (`settings.SECRET_KEY`) and the cookies it signs.** `SignedCookieStore`
+  (`crates/djangors-sessions/src/lib.rs`) signs client-side session cookies with HMAC-SHA256.
+  Compromise of the key is total: arbitrary session forgery and impersonation of any account,
+  including superusers. This is the single highest-value asset in the system.
+- **Password hashes.** Argon2id with per-password CSPRNG salts. Compromise exposes accounts to
+  offline cracking, bounded by Argon2id's cost parameters.
+- **The authenticated admin surface (`djangors-admin`).** Model CRUD over every registered model,
+  which in a real deployment means the whole database.
+- **Tenant isolation (`djangors-contrib-tenancy`).** A cross-tenant read is a data breach affecting
+  parties who never interacted with the attacker.
+- **Payment records (`djangors-contrib-payments`).**
+- **Database integrity itself**, via the ORM.
+
+## Adversaries
+
+- **Unauthenticated internet attacker.** Arbitrary HTTP: crafted headers, query strings, path
+  params, JSON, and multipart bodies. Goals are injection, CSRF, path traversal, and
+  resource exhaustion in parsers.
+- **Authenticated low-privilege user.** Vertical escalation (reaching admin views or exercising
+  ungranted permissions) and horizontal escalation (another user's or another tenant's rows). This
+  is the adversary the entire per-action `require_perm` system exists for, and the one most likely
+  to actually exist in a deployed application.
+- **Compromised or malicious dependency.** 472 crates in `Cargo.lock`. Not hypothetical — `cargo
+  audit` runs in CI against the RustSec database and currently reports three triaged advisories
+  (see `docs/security-review-2026-07-27.md`).
+
 ## Trust boundaries
 
-As of Phase 4, Djangors only has one real untrusted-input surface: **the browser**, talking to the
-server over cookies, headers, query strings, and (JSON/form-encoded, not yet multipart) request
-bodies. There is no API/token auth yet (`AuthBackend`/`Auth<U>` only support session-cookie-based
-auth — Phase 8 adds `djangors-rest` token/JWT auth, a second trust boundary that doesn't exist
-today). There is no multi-tenant/cross-app boundary yet (no `djangors-contrib-guardian`
-object-level permissions, no multi-database routing trust distinction). The database itself is
-trusted (no untrusted SQL execution path — all queries go through the ORM's parameterized query
-builder; no raw-SQL escape hatch has been built yet per Phase 2's `PLAN.md` line, so there's
-currently no first-party SQL-injection surface to model beyond "the ORM's query builder must keep
-parameterizing correctly," which is exercised by the ORM's own test suite, not this doc).
+- **Browser → server.** The primary untrusted surface. Every incoming byte — cookies, headers,
+  query strings, path parameters, and JSON, form-encoded, **and multipart** bodies — is attacker
+  controlled. Multipart parsing (`crates/djangors-core/src/extract.rs`, via `multer`) was added
+  after this document's first draft and is now the largest and least-structured of these.
+- **API client → server.** `djangors-rest` adds token and optional JWT authentication, a second
+  authentication boundary distinct from session cookies. The `jwt` feature is optional and carries
+  a known advisory (RUSTSEC-2023-0071, `rsa`); HS256/ES256 are the documented mitigation.
+- **Tenant → tenant.** `djangors-contrib-tenancy` scopes queries by tenant. v1 resolves the tenant
+  from an `X-Tenant-Id` header, so tenant identity is only as trustworthy as whatever sets that
+  header — an application that lets a client set it directly has no isolation at all. This is a
+  deployment-configuration boundary as much as a code one.
+- **Low-privilege user → staff/superuser**, inside an already-authenticated session. Enforced by
+  `Auth<U>`, `has_perm`, and `require_perm`.
+- **Server → database.** Trusted. All queries go through the ORM's parameterised builder, with
+  every identifier quoted since 12.1. The raw-SQL escape hatch that now exists is typed via sqlx
+  rather than string-interpolated. The 2026-07-27 review found no raw user-value interpolation
+  anywhere in the ORM or REST layers; savepoint names (15.1) are the one caller-supplied string
+  that reaches query text, and are both validated against `[A-Za-z_][A-Za-z0-9_]*` and quoted.
+- **Server → third parties.** SMTP (`djangors-mail`), S3 (`djangors-staticfiles`), Redis
+  (`djangors-cache`).
 
 ## Per-subsystem threat/mitigation summary
 
@@ -151,15 +197,44 @@ parsers in `middleware.rs`/`djangors-sessions`)
   `unwrap()` on attacker-controlled data) — reviewed by inspection, and as of this doc, also
   fuzz-tested (see `fuzz/` and the fuzzing section of `security-checklist.md`) rather than relying
   on code review alone.
-- **Known gap:** multipart body parsing does not exist yet (see `security-checklist.md`'s File
-  Upload section) — no fuzz target exists for it because there is no parser to fuzz. This is a
-  scope gap in Phase 3, not Phase 4, but it means there is currently no file-upload attack surface
-  at all (nothing to attack, since nothing accepts files).
+- **Multipart** (superseding this section's original text, which said multipart parsing did not
+  exist and that there was therefore "nothing to attack"). It exists:
+  `djangors_core::extract::Multipart` over the `multer` crate, bounded by
+  `Constraints::size_limit` (whole-stream and per-field). It is now the largest attacker-controlled
+  parser in the project, and unlike the three hand-rolled parsers above it is third-party code.
+  A `cargo-fuzz` target was added in 15.x (`fuzz/fuzz_targets/multipart.rs`). **Residual risk:** it
+  buffers rather than streaming to temp files, so the size limit is the only thing standing between
+  concurrent uploads and memory pressure.
 
-## What this document intentionally does not cover
+## Explicitly out of scope, and why
 
-- Anything in Phase 5+ (admin, API/token auth, WebSockets, background tasks) — those phases will
-  each need a revisit of this document once built, not a speculative threat model for code that
-  doesn't exist.
-- Infrastructure-level concerns (TLS termination config, reverse proxy trust, container/deploy
-  hardening) — Phase 6/10 territory (`djangors check --deploy`, deployment story doc).
+- **Physical host access.** Overrides every logical control; belongs to the infrastructure
+  provider.
+- **Compromised developer workstation.** An attacker with local code execution can alter source or
+  steal keys before anything this framework does takes effect.
+- **A malicious superuser.** A superuser is omnipotent by design. Constraining one is an
+  organisational control (separation of duties, out-of-band approval, external audit), not
+  something the framework can or should try to enforce.
+- **Volumetric DDoS.** The built-in rate limiter is single-process and in-memory; distributed
+  volumetric attacks need edge infrastructure.
+- **Infrastructure-level concerns** (TLS termination, reverse-proxy trust, container hardening) —
+  `dj check --deploy` and the deployment guide cover the application side of this, not the
+  network side.
+
+## Known residual risk
+
+Carried forward honestly rather than closed:
+
+1. **Multipart buffers rather than streams.** Size-limited, but concurrent large uploads remain a
+   memory-pressure vector.
+2. **Rate limiting is single-process and in-memory.** Horizontally scaled deployments do not share
+   counters without a centralised backend.
+3. **`on_delete` is enforced only for `Protect`, and only in the admin layer.** `Cascade`,
+   `SetNull`, `Restrict`, and `DoNothing` are metadata-only — they are not schema constraints, so
+   a write that bypasses the admin bypasses them entirely.
+4. **Tenant identity comes from an `X-Tenant-Id` header.** An application that lets a client set it
+   has no isolation. This is a documented deployment responsibility, not a framework guarantee.
+5. **Fuzzing is local and one-off**, not continuous or wired into CI/OSS-Fuzz.
+6. **No independent third-party audit.** Every review to date is internal, including this document.
+7. **Phase 5+ subsystems are only partially modelled here.** The admin, background tasks, and
+   WebSockets/SSE each deserve a fuller pass than the per-subsystem sections above give them.
