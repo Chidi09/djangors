@@ -95,16 +95,38 @@ mod tests {
         let Ok(db) = djangors_test::TestDatabase::connect().await else {
             return;
         };
-        db.create_table("CREATE TABLE IF NOT EXISTS djangors_flatpage (id BIGSERIAL PRIMARY KEY, url VARCHAR(255) UNIQUE NOT NULL, title VARCHAR(255) NOT NULL, content TEXT NOT NULL)").await.unwrap();
-        sqlx::query("DELETE FROM djangors_flatpage")
-            .execute(db.database().pool())
+        // Dialect-aware rather than hardcoded Postgres. This test previously used BIGSERIAL,
+        // `$n` placeholders, and `Database::pool()` - all three are Postgres-only, and `pool()`
+        // panics outright on a SQLite handle. It never surfaced because nothing ran this crate
+        // against SQLite until the test-sqlite CI job existed.
+        let dialect = db.database().dialect();
+        db.create_table(&format!(
+            "CREATE TABLE IF NOT EXISTS djangors_flatpage (id {}, url VARCHAR(255) UNIQUE NOT NULL, title VARCHAR(255) NOT NULL, content TEXT NOT NULL)",
+            dialect.auto_pk_type()
+        ))
+        .await
+        .unwrap();
+        db.database()
+            .conn()
+            .execute("DELETE FROM djangors_flatpage", &[])
             .await
             .unwrap();
-        sqlx::query("INSERT INTO djangors_flatpage (url, title, content) VALUES ($1, $2, $3)")
-            .bind("/about/")
-            .bind("About")
-            .bind("<h1>About &amp; Us</h1>")
-            .execute(db.database().pool())
+        let insert_sql = format!(
+            "INSERT INTO djangors_flatpage (url, title, content) VALUES ({}, {}, {})",
+            dialect.placeholder(1),
+            dialect.placeholder(2),
+            dialect.placeholder(3)
+        );
+        db.database()
+            .conn()
+            .execute(
+                &insert_sql,
+                &[
+                    djangors_orm::BindValue::Text("/about/".to_string()),
+                    djangors_orm::BindValue::Text("About".to_string()),
+                    djangors_orm::BindValue::Text("<h1>About &amp; Us</h1>".to_string()),
+                ],
+            )
             .await
             .unwrap();
         let req = |path: &str| {
