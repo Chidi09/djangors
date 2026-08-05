@@ -135,3 +135,4 @@ table { display: block; max-width: 100%; overflow-x: auto; }
   .footer-grid li { margin-bottom: .15rem; }
   .footer-grid a { display: inline-flex; align-items: center; min-height: 44px; }
 }
+header .brand{display:flex;align-items:center;gap:.65rem;font-size:1.15rem;font-weight:800;letter-spacing:-.02em}header .brand span{color:var(--ink)}
