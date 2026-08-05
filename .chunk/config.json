@@ -2,7 +2,7 @@
   "commands": [
     {
       "name": "test",
-      "run": "DATABASE_URL=postgres://postgres:postgres@localhost/djangors_test cargo test",
+      "run": "env -u DATABASE_URL TEST_BACKEND=sqlite cargo test",
       "role": "gate",
       "timeout": 300,
       "limit": 3

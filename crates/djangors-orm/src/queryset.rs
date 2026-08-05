@@ -1,7 +1,7 @@
 use crate::error::{FromRow, OrmError};
 use crate::expr::{ArithOp, CompareOp, Expr, SetExpr, UnresolvedExpr, Value};
 use crate::meta::{FieldKind, Model, ModelMeta};
-use djangors_db::{BindValue, DbRow, Dialect, NullKind};
+use djangors_db::{BindValue, DbExecutor, DbRow, Dialect, NullKind};
 use std::marker::PhantomData;
 
 /// Resolves the correct [`NullKind`] for a field on `meta` by name.
@@ -44,6 +44,7 @@ pub struct QuerySet<T: Model + FromRow> {
     limit: Option<i64>,
     offset: Option<i64>,
     for_update: Option<ForUpdate>,
+    search_condition: Option<String>,
     _marker: PhantomData<T>,
 }
 
@@ -55,6 +56,7 @@ impl<T: Model + FromRow> Clone for QuerySet<T> {
             limit: self.limit,
             offset: self.offset,
             for_update: self.for_update.clone(),
+            search_condition: self.search_condition.clone(),
             _marker: PhantomData,
         }
     }
@@ -75,6 +77,7 @@ impl<T: Model + FromRow> QuerySet<T> {
             limit: None,
             offset: None,
             for_update: None,
+            search_condition: None,
             _marker: PhantomData,
         }
     }
@@ -97,6 +100,31 @@ impl<T: Model + FromRow> QuerySet<T> {
     pub fn debug_params(&self) -> Vec<Value> {
         self.compile_select_with_order("*", true, Dialect::Postgres)
             .1
+    }
+
+    /// Runs `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)` on the current query and
+    /// returns the planner/execution output as a single `String` (rows joined by
+    /// newlines).
+    ///
+    /// This is Postgres-only (SQLite's EXPLAIN is different); SQLite returns an
+    /// [`OrmError::UnsupportedOnDialect`].
+    pub async fn explain<E: djangors_db::DbExecutor>(&self, mut db: E) -> Result<String, OrmError> {
+        let dialect = db.dialect();
+        if dialect != Dialect::Postgres {
+            return Err(OrmError::UnsupportedOnDialect(
+                "explain() is Postgres-only; use debug_sql() on SQLite".to_string(),
+            ));
+        }
+        let (select_sql, params) = self.compile_select();
+        let explain_sql = format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT) {select_sql}");
+        let bind_values: Vec<BindValue> = params.into_iter().map(BindValue::from).collect();
+        let mut conn = db.conn();
+        let rows = conn.fetch_all(&explain_sql, &bind_values).await?;
+        let lines: Vec<String> = rows
+            .iter()
+            .filter_map(|row| row.try_string(0).transpose())
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(lines.join("\n"))
     }
 
     /// Excludes rows matching `expr` — the negation of [`filter`](Self::filter).
@@ -332,6 +360,82 @@ impl<T: Model + FromRow> QuerySet<T> {
         Ok(out)
     }
 
+    /// Apply scalar functions and return as [`GroupRow`]s. Like [`annotate`](Self::annotate)
+    /// but for scalar function expressions instead of aggregate functions.
+    pub async fn annotate_funcs<E: djangors_db::DbExecutor>(
+        &self,
+        mut db: E,
+        group_by: &[&'static str],
+        funcs: Vec<(&'static str, crate::aggregate::FuncExpr)>,
+    ) -> Result<Vec<GroupRow>, OrmError> {
+        if self.for_update.is_some() {
+            return Err(OrmError::InvalidQuery(
+                "FOR UPDATE cannot be used with annotate/group-by queries".to_string(),
+            ));
+        }
+        let dialect = db.dialect();
+        let meta = T::meta();
+
+        if group_by.is_empty() {
+            return Err(OrmError::InvalidQuery(
+                "annotate_funcs requires at least one group-by field".to_string(),
+            ));
+        }
+
+        for field in group_by {
+            Self::check_field(field)?;
+        }
+
+        let group_cols: Vec<String> = group_by
+            .iter()
+            .map(|f| {
+                if let Some(fm) = meta.fields.iter().find(|m| m.name == *f) {
+                    format!("\"{}\"", fm.column_name)
+                } else {
+                    format!("\"{}\"", f)
+                }
+            })
+            .collect();
+
+        let mut func_selects = Vec::new();
+        let mut func_aliases = Vec::new();
+        for (alias, func) in &funcs {
+            let expr_sql = func.to_sql(&dialect);
+            let col_alias = func.alias();
+            func_selects.push(format!("{expr_sql} AS \"{col_alias}\""));
+            func_aliases.push((alias.to_string(), col_alias));
+        }
+
+        let mut select_parts = group_cols.clone();
+        select_parts.extend(func_selects);
+
+        let mut clean_qs = self.clone();
+        clean_qs.limit = None;
+        clean_qs.offset = None;
+        let (mut sql, params) =
+            clean_qs.compile_select_with_order(&select_parts.join(", "), false, dialect);
+        sql.push_str(&format!(" GROUP BY {}", group_cols.join(", ")));
+
+        let bind_values: Vec<BindValue> = params.into_iter().map(BindValue::from).collect();
+        db.record_query();
+        let rows = db.conn().fetch_all(&sql, &bind_values).await?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let mut keys = Vec::new();
+            let mut aggregates = Vec::new();
+            for f in group_by {
+                keys.push((*f, decode_value(&row, group_by.iter().position(|g| g == f).unwrap(), field_kind_of(f, meta))));
+            }
+            for (alias, col_alias) in &func_aliases {
+                let val = row_to_value(&row, col_alias)?;
+                aggregates.push((alias.clone(), crate::aggregate::AggResult::from_value(&val)));
+            }
+            results.push(GroupRow { keys, aggregates });
+        }
+        Ok(results)
+    }
+
     /// Selects only `fields`, returning raw column values — Django's `.values()`.
     pub async fn values<E: djangors_db::DbExecutor>(
         &self,
@@ -430,6 +534,26 @@ impl<T: Model + FromRow> QuerySet<T> {
             });
         }
         self.filters.push(Expr::Or(compares));
+        Ok(self)
+    }
+
+    /// Performs a Postgres full-text search on the given text fields.
+    /// Uses `plainto_tsquery('english', query)` and matches via `@@` against a
+    /// concatenated `to_tsvector` of the fields.
+    ///
+    /// Postgres-only. Use `filter_or_icontains` for case-insensitive substring
+    /// matching on both backends.
+    pub fn search(mut self, query: &str, fields: &[&'static str]) -> Result<Self, OrmError> {
+        let escaped = query.replace('\'', "''");
+        let tsvector_parts: Vec<String> = fields
+            .iter()
+            .map(|f| format!("coalesce(\"{}\"::text, '')", f))
+            .collect();
+        let condition = format!(
+            "to_tsvector('english', {}) @@ plainto_tsquery('english', '{escaped}')",
+            tsvector_parts.join(" || ' ' || ")
+        );
+        self.search_condition = Some(condition);
         Ok(self)
     }
 
@@ -643,6 +767,14 @@ impl<T: Model + FromRow> QuerySet<T> {
             );
             sql.push_str(" WHERE ");
             sql.push_str(&where_clause);
+        }
+
+        if let Some(ref sc) = self.search_condition {
+            if sql.contains(" WHERE ") {
+                sql.push_str(&format!(" AND ({sc})"));
+            } else {
+                sql.push_str(&format!(" WHERE ({sc})"));
+            }
         }
 
         let order_source = if !include_order {
@@ -1071,7 +1203,64 @@ impl<T: Model + FromRow> QuerySet<T> {
         Ok(pk)
     }
 
-    /// Inserts every item in `items` in a single multi-row `INSERT` statement.
+    /// Fetches the first row matching the current filter, or creates a new one from
+    /// `defaults`.
+    ///
+    /// Returns `(T, true)` when created, `(T, false)` when the row already existed.
+    /// The `defaults` closure receives no arguments and should return the values
+    /// ready for `insert_raw` (a `Vec<(&'static str, Value)>`).
+    pub async fn get_or_create<F>(
+        &self,
+        db: &djangors_db::Database,
+        defaults: F,
+    ) -> Result<(T, bool), OrmError>
+    where
+        F: FnOnce() -> Vec<(&'static str, super::expr::Value)> + Send,
+        T: Send,
+    {
+        if let Some(existing) = self.first(db).await? {
+            return Ok((existing, false));
+        }
+        let pk = QuerySet::<T>::insert_raw(db, defaults()).await?;
+        let created = QuerySet::<T>::new()
+            .filter(crate::q!(id = pk))
+            .map_err(|e| OrmError::InvalidQuery(e.to_string()))?
+            .get(db)
+            .await?;
+        Ok((created, true))
+    }
+
+    /// Like [`get_or_create`] but updates existing rows with `updates` instead of
+    /// returning them unchanged.
+    ///
+    /// The `updates` closure receives no arguments and should return a
+    /// `Vec<(&'static str, SetExpr)>` (the same form `set!` produces).
+    pub async fn update_or_create<Fd, Fu>(
+        &self,
+        db: &djangors_db::Database,
+        defaults: Fd,
+        updates: Fu,
+    ) -> Result<(T, bool), OrmError>
+    where
+        Fd: FnOnce() -> Vec<(&'static str, super::expr::Value)> + Send,
+        Fu: FnOnce() -> Vec<(&'static str, super::expr::SetExpr)> + Send,
+        T: Send,
+    {
+        if let Some(existing) = self.first(db).await? {
+            self.update(db, updates()).await?;
+            return Ok((existing, false));
+        }
+        let pk = QuerySet::<T>::insert_raw(db, defaults()).await?;
+        let created = QuerySet::<T>::new()
+            .filter(crate::q!(id = pk))
+            .map_err(|e| OrmError::InvalidQuery(e.to_string()))?
+            .get(db)
+            .await?;
+        Ok((created, true))
+    }
+
+    /// Inserts many rows in a single multi-row `INSERT` statement and returns
+    /// their primary keys.
     pub async fn bulk_create<E: djangors_db::DbExecutor>(
         mut db: E,
         items: &[T],
@@ -1471,6 +1660,25 @@ fn decode_value(row: &DbRow, idx: usize, kind: Option<FieldKind>) -> Value {
             .map(Value::I64)
             .unwrap_or(Value::Null),
     }
+}
+
+fn row_to_value(row: &djangors_db::DbRow, name: &str) -> Result<crate::expr::Value, OrmError> {
+    if let Some(v) = row.try_i64_by_name(name)? {
+        return Ok(crate::expr::Value::I64(v));
+    }
+    if let Some(v) = row.try_f64_by_name(name)? {
+        return Ok(crate::expr::Value::F64(v));
+    }
+    if let Some(v) = row.try_string_by_name(name)? {
+        return Ok(crate::expr::Value::Text(v));
+    }
+    if let Some(v) = row.try_bool_by_name(name)? {
+        return Ok(crate::expr::Value::Bool(v));
+    }
+    if let Some(v) = row.try_datetime_by_name(name)? {
+        return Ok(crate::expr::Value::DateTime(v));
+    }
+    Ok(crate::expr::Value::Null)
 }
 
 fn suffix_to_op(suffix: &str) -> CompareOp {

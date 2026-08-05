@@ -13,10 +13,10 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-core = { path = "../djangors-core", version = "0.6.0" }
-djangors-db = { path = "../djangors-db", version = "0.6.0" }
-djangors-orm = { path = "../djangors-orm", version = "0.6.0" }
-djangors-sessions = { path = "../djangors-sessions", version = "0.6.0" }
+djangors-core = { path = "../djangors-core", version = "0.6.2" }
+djangors-db = { path = "../djangors-db", version = "0.6.2" }
+djangors-orm = { path = "../djangors-orm", version = "0.6.2" }
+djangors-sessions = { path = "../djangors-sessions", version = "0.6.2" }
 bytes = "1.12.1"
 hyper = "1.10.1"
 serde_urlencoded = "0.7.1"

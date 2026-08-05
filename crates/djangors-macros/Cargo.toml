@@ -25,4 +25,5 @@ trybuild = "1.0"
 djangors-orm = { path = "../djangors-orm" }
 djangors-forms = { path = "../djangors-forms" }
 djangors-core = { path = "../djangors-core" }
+chrono = { version = "0.4", features = ["clock"] }
 

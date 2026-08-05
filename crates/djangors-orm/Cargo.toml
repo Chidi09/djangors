@@ -13,13 +13,13 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-forms = { path = "../djangors-forms", version = "0.6.0" }
+djangors-forms = { path = "../djangors-forms", version = "0.6.2" }
 serde = { version = "1.0.228", features = ["derive"] }
 inventory = "0.3.24"
 thiserror = "2.0.18"
 sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres", "sqlite", "chrono"] }
 chrono = { version = "0.4", features = ["std"] }
-djangors-db = { path = "../djangors-db", version = "0.6.0" }
+djangors-db = { path = "../djangors-db", version = "0.6.2" }
 tokio = { version = "1.53.0", features = ["rt"] }
 
 [dev-dependencies]

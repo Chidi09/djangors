@@ -75,6 +75,56 @@ Question::pre_save_signal().connect(|payload: ModelSignalPayload| async move {
 
 ---
 
+## Custom Signals (`Signal<T>`)
+
+[`Signal<T>`](file:///root/dev/Rango/crates/djangors-core/src/signals.rs) is the generic building
+block the lifecycle signals above are built on. It is **typed** — it fires with a specific payload
+`T`, which must implement `Clone + Send + Sync + 'static`. Use it to broadcast your own application
+domain events (e.g. "an order was placed") between decoupled parts of your codebase.
+
+| Method | Signature | Notes |
+| --- | --- | --- |
+| `Signal::new()` | `fn() -> Signal<T>` | Create an empty signal |
+| `.connect(callback)` | `fn(&self, Fn(T) -> Future<Output = ()>)` | Register an async callback |
+| `.send(payload)` | `async fn(&self, T)` | Fire the signal, running all callbacks concurrently |
+
+```rust,compile
+# use djangors_core::signals::Signal;
+# #[tokio::main]
+# async fn main() {
+#[derive(Clone, Debug)]
+struct OrderPlaced {
+    order_id: i64,
+    customer_email: String,
+}
+
+let order_placed = Signal::new();
+
+// Callbacks can be registered any time; each runs concurrently on send.
+order_placed.connect(|payload: OrderPlaced| async move {
+    println!("Order {} placed for {}", payload.order_id, payload.customer_email);
+});
+
+order_placed.connect(|payload: OrderPlaced| async move {
+    let _ = payload.order_id; // e.g. enqueue a mail task here
+});
+
+// Fire the signal — send() is async and awaits all connected callbacks.
+order_placed.send(OrderPlaced {
+    order_id: 42,
+    customer_email: "buyer@example.com".to_string(),
+}).await;
+# }
+```
+
+`send` executes every connected callback **concurrently** (each inside its own `tokio::spawn`) and
+waits for them all to finish, with strict **panic isolation** — a panicking callback is logged to
+`stderr` and never prevents the others (or the sender) from running. See the
+[Technical Design Details](#technical-design-details) section below, which applies to `Signal<T>`
+identically.
+
+---
+
 ## Technical Design Details
 
 ### Async Execution and Concurrency

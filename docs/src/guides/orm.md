@@ -77,6 +77,13 @@ pub struct Choice {
 
 Access querysets using `Model::objects()` (or `QuerySet::<T>::new()`).
 
+> [!IMPORTANT]
+> `objects()`, `meta()`, and `field_values()` are methods on the **`Model`
+> trait**. Every file that calls them needs `use djangors_orm::Model;` — the
+> `#[derive(Model)]` attribute does not pre-import it. A bare
+> `Model::objects()` failing with "method not found" is this missing import, not
+> a broken model.
+
 ### Filtering and Ordering
 - **`.filter(q!(field = value, ...))`**: Applies filter expressions combined with `AND`. Accepts a whole `Q`-style tree, so `OR` and `NOT` compose (see [Combining filters](#combining-filters-or-and-not)).
 - **`.exclude(q!(...))`**: The negation of `.filter()` — Django's `.exclude()`.
@@ -114,7 +121,88 @@ as `OrmError::FieldNotFound` rather than silently becoming an equality test.
 - **`.aggregate(db, vec![AggExpr::...]).await`**: Evaluates aggregate functions: `AggExpr::Count`, `AggExpr::Sum`, `AggExpr::Avg`, `AggExpr::Min`, `AggExpr::Max`.
 - **`.update(db, set!(...)).await`**: Performs bulk updates. Returns `Result<u64, OrmError>` (rows affected count).
 - **`QuerySet::<T>::delete_by_pk(db, pk).await`**: Static helper deleting a row by its primary key.
-- **`.select_related::<R>(db, "relation_field").await`**: Eagerly loads related model `R` alongside `T` to avoid N+1 queries.
+
+### Eager-loading relations: `select_related` and `prefetch_related`
+
+`select_related` loads a forward foreign key in **two queries total** (batch the
+related ids, then one `IN` fetch), instead of one query per row. It returns
+`Vec<(T, Option<R>)>` — the row, plus the related model or `None` when the
+foreign key is dangling.
+
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::{Model, prefetch_related};
+# async fn run(db: &djangors_db::Database) -> Result<(), Box<dyn std::error::Error>> {
+// One query for choices, one for their questions — not N+1.
+let rows: Vec<(Choice, Option<Question>)> = Choice::objects()
+    .select_related::<Question, _>(db, "question")
+    .await?;
+
+for (choice, question) in &rows {
+    let text = question.as_ref().map(|q| q.question_text.as_str()).unwrap_or("[missing]");
+    println!("{} -> {text}", choice.choice_text);
+}
+# Ok(())
+# }
+```
+
+`prefetch_related` does the reverse direction: given a list of parent rows, it
+batch-loads the children that FK to them in one query. It is a free function —
+call it with the parents and the `related_name` (needs [`ForeignKey`](#relationships--many-to-many)
+to declare one).
+
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::{Model, prefetch_related, q};
+# async fn run(db: &djangors_db::Database) -> Result<(), Box<dyn std::error::Error>> {
+let questions = Question::objects().all(db).await?;
+
+// One extra query fills in every question's `choices` (related_name).
+let by_question: std::collections::HashMap<i64, Vec<Choice>> =
+    prefetch_related(db, &questions, "choices").await?;
+
+for question in &questions {
+    println!("{0}: {1} choices", question.question_text, by_question.get(&question.id).map_or(0, Vec::len));
+}
+# Ok(())
+# }
+```
+
+Use `select_related` for `-to-one` hops and `prefetch_related` for `-to-many`
+reversed relations; both exist purely to avoid the N+1 query pattern.
+
+### Locking rows: `select_for_update`
+
+`.filter(...).select_for_update()` prefixes the query with `FOR UPDATE`, so the
+matched rows are locked until the transaction commits. Combined with
+`.nowait()` or `.skip_locked()` it implements the "claim one of N jobs" pattern
+without double-claiming.
+
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::{Model, q};
+# async fn run(db: &djangors_db::Database, choice_id: i64) -> Result<(), Box<dyn std::error::Error>> {
+db.transaction(|conn| {
+    Box::pin(async move {
+        let choice: Choice = Choice::objects()
+            .filter(q!(id = choice_id))?   // note: no `.await` — still building the query
+            .select_for_update()
+            .get(conn)
+            .await?;
+        // `choice` is locked for this transaction; other transactions block or skip.
+        Result::<(), djangors_orm::OrmError>::Ok(())
+    })
+}).await?;
+# Ok(())
+# }
+```
+
+> [!NOTE]
+> `select_for_update` must run inside a transaction — calling it against a bare
+> pool `conn` returns `OrmError::SelectForUpdateOutsideTransaction`. Use the
+> Postgres `db.transaction(|conn| ...)` form (or `transaction_conn`, which works
+> on both backends). `nowait`, `skip_locked`, and `lock_of` are Postgres-only;
+> SQLite rejects them with `UnsupportedOnDialect`.
 
 ---
 
@@ -131,7 +219,35 @@ let qs = Question::objects().filter(q!(question_text = "What is your name?"))?;
 # }
 ```
 
-### Combining filters: OR, AND, NOT
+Every field inside `q!` accepts a lookup suffix typed on the ident itself —
+`q!(field__lt = v)`, `q!(field__in = vec![..])`, etc. — it is not a separate
+feature. The full set lives in the [lookup table](#lookup-suffixes) above; here
+are the ones you reach for most day-to-day:
+
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::{q, Model};
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let qs = Choice::objects()
+    // Range: votes > 5 AND votes <= 100
+    .filter(q!(votes__gt = 5i32))?
+    .filter(q!(votes__lte = 100i32))?
+
+    // Null check — the field must be nullable (Option<T> / Option<ForeignKey>):
+    .filter(q!(choice_text__isnull = false))?
+
+    // Set membership and negation:
+    .filter(q!(id__in = vec![1i64, 2, 3]))?
+    .filter(q!(votes__ne = 0i32))?
+
+    // Case-insensitive substring:
+    .filter(q!(choice_text__icontains = "rust"))?;
+# let _ = qs;
+# Ok(())
+# }
+```
+
+## Combining filters: OR, AND, NOT
 
 A `q!(...)` produces a value you can combine with `|` (OR), `&` (AND), and `!`
 (NOT), which is how Django's `Q` objects spell the same thing. Successive
@@ -267,7 +383,46 @@ Models derived with `#[derive(Model)]` implement instance CRUD operations:
 - **`model.update(db).await`**: Updates all non-primary key fields of an existing row matching `model.id`. Returns `Err(OrmError::NotFound)` if no row matched.
 - **`model.delete(db).await`**: Deletes the row matching `model.id`. Returns `Err(OrmError::NotFound)` if no row was deleted.
 
----
+> [!IMPORTANT]
+> `save` is **INSERT-only** — it always creates a new row. Calling `save()` on a
+> row you already fetched or previously saved inserts a *duplicate*; use
+> `update()` for anything that already exists. There is no automatic
+> new-vs-persisted detection — track that yourself.
+
+### Constructing models with foreign keys (`ForeignKey::new`)
+
+A `ForeignKey<T>` field is not magically constructed — build it with
+`ForeignKey::new(id)` exactly like any other field value. You generally save the
+parent first to obtain its `id`, then insert the child.
+
+```rust,compile
+# use polls::models::{Question, Choice};
+# use djangors_orm::ForeignKey;
+# async fn run(db: &djangors_db::Database) -> Result<(), Box<dyn std::error::Error>> {
+let question = Question {
+    id: 0,
+    question_text: "What is your name?".to_string(),
+    pub_date: chrono::Utc::now(),
+};
+
+let question = question.save(db).await?; // INSERT; `question.id` now holds the DB-assigned pk.
+
+let choice = Choice {
+    id: 0,
+    question: ForeignKey::<Question>::new(question.id), // the FK wrapper.
+    choice_text: "Alice".to_string(),
+    votes: 0,
+};
+let choice = choice.save(db).await?;
+# let _ = choice;
+# Ok(())
+# }
+```
+
+Writes that don't need the returned row (bulk insert of many children, e.g.)
+can skip `save` and use `QuerySet::<T>::insert_raw(db, values)` or
+`QuerySet::<T>::bulk_create(db, &items)` instead; `bulk_create` inserts many
+rows in one statement.
 
 ## Relationships & Many-to-Many
 

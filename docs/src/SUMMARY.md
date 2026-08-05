@@ -23,8 +23,12 @@
 # Topic Guides
 
 - [Object-Relational Mapping (ORM)](guides/orm.md)
+- [Class-Based Views](guides/class-based-views.md)
 - [Templates](guides/templates.md)
 - [Forms](guides/forms.md)
+- [Flash Messages](guides/messages.md)
+- [Flat Pages and Redirects](guides/flatpages-and-redirects.md)
+- [HTTP Core and Middleware](guides/http-and-middleware.md)
 - [Authentication and Permissions](guides/auth.md)
 - [REST Framework](guides/rest.md)
 - [Admin Site](guides/admin.md)
@@ -36,6 +40,7 @@
 - [PDF Generation](guides/pdf.md)
 - [Payments](guides/payments.md)
 - [Multi-tenancy](guides/multi-tenancy.md)
+- [Object-Level Permissions](guides/object-permissions.md)
 - [Databases and Backends](guides/databases.md)
 - [Schema Migrations](guides/migrations.md)
 - [Background Tasks](guides/tasks.md)
@@ -44,6 +49,7 @@
 - [Sessions and CSRF Protection](guides/sessions.md)
 - [Static Files](guides/static-files.md)
 - [Signals](guides/signals.md)
+- [Sites, Feeds, and 2FA](guides/sites-and-2fa.md)
 
 # How-To Guides
 

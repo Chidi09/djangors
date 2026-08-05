@@ -1044,6 +1044,61 @@ where
     )
 }
 
+/// Mounts mandatory-scoped REST routes with custom filtering and ordering
+/// configuration.
+///
+/// The model must implement [`Scoped`]. Unlike [`scoped_viewset_routes`], this
+/// variant sends the [`ViewSetConfig`] to the list handler so filterable and
+/// orderable allowlists apply. The create/retrieve/update/destroy actions use
+/// the default config (the scope alone provides the row-level restriction).
+pub fn scoped_viewset_routes_with_config<M>(
+    router: Router,
+    base_path: &str,
+    config: ViewSetConfig,
+) -> Router
+where
+    M: Scoped,
+{
+    let clean_base = base_path.trim_end_matches('/');
+    let detail_path = format!("{clean_base}/{{pk:i64}}");
+    let list_create_path = if clean_base.is_empty() {
+        "/"
+    } else {
+        clean_base
+    };
+    let permission = Arc::new(IsAuthenticated);
+    let list_config = Arc::new(config);
+
+    let list_handler = {
+        let list_config = list_config.clone();
+        move |req: Request, params: PathParams| {
+            let cfg = list_config.clone();
+            async move { ScopedViewSet::<M>::list_with_config(req, params, &cfg).await }
+        }
+    };
+
+    router
+        .get(list_create_path, list_handler)
+        .post(
+            list_create_path,
+            guarded(permission.clone(), ScopedViewSet::<M>::create),
+        )
+        .get(
+            &detail_path,
+            guarded(permission.clone(), ScopedViewSet::<M>::retrieve),
+        )
+        .put(
+            &detail_path,
+            guarded(permission.clone(), ScopedViewSet::<M>::update),
+        )
+        .route(
+            &detail_path,
+            hyper::http::Method::PATCH,
+            guarded(permission.clone(), ScopedViewSet::<M>::update),
+        )
+        .delete(&detail_path, guarded(permission, ScopedViewSet::<M>::destroy))
+}
+
 /// Mounts standard REST routes with custom configuration and an explicit permission policy.
 pub fn viewset_routes_with_config_and_permission<M, P>(
     router: Router,

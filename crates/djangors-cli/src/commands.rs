@@ -1342,6 +1342,58 @@ mod tests {
     static DB_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static FS_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    async fn superuser_test_database() -> Database {
+        let sqlite = matches!(
+            std::env::var("TEST_BACKEND").as_deref(),
+            Ok(value) if value.eq_ignore_ascii_case("sqlite")
+        );
+        let config = if sqlite {
+            djangors_db::config::DatabaseConfig::new("sqlite::memory:")
+                .max_connections(1)
+                .min_connections(1)
+        } else {
+            djangors_db::config::DatabaseConfig::new(
+                std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+                    "postgres://postgres:postgres@localhost/djangors_test".into()
+                }),
+            )
+        };
+        let db = Database::connect(&config).await.unwrap();
+        let mut conn = db.conn();
+        conn.execute("DROP TABLE IF EXISTS auth_user", &[])
+            .await
+            .unwrap();
+        let dialect = db.dialect();
+        let id = if dialect == djangors_db::Dialect::Sqlite {
+            "INTEGER PRIMARY KEY"
+        } else {
+            "BIGSERIAL PRIMARY KEY"
+        };
+        let timestamp = dialect.timestamp_type();
+        let sql = format!(
+            "CREATE TABLE auth_user (\
+                id {id}, \
+                username VARCHAR(150) NOT NULL, \
+                email VARCHAR(254) NOT NULL, \
+                password TEXT NOT NULL, \
+                is_active BOOLEAN NOT NULL, \
+                is_staff BOOLEAN NOT NULL, \
+                is_superuser BOOLEAN NOT NULL, \
+                date_joined {timestamp} NOT NULL, \
+                last_login {timestamp}\
+            )"
+        );
+        conn.execute(&sql, &[]).await.unwrap();
+        db
+    }
+
+    async fn drop_superuser_test_table(db: &Database) {
+        db.conn()
+            .execute("DROP TABLE IF EXISTS auth_user", &[])
+            .await
+            .unwrap();
+    }
+
     // Regression tests for a real bug: `dj new`, when compiled as a standalone `cargo install
     // djangors-cli` from crates.io (not run from inside the cloned monorepo), used to bake in a
     // path dependency on a sibling `djangors-core` directory that only exists in a workspace
@@ -1396,32 +1448,7 @@ mod tests {
     #[allow(clippy::await_holding_lock)]
     async fn test_create_superuser_success() {
         let _guard = DB_MUTEX.lock().unwrap();
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = Database::connect(&config).await.unwrap();
-
-        // Drop table if exists first
-        let _ = djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
-            .await;
-
-        // Create table auth_user
-        djangors_orm::sqlx::query(
-            "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
-                username VARCHAR(150) NOT NULL,
-                email VARCHAR(254) NOT NULL,
-                password TEXT NOT NULL,
-                is_active BOOLEAN NOT NULL,
-                is_staff BOOLEAN NOT NULL,
-                is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+        let db = superuser_test_database().await;
 
         let username = "admin_test_user";
         let email = "admin_test@example.com";
@@ -1448,42 +1475,14 @@ mod tests {
         let is_valid = verify_password(password, &user.password).unwrap();
         assert!(is_valid, "Password verification failed");
 
-        // Clean up
-        let _ = djangors_orm::sqlx::query("DROP TABLE auth_user")
-            .execute(db.pool())
-            .await;
+        drop_superuser_test_table(&db).await;
     }
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_create_superuser_duplicate_username() {
         let _guard = DB_MUTEX.lock().unwrap();
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
-        let config = djangors_db::config::DatabaseConfig::new(db_url);
-        let db = Database::connect(&config).await.unwrap();
-
-        // Drop table if exists first
-        let _ = djangors_orm::sqlx::query("DROP TABLE IF EXISTS auth_user")
-            .execute(db.pool())
-            .await;
-
-        // Create table auth_user
-        djangors_orm::sqlx::query(
-            "CREATE TABLE auth_user (
-                id BIGSERIAL PRIMARY KEY,
-                username VARCHAR(150) NOT NULL,
-                email VARCHAR(254) NOT NULL,
-                password TEXT NOT NULL,
-                is_active BOOLEAN NOT NULL,
-                is_staff BOOLEAN NOT NULL,
-                is_superuser BOOLEAN NOT NULL,
-                date_joined TIMESTAMPTZ NOT NULL,
-                last_login TIMESTAMPTZ
-            )",
-        )
-        .execute(db.pool())
-        .await
-        .unwrap();
+        let db = superuser_test_database().await;
 
         let username = "admin_test_dup";
         let email1 = "admin1@example.com";
@@ -1508,10 +1507,7 @@ mod tests {
             err_msg
         );
 
-        // Clean up
-        let _ = djangors_orm::sqlx::query("DROP TABLE auth_user")
-            .execute(db.pool())
-            .await;
+        drop_superuser_test_table(&db).await;
     }
 
     #[test]
@@ -1738,6 +1734,12 @@ allowed_hosts = ["example.com"]
 
     #[test]
     fn test_dbshell_psql_uri_connection() {
+        if matches!(
+            std::env::var("TEST_BACKEND").as_deref(),
+            Ok(value) if value.eq_ignore_ascii_case("sqlite")
+        ) {
+            return; // `dbshell` is intentionally a PostgreSQL `psql` integration.
+        }
         let db_url = "postgres://postgres:postgres@localhost/djangors_test";
         let status = std::process::Command::new("psql")
             .arg(db_url)
@@ -1778,7 +1780,15 @@ allowed_hosts = ["example.com"]
         let old = std::env::current_dir().unwrap();
         std::env::set_current_dir(&project).unwrap();
 
-        let db_url = "postgres://postgres:postgres@localhost/djangors_test";
+        let old_url = std::env::var("DATABASE_URL").ok();
+        let db_url = if matches!(
+            std::env::var("TEST_BACKEND").as_deref(),
+            Ok(value) if value.eq_ignore_ascii_case("sqlite")
+        ) {
+            "sqlite::memory:"
+        } else {
+            "postgres://postgres:postgres@localhost/djangors_test"
+        };
         std::env::set_var("DATABASE_URL", db_url);
         let old_path = std::env::var("PATH").ok();
         std::env::set_var("PATH", "/bin:/usr/bin");
@@ -1787,6 +1797,11 @@ allowed_hosts = ["example.com"]
 
         if let Some(path) = old_path {
             std::env::set_var("PATH", path);
+        }
+        if let Some(url) = old_url {
+            std::env::set_var("DATABASE_URL", url);
+        } else {
+            std::env::remove_var("DATABASE_URL");
         }
         std::env::set_current_dir(old).unwrap();
         let _ = std::fs::remove_dir_all(root);

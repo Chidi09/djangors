@@ -14,7 +14,7 @@ authors.workspace = true
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["std", "serde"] }
-djangors-sessions = { path = "../djangors-sessions", version = "0.6.0" }
+djangors-sessions = { path = "../djangors-sessions", version = "0.6.2" }
 fluent = "0.17.0"
 fluent-bundle = "0.16.0"
 hyper = { version = "1.10.1", features = ["http1"] }

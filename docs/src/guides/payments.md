@@ -49,6 +49,21 @@ fn make_provider(secret_key: &str) -> PaystackProvider {
 (`https://api.paystack.co`). Get your secret key from the Paystack dashboard and load it via
 `#[derive(Settings)]` (see the [Settings guide](settings.md)) rather than hardcoding it.
 
+For sandbox/testing against a mock server, or to route through a proxy in front of Paystack,
+use `with_base_url(secret_key, base_url)` — it points every request at `base_url` instead of the
+real `https://api.paystack.co`:
+
+```rust,compile
+# fn main() {
+use djangors_contrib_payments::PaystackProvider;
+
+let live = PaystackProvider::new("sk_live_..."); // real https://api.paystack.co
+let sandbox = PaystackProvider::with_base_url("sk_test_...", "http://localhost:8080"); // mock server
+let proxied = PaystackProvider::with_base_url("sk_live_...", "https://paystack-proxy.internal");
+# let _ = (live, sandbox, proxied);
+# }
+```
+
 ## Idempotent transaction recording
 
 `Transaction`'s `reference` column has a real **database-level UNIQUE constraint**, not an
@@ -63,6 +78,65 @@ async fn start_checkout(db: &Database, reference: &str) -> Result<Transaction, d
     // Called twice with the same `reference` (a retry, a duplicate webhook) returns the SAME
     // row both times - it never creates a second one and never errors.
     record_charge_initiated(db, reference, "paystack", 50_000, "NGN", None).await
+}
+```
+
+## Transaction statuses
+
+`Transaction.status` is a plain string column, but the crate models it as the
+`TransactionStatus` enum so you never hand-type a lowercase string. The variants are
+`Pending`, `Success`, `Failed`, and `Refunded`, stored lowercased, and the enum round-trips
+through `as_str()`, `Display`, and `FromStr`:
+
+```rust,compile
+# use std::str::FromStr;
+# fn main() {
+use djangors_contrib_payments::TransactionStatus;
+
+assert_eq!(TransactionStatus::Pending.as_str(), "pending");
+assert_eq!(TransactionStatus::Success.to_string(), "success");
+
+// DB string -> enum, and back.
+let back: TransactionStatus = "refunded".parse().expect("valid status");
+assert_eq!(back, TransactionStatus::Refunded);
+assert_eq!(TransactionStatus::from_str("failed").unwrap(), TransactionStatus::Failed);
+# }
+```
+
+`mark_transaction_status` flips an existing row (found by `reference`) to a new status,
+optionally replacing its stored metadata. It returns `Ok(None)` when no row exists for that
+`reference` — a sign the initiate step was skipped:
+
+```rust,illustrative
+use djangors_contrib_payments::{TransactionStatus, mark_transaction_status};
+use djangors_orm::djangors_db::Database;
+
+async fn flag_failed(db: &Database, reference: &str) -> Result<(), djangors_contrib_payments::PaymentError> {
+    // Optionally replace the row's metadata with a reason.
+    match mark_transaction_status(
+        db,
+        reference,
+        TransactionStatus::Failed,
+        Some(&serde_json::json!({"reason": "card_declined"})),
+    )
+    .await?
+    {
+        Some(txn) => { /* txn.status == "failed" */ }
+        None => { /* no row with that reference - initiate wasn't recorded */ }
+    }
+    Ok(())
+}
+```
+
+Fetch a row directly with `find_by_reference(db, reference)`, which returns
+`Result<Option<Transaction>, PaymentError>` — `None` when no row matches:
+
+```rust,illustrative
+use djangors_contrib_payments::{Transaction, find_by_reference};
+use djangors_orm::djangors_db::Database;
+
+async fn lookup(db: &Database, reference: &str) -> Result<Option<Transaction>, djangors_contrib_payments::PaymentError> {
+    find_by_reference(db, reference).await
 }
 ```
 
@@ -107,6 +181,57 @@ pub async fn paystack_webhook_view(
         .map_err(|e| DjangorsError::Unauthorized(e.to_string()))?;
 
     Ok(Response::text(StatusCode::OK, "ok"))
+}
+```
+
+## Verifying and reconciling charges
+
+A charge is not confirmed when the customer's browser says it is — a client-side "success" page
+can be forged or simply never arrive. The full lifecycle always ends in a **server-side**
+`verify`:
+
+1. `initiate` the charge and keep the returned `InitiateChargeResponse.reference`.
+2. `record_charge_initiated` a `Pending` row keyed by that `reference` *before* redirecting, so a
+   late webhook or a duplicate initiate finds (and reuses) it.
+3. Redirect the customer to `authorization_url`.
+4. On the callback/return, call `provider.verify(&reference)` ourselves — never trust the
+   redirect alone.
+5. `mark_transaction_status` with the verified status.
+
+The signature-verified [webhook](#webhook-handling) is the out-of-band safety net for the same
+flow: it both records and confirms in one call, so a payment that never came back through the
+redirect is still reconciled.
+
+```rust,illustrative
+use djangors_contrib_payments::{
+    InitiateChargeRequest, PaymentProvider, PaystackProvider, mark_transaction_status,
+    record_charge_initiated,
+};
+use djangors_orm::djangors_db::Database;
+
+async fn checkout(db: &Database, provider: &PaystackProvider) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Start the charge. Keep the response's reference for verification.
+    let initiated = provider
+        .initiate(&InitiateChargeRequest {
+            email: "customer@example.com".into(),
+            amount_minor: 50_000,
+            currency: "NGN".into(),
+            reference: "order-5678".into(),
+            callback_url: Some("https://example.com/callback".into()),
+        })
+        .await?;
+
+    // 2. Persist a Pending row before redirecting (idempotent on this reference).
+    record_charge_initiated(db, &initiated.reference, "paystack", 50_000, "NGN", None).await?;
+
+    // 3. Redirect to initiated.authorization_url ... customer returns via callback.
+
+    // 4. Server-side verification. Never trust the client-side redirect alone.
+    let verified = provider.verify(&initiated.reference).await?;
+
+    // 5. Only now persist the confirmed status.
+    mark_transaction_status(db, &initiated.reference, verified.status, None).await?;
+    Ok(())
 }
 ```
 

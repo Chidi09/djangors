@@ -66,6 +66,15 @@ pub async fn current_user(req: &Request) -> Option<djangors_auth::User> {
     None
 }
 
+/// Returns the authenticated user, or `Unauthorized` if the request is not
+/// authenticated. Wraps [`current_user`] so callers don't need the `Option`
+/// pattern themselves.
+pub async fn user(req: &Request) -> Result<djangors_auth::User, DjangorsError> {
+    current_user(req)
+        .await
+        .ok_or_else(|| DjangorsError::Unauthorized("not authenticated".into()))
+}
+
 /// Requires an authenticated user flagged as staff.
 pub struct IsStaff;
 

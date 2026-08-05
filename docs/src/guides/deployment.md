@@ -138,6 +138,40 @@ async fn deploy_over_ssh(spec: &djangors_deploy::DeploySpec) -> Result<(), djang
 }
 ```
 
+### `DeployStatus` & `DeployError`
+
+`DeployProvider::status` reports progress through the `DeployStatus` enum, and every provider
+operation fails with `DeployError`:
+
+| `DeployStatus` variant | Meaning |
+| --- | --- |
+| `InProgress` | A build or deploy is currently underway |
+| `Live` | Deployment is live (and, where the provider reports it, past its health check) |
+| `Failed(String)` | Build/deploy failed; the string is the provider's human-readable reason |
+| `NotFound` | The provider reports no matching deployment (e.g. destroyed via its dashboard) |
+
+| `DeployError` variant | Meaning |
+| --- | --- |
+| `Request(reqwest::Error)` | The underlying HTTP request to the provider API failed |
+| `Api { status: u16, message: String }` | The provider API answered with an error status + message |
+| `UnexpectedResponse(String)` | The provider's response was missing a field this client expected |
+| `Timeout(String)` | A provision/deploy operation exceeded its polling timeout |
+
+```rust,illustrative
+use djangors_deploy::{DeployError, DeployStatus};
+
+async fn wait_until_live(
+    status: djangors_deploy::DeployStatus,
+) -> Result<(), DeployError> {
+    match status {
+        DeployStatus::Live => { /* health check passed */ Ok(()) }
+        DeployStatus::InProgress => Err(DeployError::Timeout("still deploying".into())),
+        DeployStatus::Failed(reason) => Err(DeployError::Api { status: 500, message: reason }),
+        DeployStatus::NotFound => Err(DeployError::UnexpectedResponse("deployment missing".into())),
+    }
+}
+```
+
 ---
 
 ## Error Tracking (optional Sentry integration)

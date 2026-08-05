@@ -40,6 +40,8 @@ pub enum Operation {
         table_name: String,
         /// List of column definitions for the table.
         columns: Vec<ColumnDef>,
+        /// Raw SQL CHECK constraint expressions.
+        check_constraints: Vec<String>,
     },
     /// Adds a column to a table.
     AddColumn {
@@ -74,13 +76,21 @@ impl Operation {
             Operation::CreateTable {
                 table_name,
                 columns,
+                check_constraints,
             } => {
                 let col_sqls: Vec<String> = columns.iter().map(column_sql).collect();
-                Ok(format!(
-                    "CREATE TABLE IF NOT EXISTS \"{}\" (\n    {}\n)",
+                let mut sql = format!(
+                    "CREATE TABLE IF NOT EXISTS \"{}\" (\n    {}\n",
                     table_name,
                     col_sqls.join(",\n    ")
-                ))
+                );
+                if !check_constraints.is_empty() {
+                    for ck in check_constraints {
+                        sql.push_str(&format!(",\n    {}", ck));
+                    }
+                }
+                sql.push_str("\n);");
+                Ok(sql)
             }
             Operation::AddColumn { table_name, column } => Ok(format!(
                 "ALTER TABLE \"{}\" ADD COLUMN {};",

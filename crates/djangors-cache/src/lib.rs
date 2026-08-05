@@ -182,8 +182,9 @@ impl DatabaseCache {
         let mut conn = self.db.conn();
         let dialect = conn.dialect();
         let bytea = dialect.bytea_type();
+        let timestamp = dialect.timestamp_type();
         let sql = format!(
-            "CREATE TABLE IF NOT EXISTS djangors_cache_entries (key TEXT PRIMARY KEY, value {bytea} NOT NULL, expires_at TIMESTAMPTZ)"
+            "CREATE TABLE IF NOT EXISTS djangors_cache_entries (key TEXT PRIMARY KEY, value {bytea} NOT NULL, expires_at {timestamp})"
         );
         conn.execute(&sql, &[])
             .await
@@ -547,19 +548,34 @@ mod tests {
     }
     #[tokio::test]
     async fn database_cache_operations_and_ttl() {
-        let url = std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/djangors_test".into());
-        let db = djangors_db::Database::connect(&djangors_db::DatabaseConfig::new(url))
-            .await
-            .unwrap();
+        let sqlite = matches!(
+            std::env::var("TEST_BACKEND").as_deref(),
+            Ok(value) if value.eq_ignore_ascii_case("sqlite")
+        );
+        let config = if sqlite {
+            // Each sqlite::memory: connection owns a separate database, so use a
+            // single connection for the table setup and cache operations.
+            djangors_db::DatabaseConfig::new("sqlite::memory:")
+                .max_connections(1)
+                .min_connections(1)
+        } else {
+            let url = std::env::var("DATABASE_URL")
+                .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/djangors_test".into());
+            djangors_db::DatabaseConfig::new(url)
+        };
+        let db = djangors_db::Database::connect(&config).await.unwrap();
         let cache = DatabaseCache::new(db);
-        sqlx::query("DROP TABLE IF EXISTS djangors_cache_entries")
-            .execute(cache.db.pool())
+        cache
+            .db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_cache_entries", &[])
             .await
             .unwrap();
         exercise(&cache).await;
-        sqlx::query("DROP TABLE IF EXISTS djangors_cache_entries")
-            .execute(cache.db.pool())
+        cache
+            .db
+            .conn()
+            .execute("DROP TABLE IF EXISTS djangors_cache_entries", &[])
             .await
             .unwrap();
     }

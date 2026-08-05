@@ -102,6 +102,17 @@ pub struct ChangelistPage {
     pub per_page: i64,
 }
 
+/// Configuration for inline child model display on admin forms.
+#[derive(Clone)]
+pub struct InlineConfig {
+    /// The child model's struct name for lookups via `all_registered_models()`.
+    pub struct_name: &'static str,
+    /// The FK field name on the child model pointing to the parent.
+    pub relation_field: &'static str,
+    /// Field names to display in the inline table.
+    pub fields: &'static [&'static str],
+}
+
 /// Configuration options for custom model admin registration.
 #[derive(Default, Clone)]
 pub struct ModelAdminConfig {
@@ -135,6 +146,8 @@ pub struct ModelAdminConfig {
     pub raw_id_fields: Option<&'static [&'static str]>,
     /// Base filter expression automatically applied to all admin queries.
     pub base_filter: Option<djangors_orm::UnresolvedExpr>,
+    /// Inline child model configurations rendered below the add/change form.
+    pub inlines: Option<&'static [InlineConfig]>,
 }
 
 /// Pluggable administration interface trait for managing ORM models.
@@ -193,6 +206,15 @@ pub trait ModelAdmin: Send + Sync {
         &[]
     }
 
+    /// Returns configured inline child model configurations.
+    fn inlines_config(&self) -> &[InlineConfig] {
+        &[]
+    }
+
+    /// Sets the tenant filter for this admin, scoping subsequent queries to a
+    /// specific tenant. The default implementation does nothing.
+    fn set_tenant_filter(&self, _field: &'static str, _id: i64) {}
+
     /// Fetches a single object by primary key as name/value tuples.
     async fn get_by_pk(
         &self,
@@ -235,6 +257,7 @@ pub trait ModelAdmin: Send + Sync {
 pub struct DefaultModelAdmin<M: Model> {
     config: ModelAdminConfig,
     _marker: PhantomData<M>,
+    tenant_filter: std::sync::Mutex<Option<(&'static str, i64)>>,
 }
 
 impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> DefaultModelAdmin<M> {
@@ -289,6 +312,18 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> DefaultMod
             qs = qs
                 .filter(bf.clone())
                 .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        }
+        {
+            let tf = self.tenant_filter.lock().unwrap();
+            if let Some((field, id)) = tf.as_ref() {
+                let compare = djangors_orm::expr::UnresolvedCompare {
+                    field,
+                    value: djangors_orm::expr::Value::I64(*id),
+                };
+                qs = qs
+                    .filter(djangors_orm::expr::UnresolvedExpr::And(vec![compare]))
+                    .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            }
         }
         Ok(qs)
     }
@@ -371,6 +406,14 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
 
     fn raw_id_fields(&self) -> &[&'static str] {
         self.config.raw_id_fields.unwrap_or(&[])
+    }
+
+    fn inlines_config(&self) -> &[InlineConfig] {
+        self.config.inlines.unwrap_or(&[])
+    }
+
+    fn set_tenant_filter(&self, field: &'static str, id: i64) {
+        *self.tenant_filter.lock().unwrap() = Some((field, id));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -898,8 +941,31 @@ impl Default for SiteBranding {
 }
 
 #[derive(serde::Serialize)]
+struct InlineRowData {
+    values: Vec<String>,
+}
+
+/// Tenant-scoping configuration for the admin site.
+#[derive(Clone)]
+pub struct TenantScope {
+    /// The FK field name on every registered model pointing to the Tenant.
+    pub tenant_field: &'static str,
+    /// Extract the current tenant id from a request. Typically reads
+    /// `djangors_contrib_tenancy::CurrentTenant` from request extensions.
+    pub extract_tenant_id: fn(&djangors_core::Request) -> Option<i64>,
+}
+
+#[derive(serde::Serialize)]
+struct InlineTableData {
+    struct_name: String,
+    fields: Vec<String>,
+    rows: Vec<InlineRowData>,
+}
+
+#[derive(serde::Serialize)]
 struct RenderFormContext {
     rows: Vec<FormFieldRow>,
+    inlines: Vec<InlineTableData>,
     site_header: String,
     site_title: String,
     csrf_token: String,
@@ -908,6 +974,56 @@ struct RenderFormContext {
     has_change_permission: bool,
     has_delete_permission: bool,
     is_add: bool,
+}
+
+async fn build_inline_tables(
+    db: &djangors_db::Database,
+    inlines: &[InlineConfig],
+    pk: i64,
+) -> Result<Vec<InlineTableData>, DjangorsError> {
+    let mut tables = Vec::new();
+    for ic in inlines {
+        let child_meta = djangors_orm::meta::all_registered_models()
+            .find(|m| m.struct_name == ic.struct_name)
+            .ok_or_else(|| {
+                DjangorsError::Internal(format!("unknown model {}", ic.struct_name))
+            })?;
+
+        let mut conn = db.conn();
+        let dialect = conn.dialect();
+        let p1 = dialect.placeholder(1);
+        let cols: Vec<String> = ic.fields.iter().map(|f| format!("\"{}\"", f)).collect();
+        let cols_str = cols.join(", ");
+        let sql = format!(
+            "SELECT {cols_str} FROM \"{}\" WHERE \"{}\" = {p1}",
+            child_meta.table_name, ic.relation_field
+        );
+        let rows = conn
+            .fetch_all(&sql, &[djangors_db::BindValue::I64(pk)])
+            .await
+            .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+
+        let mut data_rows = Vec::new();
+        for row in &rows {
+            let mut values = Vec::new();
+            for f in ic.fields {
+                let val = row
+                    .try_string_by_name(f)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "-".to_string());
+                values.push(val);
+            }
+            data_rows.push(InlineRowData { values });
+        }
+
+        tables.push(InlineTableData {
+            struct_name: ic.struct_name.to_string(),
+            fields: ic.fields.iter().map(|s| s.to_string()).collect(),
+            rows: data_rows,
+        });
+    }
+    Ok(tables)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -924,6 +1040,7 @@ fn render_form(
     fieldsets: Option<&'static [(&'static str, &'static [&'static str])]>,
     readonly_fields: &[&'static str],
     raw_id_fields: &[&'static str],
+    inlines_data: Vec<InlineTableData>,
 ) -> Result<Response, DjangorsError> {
     let build_row = |name: &'static str, section: Option<&'static str>| -> Option<FormFieldRow> {
         if let Some(field) = meta.fields.iter().find(|f| f.name == name) {
@@ -1038,6 +1155,7 @@ fn render_form(
         "admin/render_form.html",
         RenderFormContext {
             rows,
+            inlines: inlines_data,
             site_header: branding.site_header.clone(),
             site_title: branding.site_title.clone(),
             csrf_token,
@@ -1058,6 +1176,8 @@ pub struct AdminSite {
     branding: SiteBranding,
     // Extra user-registered routers to be mounted alongside default admin urls.
     extra_routes: Vec<std::panic::AssertUnwindSafe<Router>>,
+    // Optional tenant scoping configuration.
+    tenant_scope: Option<TenantScope>,
 }
 
 impl Default for AdminSite {
@@ -1073,6 +1193,7 @@ impl AdminSite {
             registry: Mutex::new(Vec::new()),
             branding: SiteBranding::default(),
             extra_routes: Vec::new(),
+            tenant_scope: None,
         }
     }
 
@@ -1103,6 +1224,21 @@ impl AdminSite {
     /// Register an extra route directly on the admin site.
     pub fn extra_route(mut self, router: Router) -> Self {
         self.extra_routes.push(std::panic::AssertUnwindSafe(router));
+        self
+    }
+
+    /// Enable tenant scoping on the admin. When set, every changelist, add,
+    /// change, and delete view is restricted to rows belonging to the current
+    /// tenant.
+    pub fn with_tenant_scoping(
+        mut self,
+        tenant_field: &'static str,
+        extract_tenant_id: fn(&djangors_core::Request) -> Option<i64>,
+    ) -> Self {
+        self.tenant_scope = Some(TenantScope {
+            tenant_field,
+            extract_tenant_id,
+        });
         self
     }
 
@@ -1171,10 +1307,10 @@ impl AdminSite {
                             name, meta.struct_name
                         )
                     });
+                let has_choices = !field.choices.is_empty();
                 assert!(
-                    matches!(field.kind, djangors_orm::meta::FieldKind::Boolean),
-                    "list_filter field '{}' on model '{}' is not a Boolean field (choices-based \
-                     list_filter is not supported — this ORM has no choices metadata yet)",
+                    matches!(field.kind, djangors_orm::meta::FieldKind::Boolean) || has_choices,
+                    "list_filter field '{}' on model '{}' is not a Boolean field and has no choices set",
                     name,
                     meta.struct_name
                 );
@@ -1249,10 +1385,42 @@ impl AdminSite {
             }
         }
 
+        if let Some(inlines) = config.inlines {
+            for ic in inlines {
+                let child_meta = djangors_orm::meta::all_registered_models()
+                    .find(|m| m.struct_name == ic.struct_name)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "inline child model '{}' is not a registered model",
+                            ic.struct_name
+                        )
+                    });
+                let rel_exists = child_meta
+                    .relations
+                    .iter()
+                    .any(|r| r.field_name == ic.relation_field);
+                assert!(
+                    rel_exists,
+                    "inline relation_field '{}' does not exist on child model '{}'",
+                    ic.relation_field, ic.struct_name
+                );
+                for fname in ic.fields {
+                    let field_exists = child_meta.fields.iter().any(|f| f.name == *fname)
+                        || child_meta.relations.iter().any(|r| r.field_name == *fname);
+                    assert!(
+                        field_exists,
+                        "inline field '{}' does not exist on child model '{}'",
+                        fname, ic.struct_name
+                    );
+                }
+            }
+        }
+
         let mut reg = self.registry.lock().unwrap();
         reg.push(Arc::new(DefaultModelAdmin::<M> {
             config,
             _marker: PhantomData,
+            tenant_filter: std::sync::Mutex::new(None),
         }));
     }
 
@@ -1304,6 +1472,9 @@ impl AdminSite {
         let bulk_action_branding = branding.clone();
         let history_branding = branding.clone();
 
+        let changelist_tenant_scope = self.tenant_scope.clone();
+        let export_csv_tenant_scope = self.tenant_scope.clone();
+
         let mut router = Router::new()
             .get("/", move |req: Request, params: PathParams| {
                 admin_index(req, params, index_admins.clone(), index_branding.clone())
@@ -1316,13 +1487,19 @@ impl AdminSite {
                         params,
                         changelist_admins.clone(),
                         changelist_branding.clone(),
+                        changelist_tenant_scope.clone(),
                     )
                 },
             )
             .get(
                 "/{app:slug}/{model:slug}/export-csv/",
                 move |req: Request, params: PathParams| {
-                    admin_export_csv(req, params, export_csv_admins.clone())
+                    admin_export_csv(
+                        req,
+                        params,
+                        export_csv_admins.clone(),
+                        export_csv_tenant_scope.clone(),
+                    )
                 },
             )
             .get(
@@ -1467,6 +1644,7 @@ async fn admin_export_csv(
     req: Request,
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -1483,6 +1661,13 @@ async fn admin_export_csv(
     require_perm(&req, db, admin.model_meta(), "view").await?;
 
     let state = parse_changelist_query_state(&req, admin.as_ref())?;
+
+    if let Some(ref ts) = tenant_scope {
+        if let Some(tid) = (ts.extract_tenant_id)(&req) {
+            admin.set_tenant_filter(ts.tenant_field, tid);
+        }
+    }
+
     let (columns, rows) = admin
         .export_csv_rows(
             db,
@@ -2025,6 +2210,7 @@ async fn admin_changelist(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
     branding: SiteBranding,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -2103,6 +2289,12 @@ async fn admin_changelist(
         }
         None => 1,
     };
+
+    if let Some(ref ts) = tenant_scope {
+        if let Some(tid) = (ts.extract_tenant_id)(&req) {
+            admin.set_tenant_filter(ts.tenant_field, tid);
+        }
+    }
 
     let page_data = admin
         .changelist(
@@ -2489,6 +2681,7 @@ async fn admin_add_get(
         admin.fieldsets(),
         admin.readonly_fields(),
         admin.raw_id_fields(),
+        vec![],
     )
 }
 
@@ -2550,6 +2743,7 @@ async fn admin_add_post(
                 admin.fieldsets(),
                 admin.readonly_fields(),
                 admin.raw_id_fields(),
+                vec![],
             )
         }
     }
@@ -2606,6 +2800,7 @@ async fn admin_change_get(
         .ext::<djangors_core::middleware::CsrfToken>()
         .map(|t| t.0.clone())
         .unwrap_or_default();
+    let inlines_data = build_inline_tables(db, admin.inlines_config(), pk).await?;
     render_form(
         meta,
         &field_names,
@@ -2619,6 +2814,7 @@ async fn admin_change_get(
         admin.fieldsets(),
         admin.readonly_fields(),
         admin.raw_id_fields(),
+        inlines_data,
     )
 }
 
@@ -2733,6 +2929,7 @@ async fn admin_change_post(
                 .ext::<djangors_core::middleware::CsrfToken>()
                 .map(|t| t.0.clone())
                 .unwrap_or_default();
+            let inlines_data = build_inline_tables(db, admin.inlines_config(), pk).await?;
             render_form(
                 meta,
                 &field_names,
@@ -2746,6 +2943,7 @@ async fn admin_change_post(
                 admin.fieldsets(),
                 admin.readonly_fields(),
                 admin.raw_id_fields(),
+                inlines_data,
             )
         }
     }
@@ -4148,6 +4346,7 @@ mod tests {
         let admin_a = DefaultModelAdmin::<ModelA> {
             config: ModelAdminConfig::default(),
             _marker: PhantomData,
+            tenant_filter: std::sync::Mutex::new(None),
         };
         let page_data = admin_a
             .changelist(db, None, 2, 2, None, &[], None)

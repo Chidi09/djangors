@@ -37,8 +37,9 @@ good enough.
 contrib batteries, a REST framework, real-time/SSE, background tasks, payments, multi-tenancy) is
 built and tested; see [`PLAN.md`](PLAN.md) for the full phase-by-phase roadmap and what's done vs.
 remaining. All 32 crates are published on
-[crates.io](https://crates.io/search?q=djangors) at `0.2.2`, including this phase's four new
-crates (`djangors-pdf`/`djangors-deploy`/`djangors-contrib-payments`/`djangors-contrib-tenancy`).
+[crates.io](https://crates.io/search?q=djangors) at `0.6.2`, including the full contrib battery:
+PDF generation, deployment, payments, multi-tenancy, sitemaps, RSS/Atom syndication, flat pages,
+redirects, flash messages, object-level permissions, TOTP/2FA, and content types / generic FKs.
 
 ## Why Rust instead of Python for this?
 
@@ -61,17 +62,17 @@ of composable pieces:
 | Crate | What it does |
 |---|---|
 | `djangors-core` | The HTTP kernel: `Request`/`Response`, the `Router`, middleware (CSRF, security headers, HSTS, CSP builder, host validation), sessions-adjacent state, SSE streaming, signals (framework + model lifecycle), real `multipart/form-data` file upload parsing, graceful shutdown, optional Sentry error tracking |
-| `djangors-orm` | The ORM: `QuerySet`, filter/order/aggregate expressions, model metadata, `bulk_create` |
-| `djangors-macros` | `#[derive(Model)]` (also generates a `ModelForm` equivalent), `#[derive(Settings)]` (typed, validated app config), `#[task]`, and `#[management_command]` attribute macros |
+| `djangors-orm` | The ORM: `QuerySet`, filter/order/aggregate expressions, model metadata, `bulk_create`, idempotent `get_or_create`/`update_or_create`, Postgres full-text search, `EXPLAIN`, and scalar DB function expressions (`COALESCE`/`LOWER`/`UPPER`/`CONCAT`/`LENGTH`) |
+| `djangors-macros` | `#[derive(Model)]` (also generates a `ModelForm` equivalent), `#[derive(Settings)]` (typed, validated app config), `#[task]`, and `#[management_command]` attribute macros; `auto_now`/`auto_now_add` timestamps, field `choices` (with DB CHECK constraints), and UUID/Date/Decimal support |
 | `djangors-db` | Connection pooling and config-driven database setup (Postgres) |
 | `djangors-migrations` | Schema migrations with real per-file history and rollback (`dj migrate --rollback`) |
 | `djangors-auth` | Users, groups, permissions, session-backed auth, password hashing, rate-limited login, persistent account lockout |
 | `djangors-sessions` | Signed-cookie session engine |
-| `djangors-admin` | The auto-generated admin site: changelist, filters, search, bulk actions, inline editing, CSV export, audit log, object history |
+| `djangors-admin` | The auto-generated admin site: changelist, filters, search, bulk actions, inline editing, CSV export, audit log, object history, FK inlines, and optional tenant scoping |
 | `djangors-forms` | Form field types and validation, plus the `ModelForm` equivalent auto-derived from `#[derive(Model)]` |
 | `djangors-views` | Server-rendered generic class-based views: `ListView`/`DetailView`/`CreateView`/`UpdateView`/`DeleteView` |
 | `djangors-template` | A Django-template-flavored engine (minijinja-backed) with Django-style filters |
-| `djangors-rest` | A DRF-equivalent: generic serialization, `ViewSet`s, token/JWT auth, permission classes, cursor pagination, rate limiting, OpenAPI 3.1 generation |
+| `djangors-rest` | A DRF-equivalent: generic serialization, `ViewSet`s (scoped with config via `scoped_viewset_routes_with_config`), token/JWT auth, permission classes, cursor pagination, rate limiting, OpenAPI 3.1 generation, and a `request.user()` convenience accessor |
 | `djangors-cache` | Cache trait + in-memory/database/Redis backends |
 | `djangors-mail` | Email messages with SMTP/file/in-memory backends |
 | `djangors-tasks` | A background task queue (`#[task]`, Postgres `SELECT ... FOR UPDATE SKIP LOCKED`, cron-style recurring jobs, a worker loop) |

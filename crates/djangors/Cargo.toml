@@ -13,21 +13,21 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-djangors-core = { path = "../djangors-core", version = "0.6.0" }
-djangors-orm = { path = "../djangors-orm", version = "0.6.0" }
-djangors-migrations = { path = "../djangors-migrations", version = "0.6.0" }
-djangors-rest = { path = "../djangors-rest", version = "0.6.0" }
-djangors-admin = { path = "../djangors-admin", version = "0.6.0" }
-djangors-auth = { path = "../djangors-auth", version = "0.6.0" }
-djangors-forms = { path = "../djangors-forms", version = "0.6.0" }
-djangors-sessions = { path = "../djangors-sessions", version = "0.6.0" }
-djangors-template = { path = "../djangors-template", version = "0.6.0" }
-djangors-staticfiles = { path = "../djangors-staticfiles", version = "0.6.0" }
-djangors-cache = { path = "../djangors-cache", version = "0.6.0" }
-djangors-mail = { path = "../djangors-mail", version = "0.6.0" }
-djangors-i18n = { path = "../djangors-i18n", version = "0.6.0" }
-djangors-db = { path = "../djangors-db", version = "0.6.0" }
-djangors-tasks = { path = "../djangors-tasks", version = "0.6.0" }
-djangors-pdf = { path = "../djangors-pdf", version = "0.6.0" }
-djangors-contrib-payments = { path = "../djangors-contrib-payments", version = "0.6.0" }
-djangors-contrib-tenancy = { path = "../djangors-contrib-tenancy", version = "0.6.0" }
+djangors-core = { path = "../djangors-core", version = "0.6.2" }
+djangors-orm = { path = "../djangors-orm", version = "0.6.2" }
+djangors-migrations = { path = "../djangors-migrations", version = "0.6.2" }
+djangors-rest = { path = "../djangors-rest", version = "0.6.2" }
+djangors-admin = { path = "../djangors-admin", version = "0.6.2" }
+djangors-auth = { path = "../djangors-auth", version = "0.6.2" }
+djangors-forms = { path = "../djangors-forms", version = "0.6.2" }
+djangors-sessions = { path = "../djangors-sessions", version = "0.6.2" }
+djangors-template = { path = "../djangors-template", version = "0.6.2" }
+djangors-staticfiles = { path = "../djangors-staticfiles", version = "0.6.2" }
+djangors-cache = { path = "../djangors-cache", version = "0.6.2" }
+djangors-mail = { path = "../djangors-mail", version = "0.6.2" }
+djangors-i18n = { path = "../djangors-i18n", version = "0.6.2" }
+djangors-db = { path = "../djangors-db", version = "0.6.2" }
+djangors-tasks = { path = "../djangors-tasks", version = "0.6.2" }
+djangors-pdf = { path = "../djangors-pdf", version = "0.6.2" }
+djangors-contrib-payments = { path = "../djangors-contrib-payments", version = "0.6.2" }
+djangors-contrib-tenancy = { path = "../djangors-contrib-tenancy", version = "0.6.2" }

@@ -87,6 +87,57 @@ To support running multiple parallel worker processes safely without double-exec
 * **PostgreSQL**: Claims the next pending task using a `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1` query inside a transaction. This allows workers to lock a row and skip past any rows already locked by other workers, ensuring high-throughput parallel execution.
 * **SQLite**: Since SQLite only supports database-level write locks (single writer), concurrency is naturally serialized. The worker issues a standard query and updates the row, relying on SQLite's transactional lock behavior to serialize worker claims.
 
+### Manual Polling: `run_once` and `claim_next_task`
+
+`Worker::run()` loops forever, but the underlying single-cycle primitives are public so you can
+drive the queue yourself (e.g. draining tasks under a fixed budget, or embedding claims in another
+loop).
+
+```rust,illustrative
+use djangors_tasks::{Worker, TaskError, claim_next_task};
+
+// Claim one due task atomically, without touching the registry or executing it.
+match claim_next_task(&db).await {
+    Ok(Some(task)) => { /* already marked "running", attempts incremented */ }
+    Ok(None) => { /* queue empty */ }
+    Err(e) => { /* TaskError */ }
+}
+
+// Drive a single poll cycle of the worker loop:
+//   Ok(true)  => a task was claimed and executed (or had no handler)
+//   Ok(false) => nothing was due; callers usually sleep the poll interval now
+//   Err(e)    => the poll failed (returned via `?` as TaskError)
+let worker = Worker::new(db);
+match worker.run_once().await? {
+    true => println!("ran a task"),
+    false => println!("queue idle"),
+}
+```
+
+| Method | Signature | Notes |
+| --- | --- | --- |
+| `Worker::run_once` | `async fn(&self) -> Result<bool, TaskError>` | One poll cycle: claim + run a single due task; returns whether one ran |
+| `claim_next_task` | `async fn(&Database) -> Result<Option<QueuedTask>, TaskError>` | Atomic claim inside one transaction; Postgres uses `FOR UPDATE SKIP LOCKED`, SQLite a guarded update |
+
+`claim_next_task` already flips the row to `"running"` and increments `attempts` as part of the
+claim, so a crash between claim and execution leaves the task parked in `"running"` rather than
+double-claiming it.
+
+### `TaskError` Variants
+
+Every task operation bubbles up through this one error type:
+
+| Variant | Meaning |
+| --- | --- |
+| `Db(DbError)` | A database operation via `djangors_db` failed |
+| `Orm(OrmError)` | An ORM operation failed |
+| `Json(serde_json::Error)` | Generic JSON serialization/deserialization error |
+| `PayloadDeserialization(String)` | Task payload could not be deserialized into the handler's type |
+| `Serialization(String)` | Serializing the payload (or compiling a cron expression) failed |
+| `TaskNotFound(String)` | No `#[task]` handler with that name is registered in the inventory |
+| `TaskExecution(String)` | The handler executed but returned `Err` |
+| `TaskPanicked(String)` | The handler panicked inside the worker's `tokio::spawn` isolation |
+
 ---
 
 ## Error Handling, Retries, and Status Transitions

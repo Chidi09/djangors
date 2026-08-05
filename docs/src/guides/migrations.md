@@ -140,6 +140,80 @@ During a rollback, the system:
 
 ---
 
+## Programmatic Migration APIs
+
+Beyond the `dj` CLI, `djangors_migrations` exposes the same functionality as callable functions and
+`Operation` methods, so you can wire migrations into your own startup or tooling.
+
+### Database-level functions
+
+| Function | Signature | Notes |
+| --- | --- | --- |
+| `migrate(&db)` | `async fn(&Database) -> Result<(), MigrationError>` | Applies `migrations/` dir if present, else the model-derived `0001_initial` plan |
+| `migrate_from_dir(&db, path)` | `async fn(&Database, &Path) -> Result<(), MigrationError>` | Applies pending `.sql` files in filename order |
+| `rollback_from_dir(&db, path, count)` | `async fn(&Database, &Path, u32) -> Result<(), MigrationError>` | Rolls back the most recent `count` applied files; errors on `-- no-down` |
+| `get_applied_migrations(&db)` | `async fn(&Database) -> Result<Vec<String>, MigrationError>` | Names recorded in `djangors_migrations` |
+| `record_migration(&db, name)` | `async fn(&Database, &str) -> Result<(), MigrationError>` | Records a name as applied without running SQL (the `--fake` behaviour) |
+
+```rust,illustrative
+use djangors_migrations::{get_applied_migrations, migrate, migrate_from_dir, record_migration, rollback_from_dir};
+
+async fn manage(db: &djangors_db::Database) -> Result<(), djangors_migrations::MigrationError> {
+    migrate(db).await?;                          // apply pending migrations
+
+    let applied = get_applied_migrations(db).await?; // e.g. ["0001_initial"]
+    if applied.is_empty() {
+        record_migration(db, "0001_initial").await?; // record without running SQL
+    }
+
+    migrate_from_dir(db, std::path::Path::new("src/migrations")).await?;
+    rollback_from_dir(db, std::path::Path::new("src/migrations"), 1).await?; // undo last 1
+    Ok(())
+}
+```
+
+### `Operation` methods
+
+`Operation` is also usable directly as a plan of DDL steps:
+
+| Method | Signature | Notes |
+| --- | --- | --- |
+| `to_sql(dialect)` | `fn(&self, Dialect) -> Result<String, MigrationError>` | Forward DDL SQL (`UnsupportedOnDialect` for SQLite-only gaps like `AlterColumnType`) |
+| `reverse()` | `fn(&self) -> Option<Self>` | The mechanically safe inverse (`CreateTable`→`DropTable`, `AddColumn`→`DropColumn`, `RenameColumn` swapped); `None` when not invertible |
+| `to_down_sql(dialect)` | `fn(&self, Dialect) -> Option<Result<String, MigrationError>>` | `reverse()` then `to_sql()` — the `-- down` section |
+
+```rust,compile
+# use djangors_db::Dialect;
+# use djangors_migrations::Operation;
+# fn op_demo() {
+use djangors_migrations::ColumnDef;
+
+let create = Operation::CreateTable {
+    table_name: "polls_question".to_string(),
+    columns: vec![ColumnDef {
+        name: "id".to_string(),
+        sql_type: "SERIAL".to_string(),
+        nullable: false,
+        primary_key: true,
+        unique: false,
+        default_sql: None,
+        references: None,
+    }],
+    check_constraints: vec![],
+};
+
+let up_sql = create.to_sql(Dialect::Postgres).unwrap();   // CREATE TABLE ...
+let down_sql = create.to_down_sql(Dialect::Postgres);     // Some("DROP TABLE ...")
+assert!(matches!(create.reverse(), Some(Operation::DropTable { .. })));
+# }
+```
+
+`build_create_all_plan(dialect)` (also `build_create_plan_from_snapshots`) produces the
+`Vec<Operation>` plan for all registered models, topologically sorted by foreign-key dependency —
+this is what `migrate` feeds into `to_sql` and executes transactionally.
+
+---
+
 ## Migration Inspection & CLI Options
 
 Djangors provides several commands and flags for inspecting and managing migration states:

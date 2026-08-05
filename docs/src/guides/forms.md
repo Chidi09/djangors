@@ -76,6 +76,36 @@ let div_html = as_div(&[field], &[]);
 - `as_p`: Renders fields inside `<p>` paragraphs.
 - `as_table`: Renders fields as `<tr><th><label></th><td><widget></td></tr>` table rows.
 
+### `BoundField` rendering helpers
+
+Beyond the whole-layout helpers, a [`BoundField`](file:///root/dev/Rango/crates/djangors-forms/src/renderers.rs)
+exposes granular renderers you can compose into custom layouts:
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `id_for_label()` | `String` | The element id (`attrs["id"]`, else `"id_<name>"`) |
+| `label_tag()` | `String` | `<label for="...">…</label>` (sentence-cased name unless overridden) |
+| `render_widget()` | `String` | The widget's HTML for this field |
+| `render_errors()` | `String` | `<ul class="errorlist"><li>…</li></ul>` (empty when no errors) |
+| `render_help_text()` | `String` | `<span class="helptext">…</span>` (empty when none) |
+
+```rust,illustrative
+use djangors_forms::{BoundField, TextInput};
+
+let field = BoundField::new("first_name", &TextInput)
+    .with_value(Some("Alice"))
+    .with_help_text("Enter your given name")
+    .with_errors(vec!["Too long.".to_string()]);
+
+let id = field.id_for_label();        // "id_first_name"
+let label = field.label_tag();        // <label for="id_first_name">First name</label>
+let widget = field.render_widget();   // <input type="text" ... name="first_name" ...>
+let errors = field.render_errors();   // <ul class="errorlist"><li>Too long.</li></ul>
+let help = field.render_help_text();  // <span class="helptext">Enter your given name</span>
+```
+
+All output is HTML-escaped, including the field name, values, labels, and error/help text.
+
 ---
 
 ## FormSets & Security
@@ -108,6 +138,31 @@ let results = formset.clean_with(&post_data, |map| {
     Ok(map.get("name").cloned().unwrap_or_default())
 });
 ```
+
+### FormSet field-naming & rendering helpers
+
+| Method | Signature | Notes |
+| --- | --- | --- |
+| `with_max_num(max)` | `fn(self, usize) -> Self` | Raises/lowers the `TOTAL_FORMS` security cap (default `1000`) |
+| `add_prefix(index, field)` | `fn(&self, usize, &str) -> String` | Builds `"<prefix>-<index>-<field>"` (e.g. `author-0-title`) |
+| `render_delete_checkbox(index, checked)` | `fn(&self, usize, bool) -> String` | Renders the `<input type="checkbox" name="...-DELETE">` (empty unless `can_delete`) |
+
+```rust,illustrative
+use djangors_forms::FormSet;
+
+let formset: FormSet<()> = FormSet::new()
+    .with_prefix("author")
+    .with_counts(2, 1)
+    .with_max_num(5)                 // cap TOTAL_FORMS before allocation (default 1000)
+    .with_can_delete(true);
+
+let name = formset.add_prefix(0, "title");             // "author-0-title"
+let delete_box = formset.render_delete_checkbox(0, false); // <label ...>… Delete</label>
+```
+
+`add_prefix` is what you should use when reading individual prefixed fields back from submitted
+data, and `render_delete_checkbox` returns an empty string unless `can_delete` is enabled — so
+templates can call it unconditionally.
 
 ---
 
@@ -147,3 +202,85 @@ pub async fn detail(req: Request, params: PathParams) -> Result<Response, Django
     Ok(Response::text(djangors_core::StatusCode::OK, ""))
 }
 ```
+
+---
+
+## The `#[derive(Form)]` validation macro
+
+For validation on top of plain `Deserialize`, `#[derive(Form)]` generates a
+`clean(&HashMap<String, String>)` method with per-field rules declared in
+attributes. Unlike `Deserialize` it runs your rules and returns a structured
+`FormErrors` (per-field messages) instead of a single parse error.
+
+```rust,compile
+#[derive(djangors_forms::Form, Debug)]
+struct SignupForm {
+    #[djangors(max_length = 150, required = true)]
+    username: String,
+
+    #[djangors(email, required = true)]
+    email: String,
+
+    #[djangors(min = 13)]
+    age: i64,
+}
+
+# #[allow(dead_code)]
+fn run(data: &std::collections::HashMap<String, String>) {
+    match SignupForm::clean(data) {
+        Ok(cleaned) => { println!("email={}", cleaned.email); }
+        Err(errors) => { /* errors.fields: HashMap<String, FieldError> */ }
+    }
+}
+```
+
+Supported field attributes: `max_length` + `required = true` + `email` on
+`String`, `min`/`max`/`required = true` on `i64`/`i32`, `required = true` on
+`bool`. (For `required`, the value form with `= true` is required — a bare
+`required` flag is not accepted.) The generated `{Form}Cleaned` struct's
+visibility mirrors the form's own.
+
+---
+
+## Model-generated forms (`validate_form` / `apply_cleaned_form`)
+
+`#[derive(Model)]` also generates a real Django-`ModelForm`-equivalent directly
+on the model — no second struct required. Auto/PK fields and `FileField`s are
+excluded automatically, exactly like `save()`'s `INSERT`.
+
+```rust,compile
+# use djangors_macros::Model;
+# use djangors_orm::Model;
+# use std::collections::HashMap;
+# #[derive(Model, Debug, Clone)]
+# #[djangors(app = "library", table_name = "library_contact")]
+# struct Contact { #[djangors(primary_key, auto)] id: i64, #[djangors(max_length = 100)] name: String, email: String }
+# #[allow(dead_code)]
+async fn insert_contact(data: HashMap<String, String>, db: &djangors_db::Database) -> Result<(), djangors_orm::OrmError> {
+    // `validate_form` returns `Result<FormCleaned, FormErrors>`; FormErrors is a
+    // value (field-keyed messages), not a std::error::Error — match on it and
+    // re-render the form with `errors.fields` rather than using `?`.
+    let contact = match Contact::validate_form(&data) {
+        Ok(cleaned) => Contact::from_cleaned_form(cleaned), // fresh instance
+        Err(_errors) => return Ok(()),                      // re-render with errors.fields
+    };
+    contact.save(db).await?; // INSERT
+    Ok(())
+}
+```
+
+The three generated methods map onto the create and update paths:
+
+| Method | Create path | Update path |
+| --- | --- | --- |
+| `validate_form(&map)` | Validate the post body | Same, against the same fields |
+| `from_cleaned_form(cleaned)` | Build a **new** instance, then `save()` | — |
+| `apply_cleaned_form(cleaned)` | — | Apply onto an **existing** instance (leaving the PK untouched), then `update()` |
+
+`apply_cleaned_form` takes a `&mut self`, so the update path is: fetch the row,
+`validate_form` the submitted data, `apply_cleaned_form`, then `update(db)` —
+exactly the shape `djangors-views`' `UpdateView` implements for you.
+
+Use with `djangors-views`' generic `CreateView`/`UpdateView` (see the
+[Class-Based Views guide](class-based-views.md)) to get a full
+form-render-and-submit flow without writing a handler by hand.

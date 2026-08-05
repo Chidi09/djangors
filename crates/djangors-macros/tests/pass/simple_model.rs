@@ -14,6 +14,15 @@ pub struct Simple {
 
     #[djangors(file_field)]
     pub attachment: Option<String>,
+
+    #[djangors(choices = ["draft", "published"])]
+    pub status: String,
+
+    #[djangors(auto_now_add = true)]
+    pub created_at: chrono::DateTime<chrono::Utc>,
+
+    #[djangors(auto_now = true)]
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 fn main() {
@@ -21,7 +30,7 @@ fn main() {
     assert_eq!(meta.struct_name, "Simple");
     assert_eq!(meta.app_label, "test_app");
     assert_eq!(meta.table_name, "custom_table");
-    assert_eq!(meta.fields.len(), 4);
+    assert_eq!(meta.fields.len(), 7);
     assert_eq!(meta.ordering, &["-name"]);
 
     let id_field = meta.fields[0];
@@ -40,4 +49,16 @@ fn main() {
     assert_eq!(active_field.name, "is_active");
     assert_eq!(active_field.kind, FieldKind::Boolean);
     assert_eq!(meta.fields[3].kind, FieldKind::FileField);
+
+    let status_field = meta.fields[4];
+    assert_eq!(status_field.name, "status");
+    assert_eq!(status_field.choices, &[("draft", "draft"), ("published", "published")]);
+
+    let created_field = meta.fields[5];
+    assert_eq!(created_field.name, "created_at");
+    assert_eq!(created_field.kind, FieldKind::DateTime);
+
+    let updated_field = meta.fields[6];
+    assert_eq!(updated_field.name, "updated_at");
+    assert_eq!(updated_field.kind, FieldKind::DateTime);
 }

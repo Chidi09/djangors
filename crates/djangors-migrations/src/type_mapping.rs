@@ -180,6 +180,7 @@ mod sqlite_ddl_tests {
                     references: None,
                 },
             ],
+            check_constraints: vec![],
         };
 
         let sql = op.to_sql(Dialect::Sqlite).unwrap();

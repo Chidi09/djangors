@@ -38,6 +38,34 @@ let value = cache.get_or_set_json("my_key", Some(Duration::from_secs(60)), || as
 }).await?;
 ```
 
+### The free function `get_or_set_fragment`
+
+`get_or_set_fragment` is the same compute-if-missing pattern as a standalone
+function for call sites that do not have a concrete `Cache` impl, only the
+`dyn Cache` trait object (for example, an async handler receiving the store as
+`Arc<dyn Cache>`):
+
+```rust,compile
+# use std::sync::Arc;
+# use djangors_cache::{Cache, CacheError, InMemoryCache, get_or_set_fragment};
+# use std::time::Duration;
+# fn main() {}
+# async fn run() -> Result<(), CacheError> {
+let store: Arc<dyn Cache> = Arc::new(InMemoryCache::new(10_000));
+let html = get_or_set_fragment(&*store, "template:home", Some(Duration::from_secs(300)), || async {
+    // ... any work producing Vec<u8> ...
+    Ok(b"<h1>Hello</h1>".to_vec())
+}).await?;
+# let _ = html;
+# Ok(())
+# }
+```
+
+`get_or_set` (the `CacheExt` method) takes `&self`; `get_or_set_fragment` takes
+`&dyn Cache` — otherwise they are identical in behaviour (both use
+compute-if-missing with per-call TTL, and both are best-effort, non-atomic under
+concurrency).
+
 ---
 
 ## Supported Backends

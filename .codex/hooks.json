@@ -11,7 +11,7 @@
           },
           {
             "type": "command",
-            "command": "cargo test",
+            "command": "env -u DATABASE_URL TEST_BACKEND=sqlite cargo test",
             "timeout": 300
           }
         ]

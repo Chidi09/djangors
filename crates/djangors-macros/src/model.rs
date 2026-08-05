@@ -12,6 +12,8 @@ struct ModelField {
     last_ident: Option<String>,
     is_nullable: bool,
     null_bind_tok: proc_macro2::TokenStream,
+    auto_now_add: bool,
+    auto_now: bool,
 }
 
 fn field_value_expr(f: &ModelField) -> TokenStream {
@@ -40,6 +42,36 @@ fn field_value_expr(f: &ModelField) -> TokenStream {
                         None => djangors_orm::expr::Value::Null,
                     }
                 },
+                "NaiveDate" => quote! {
+                    match &self.#ident {
+                        Some(v) => djangors_orm::expr::Value::Text(format!("{}", v)),
+                        None => djangors_orm::expr::Value::Null,
+                    }
+                },
+                "NaiveTime" => quote! {
+                    match &self.#ident {
+                        Some(v) => djangors_orm::expr::Value::Text(format!("{}", v)),
+                        None => djangors_orm::expr::Value::Null,
+                    }
+                },
+                "Duration" => quote! {
+                    match &self.#ident {
+                        Some(v) => djangors_orm::expr::Value::Text(format!("{:?}", v)),
+                        None => djangors_orm::expr::Value::Null,
+                    }
+                },
+                "Uuid" => quote! {
+                    match &self.#ident {
+                        Some(v) => djangors_orm::expr::Value::Text(v.to_string()),
+                        None => djangors_orm::expr::Value::Null,
+                    }
+                },
+                "Decimal" => quote! {
+                    match &self.#ident {
+                        Some(v) => djangors_orm::expr::Value::Text(v.to_string()),
+                        None => djangors_orm::expr::Value::Null,
+                    }
+                },
                 _ => quote! {
                     match self.#ident {
                         Some(v) => djangors_orm::expr::Value::from(v),
@@ -52,6 +84,11 @@ fn field_value_expr(f: &ModelField) -> TokenStream {
                 "String" => quote! { djangors_orm::expr::Value::from(self.#ident.clone()) },
                 "i32" => quote! { djangors_orm::expr::Value::from(self.#ident as i64) },
                 "f32" => quote! { djangors_orm::expr::Value::from(self.#ident as f64) },
+                "NaiveDate" => quote! { djangors_orm::expr::Value::Text(format!("{}", self.#ident)) },
+                "NaiveTime" => quote! { djangors_orm::expr::Value::Text(format!("{}", self.#ident)) },
+                "Duration" => quote! { djangors_orm::expr::Value::Text(format!("{:?}", self.#ident)) },
+                "Uuid" => quote! { djangors_orm::expr::Value::Text(self.#ident.to_string()) },
+                "Decimal" => quote! { djangors_orm::expr::Value::Text(self.#ident.to_string()) },
                 _ => quote! { djangors_orm::expr::Value::from(self.#ident) },
             }
         }
@@ -185,6 +222,9 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         ident: Ident,
         primary_key: bool,
         field_meta_tokens: TokenStream,
+        choices: Option<Vec<String>>,
+        auto_now_add: bool,
+        auto_now: bool,
     }
 
     struct ParsedRelation {
@@ -224,6 +264,9 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         let mut decimal_places = None;
         let mut on_delete = None;
         let mut related_name = None;
+        let mut choices: Option<Vec<String>> = None;
+        let mut auto_now_add = false;
+        let mut auto_now = false;
 
         for attr in &field.attrs {
             if attr.path().is_ident("djangors") {
@@ -275,6 +318,38 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                             }
                             Ok(())
                         })?;
+                    } else if meta.path.is_ident("auto_now_add") {
+                        if meta.input.peek(syn::Token![=]) {
+                            let value = meta.value()?;
+                            let lit: syn::LitBool = value.parse()?;
+                            if !lit.value {
+                                return Err(meta.error("auto_now_add must be `true`"));
+                            }
+                        }
+                        auto_now_add = true;
+                    } else if meta.path.is_ident("auto_now") {
+                        if meta.input.peek(syn::Token![=]) {
+                            let value = meta.value()?;
+                            let lit: syn::LitBool = value.parse()?;
+                            if !lit.value {
+                                return Err(meta.error("auto_now must be `true`"));
+                            }
+                        }
+                        auto_now = true;
+                    } else if meta.path.is_ident("choices") {
+                        let value = meta.value()?;
+                        let content;
+                        syn::bracketed!(content in value);
+                        let mut lits = Vec::new();
+                        while !content.is_empty() {
+                            let lit: syn::LitStr = content.parse()?;
+                            lits.push(lit.value());
+                            if content.is_empty() {
+                                break;
+                            }
+                            content.parse::<syn::Token![,]>()?;
+                        }
+                        choices = Some(lits);
                     }
                     Ok(())
                 })?;
@@ -345,6 +420,8 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 last_ident: None,
                 is_nullable: false,
                 null_bind_tok: quote! { i64 },
+                auto_now_add: false,
+                auto_now: false,
             });
             form_names.push(field_name_str.clone());
             form_idents.push(field_ident.clone());
@@ -398,10 +475,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                     || type_name == "Uuid"
                     || type_name == "Decimal"
                 {
-                    return Err(syn::Error::new_spanned(
-                        &field.ty,
-                        format!("Field '{}' has unsupported type '{}' for save/update operations in djangors-orm", field_name_str, type_name),
-                    ));
+                    // Previously rejected; now supported via Text serialization.
                 }
             }
 
@@ -467,6 +541,17 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             let unique_val = unique || primary_key;
             let db_index_val = db_index || primary_key;
 
+            let choices_tok = match &choices {
+                Some(choice_vec) => {
+                    let pairs = choice_vec.iter().map(|s| {
+                        let s_str = s.as_str();
+                        quote! { (#s_str, #s_str) }
+                    });
+                    quote! { &[ #(#pairs),* ] }
+                }
+                None => quote! { &[] },
+            };
+
             let field_meta_tokens = quote! {
                 djangors_orm::FieldMeta {
                     name: #field_name_str,
@@ -481,7 +566,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                     max_length: #max_length_tok,
                     verbose_name: #verbose_name_tok,
                     help_text: #help_text_tok,
-                    choices: &[],
+                    choices: #choices_tok,
                 }
             };
 
@@ -489,6 +574,9 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 ident: field_ident.clone(),
                 primary_key,
                 field_meta_tokens,
+                choices: choices.clone(),
+                auto_now_add,
+                auto_now,
             });
             let from_row_code = match (last_ident_str.as_deref(), nullable) {
                 (Some("String"), true) => {
@@ -533,6 +621,36 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 (Some("DateTime"), false) => {
                     quote! { row.try_datetime_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))? }
                 }
+                (Some("NaiveDate"), true) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.and_then(|s| s.parse().ok()) }
+                }
+                (Some("NaiveDate"), false) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?.parse().map_err(|e| djangors_orm::OrmError::InvalidQuery(format!("failed to parse NaiveDate '{}'", #final_column)))? }
+                }
+                (Some("NaiveTime"), true) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.and_then(|s| s.parse().ok()) }
+                }
+                (Some("NaiveTime"), false) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?.parse().map_err(|e| djangors_orm::OrmError::InvalidQuery(format!("failed to parse NaiveTime '{}'", #final_column)))? }
+                }
+                (Some("Duration"), true) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.and_then(|_s| None::<std::time::Duration>) }
+                }
+                (Some("Duration"), false) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?.parse().map_err(|e| djangors_orm::OrmError::InvalidQuery(format!("failed to parse {} field: {}", #final_column, e)))? }
+                }
+                (Some("Uuid"), true) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.and_then(|s| uuid::Uuid::parse_str(&s).ok()) }
+                }
+                (Some("Uuid"), false) => {
+                    quote! { uuid::Uuid::parse_str(&row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?).map_err(|e| djangors_orm::OrmError::InvalidQuery(format!("failed to parse Uuid '{}'", #final_column)))? }
+                }
+                (Some("Decimal"), true) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.and_then(|s| s.parse().ok()) }
+                }
+                (Some("Decimal"), false) => {
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?.parse().map_err(|e| djangors_orm::OrmError::InvalidQuery(format!("failed to parse {} field: {}", #final_column, e)))? }
+                }
                 (_, true) => {
                     quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)? }
                 }
@@ -553,6 +671,8 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 last_ident: last_ident_str.clone(),
                 is_nullable: nullable,
                 null_bind_tok: quote! { #null_bind_ty },
+                auto_now_add,
+                auto_now,
             });
             if !auto
                 && !primary_key
@@ -569,7 +689,12 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                             Some(v) => quote! { Some(#v as usize) },
                             None => quote! { None },
                         };
-                        quote! { djangors_orm::djangors_forms::CharField { max_length: #max_len, required: #required } }
+                        if let Some(ref choice_vec) = choices {
+                            let choice_strs: Vec<&str> = choice_vec.iter().map(|s| s.as_str()).collect();
+                            quote! { djangors_orm::djangors_forms::ChoiceField { choices: &[ #(#choice_strs),* ], required: #required } }
+                        } else {
+                            quote! { djangors_orm::djangors_forms::CharField { max_length: #max_len, required: #required } }
+                        }
                     }
                     Some("i32") | Some("i64") => quote! {
                         djangors_orm::djangors_forms::IntegerField { min: None, max: None, required: #required }
@@ -663,7 +788,11 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     let save_cols_vec: Vec<String> = save_fields.iter().map(|f| f.column_name.clone()).collect();
 
     let save_bind_stmts = save_fields.iter().map(|f| {
-        let val_expr = field_value_expr(f);
+        let val_expr = if f.auto_now_add || f.auto_now {
+            quote! { djangors_orm::expr::Value::DateTime(chrono::Utc::now()) }
+        } else {
+            field_value_expr(f)
+        };
         let null_kind_tok = match f.null_bind_tok.to_string().as_str() {
             "String" => quote! { djangors_orm::NullKind::Text },
             "f64" | "f32" => quote! { djangors_orm::NullKind::F64 },
@@ -696,7 +825,11 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         .iter()
         .chain(std::iter::once(&pk_field))
         .map(|f| {
-            let val_expr = field_value_expr(f);
+            let val_expr = if f.auto_now {
+                quote! { djangors_orm::expr::Value::DateTime(chrono::Utc::now()) }
+            } else {
+                field_value_expr(f)
+            };
             let null_kind_tok = match f.null_bind_tok.to_string().as_str() {
                 "String" => quote! { djangors_orm::NullKind::Text },
                 "f64" | "f32" => quote! { djangors_orm::NullKind::F64 },

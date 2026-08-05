@@ -69,6 +69,20 @@ pub struct ModelAdminConfig {
 - **`raw_id_fields`**: Renders foreign key inputs as raw integer ID fields with target lookup links.
 - **`base_filter`**: Baseline queryset filter automatically applied to all changelist queries.
 
+> [!IMPORTANT]
+> `register_with` **validates your config at registration time, at startup, by
+> `panic`** — not at first request. A field named in `list_display`,
+> `search_fields`, `list_filter`, `date_hierarchy`, or `list_editable` that does
+> not exist on the model, or that has the wrong kind (a `String` in
+> `list_filter`, which must be Boolean; a `ForeignKey`/integer in
+> `search_fields`, which must be text-like; a non-`DateTime` in
+> `date_hierarchy`), produces a hard panic the moment the admin site is
+> registered. Treat the config as compile-time-ish: a wrong type surfaces as an
+> immediate startup crash, which is precise but not graceful. The allowed kinds
+> are: `list_filter` → Boolean only; `search_fields` → `Char`/`Text`/`Email`/
+> `Url`/`Slug`/`Ip`; `list_editable` → text and numeric kinds; `date_hierarchy`
+> → `DateTime`.
+
 ---
 
 ## Favicons & Static Branding Routes
@@ -101,3 +115,69 @@ All admin actions (additions, updates, deletions) are recorded in the `djangors_
 - **`ACTION_ADDITION`** (`1`): Object creation.
 - **`ACTION_CHANGE`** (`2`): Object field edits (with field diff payload).
 - **`ACTION_DELETION`** (`3`): Object removal.
+
+---
+
+## Computed columns & `base_filter`
+
+`computed_columns` lets a changelist column be produced by a function instead of
+a raw model field. The function receives the row's field/value pairs and returns
+the display string; list it in `list_display` alongside real fields.
+
+```rust,compile
+# use djangors_admin::{AdminSite, ModelAdminConfig};
+# use djangors_orm::expr::Value;
+# use polls::models::Question;
+# fn main() {
+// A column computed from two fields (`id` and `question_text`).
+fn id_and_text(values: &[(&'static str, Value)]) -> String {
+    let text = values
+        .iter()
+        .find(|(n, _)| *n == "question_text")
+        .map(|(_, v)| v.to_string())
+        .unwrap_or_default();
+    format!("#{} {text}", values.iter().find(|(n, _)| *n == "id").map(|(_, v)| v.to_string()).unwrap_or_default())
+}
+
+let site = AdminSite::new();
+site.register_with::<Question>(ModelAdminConfig {
+    list_display: Some(&["id", "combo"]),
+    computed_columns: Some(&[("combo", id_and_text)]),
+    ..Default::default()
+});
+# }
+```
+
+`base_filter` applies an `UnresolvedExpr` (the same value `q!` produces) to
+every changelist query — Django's `get_queryset`-scoping for the admin list.
+Combine it with [`Scoped`](rest.md) semantics when a multi-tenant admin exists,
+or simply to default a soft-deleted/model-state filter:
+
+```rust,compile
+# use djangors_admin::{AdminSite, ModelAdminConfig};
+# use polls::models::Question;
+# fn main() {
+let site = AdminSite::new();
+site.register_with::<Question>(ModelAdminConfig {
+    // Only list questions with any votes (q! result used verbatim).
+    base_filter: Some(djangors_orm::q!(votes__gt = 0i32) as djangors_orm::UnresolvedExpr),
+    ..Default::default()
+});
+# }
+```
+
+> [!NOTE]
+> `q!` returns `UnresolvedExpr` already, so no cast is needed in real code; the
+> explicit `as` above only illustrates the expected type of the field.
+
+## The `ModelAdmin` trait
+
+`register_with(ModeAdminConfig)` covers the common cases; for full control,
+implement the `ModelAdmin` trait directly and register it off the standard
+config flow. The required methods describe the model (`model_meta`,
+`field_names`, `changelist`, `export_csv_rows`, `get_by_pk`,
+`update_from_form`/`create_from_form`, `delete_by_pk`), and the optional ones
+default when omitted (`actions`, `fieldsets`, `readonly_fields`,
+`raw_id_fields`, plus the search/filter/editable/hierarchy accessors).
+`DefaultModelAdmin<M>` in `djangors-admin` is the built-in implementation
+`register_with` uses, and you can use it as a reference when writing your own.

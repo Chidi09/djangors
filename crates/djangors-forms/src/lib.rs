@@ -16,7 +16,7 @@ pub mod widgets;
 
 pub use djangors_macros::Form;
 pub use error::{FieldError, FormErrors};
-pub use fields::{BooleanField, CharField, EmailField, FormField, IntegerField};
+pub use fields::{BooleanField, CharField, ChoiceField, EmailField, FormField, IntegerField};
 pub use formsets::*;
 pub use renderers::*;
 pub use widgets::*;

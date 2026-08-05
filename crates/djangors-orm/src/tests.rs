@@ -450,6 +450,97 @@ async fn test_queryset_operations() {
         .await;
 }
 
+#[tokio::test]
+async fn test_get_or_create_and_update_or_create() {
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_queryset_model", &[])
+        .await;
+    db.conn()
+        .execute(
+            &format!(
+                "CREATE TABLE test_queryset_model (
+                    id {auto_pk},
+                    name TEXT NOT NULL,
+                    is_active BOOLEAN NOT NULL
+                )"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let defaults = || vec![
+        ("name", crate::expr::Value::Text("Dana".into())),
+        ("is_active", crate::expr::Value::Bool(true)),
+    ];
+
+    // get_or_create: creates when absent
+    let (created_1, was_created) = QuerySetTestModel::objects()
+        .filter(crate::q!(name = "Dana"))
+        .unwrap()
+        .get_or_create(db, defaults)
+        .await
+        .unwrap();
+    assert!(was_created);
+    assert_eq!(created_1.name, "Dana");
+
+    // get_or_create: returns existing when present (no duplicate)
+    let (created_2, was_created) = QuerySetTestModel::objects()
+        .filter(crate::q!(name = "Dana"))
+        .unwrap()
+        .get_or_create(db, defaults)
+        .await
+        .unwrap();
+    assert!(!was_created);
+    assert_eq!(created_2.id, created_1.id);
+    assert_eq!(QuerySetTestModel::objects().count(db).await.unwrap(), 1);
+
+    // update_or_create: updates an existing match
+    let (updated, was_created) = QuerySetTestModel::objects()
+        .filter(crate::q!(name = "Dana"))
+        .unwrap()
+        .update_or_create(
+            db,
+            defaults,
+            || crate::set!(is_active = true),
+        )
+        .await
+        .unwrap();
+    assert!(!was_created);
+    assert!(updated.is_active);
+    assert_eq!(QuerySetTestModel::objects().count(db).await.unwrap(), 1);
+
+    // update_or_create: creates when absent
+    let (made, was_created) = QuerySetTestModel::objects()
+        .filter(crate::q!(name = "Erin"))
+        .unwrap()
+        .update_or_create(
+            db,
+            || vec![
+                ("name", crate::expr::Value::Text("Erin".into())),
+                ("is_active", crate::expr::Value::Bool(false)),
+            ],
+            || crate::set!(is_active = false),
+        )
+        .await
+        .unwrap();
+    assert!(was_created);
+    assert_eq!(made.name, "Erin");
+    assert_eq!(made.is_active, false);
+    assert_eq!(QuerySetTestModel::objects().count(db).await.unwrap(), 2);
+
+    // Cleanup
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_queryset_model", &[])
+        .await;
+}
+
 #[derive(Model, Debug)]
 #[djangors(app = "test_app", table_name = "test_aggregate_model")]
 #[allow(dead_code)]

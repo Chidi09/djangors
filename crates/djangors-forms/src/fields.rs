@@ -252,3 +252,49 @@ impl FormField for EmailField {
         }
     }
 }
+
+/// A text field that validates input against a fixed set of choices.
+///
+/// # Examples
+///
+/// ```
+/// # use djangors_forms::{ChoiceField, FormField};
+/// let field = ChoiceField { choices: &["draft", "published", "archived"], required: true };
+///
+/// assert_eq!(field.clean(Some("draft")), Ok("draft".to_string()));
+/// assert!(field.clean(Some("invalid")).is_err());
+/// assert!(field.clean(None).is_err());
+/// ```
+pub struct ChoiceField {
+    /// The set of allowed values.
+    pub choices: &'static [&'static str],
+    /// Whether the field is required.
+    pub required: bool,
+}
+
+impl FormField for ChoiceField {
+    type Value = String;
+
+    fn clean(&self, raw: Option<&str>) -> Result<Self::Value, FieldError> {
+        match raw {
+            None | Some("") => {
+                if self.required {
+                    Err(FieldError(vec!["This field is required.".to_string()]))
+                } else {
+                    Ok(String::new())
+                }
+            }
+            Some(s) => {
+                if self.choices.contains(&s) {
+                    Ok(s.to_string())
+                } else {
+                    let valid = self.choices.join(", ");
+                    Err(FieldError(vec![format!(
+                        "Select a valid choice. {} is not one of the available choices.",
+                        valid
+                    )]))
+                }
+            }
+        }
+    }
+}

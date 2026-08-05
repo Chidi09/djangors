@@ -192,9 +192,97 @@ Run via CLI:
 dj createpermissions
 ```
 
+### How permissions flow to a request
+
+The four tables and their relationships (`Permission`, `Group`,
+`UserGroup`, `GroupPermission`, `UserPermission`) form the full permission
+graph: a user has groups, groups hold permissions, and a user may also hold
+direct permissions. `has_perm(db, user_id, codename)` walks all of it.
+
+```rust,compile
+# use djangors_auth::{Permission, Group, UserPermission, GroupPermission, UserGroup};
+# use djangors_orm::{Model, q, ForeignKey};
+# async fn run(db: &djangors_db::Database, user_id: i64) -> Result<(), Box<dyn std::error::Error>> {
+// A permission row is what `has_perm` checks against.
+let perm = Permission {
+    id: 0,
+    codename: "polls.add_question".into(),
+    name: "Can add question".into(),
+};
+let perm = perm.save(db).await?;
+
+// Direct grant: a UserPermission row.
+UserPermission {
+    id: 0,
+    user: ForeignKey::new(user_id),
+    permission: ForeignKey::new(perm.id),
+}.save(db).await?;
+
+// Via a group: Group + UserGroup + GroupPermission.
+let group = Group { id: 0, name: "Editors".into() }.save(db).await?;
+UserGroup { id: 0, user: ForeignKey::new(user_id), group: ForeignKey::new(group.id) }.save(db).await?;
+GroupPermission { id: 0, group: ForeignKey::new(group.id), permission: ForeignKey::new(perm.id) }.save(db).await?;
+# Ok(())
+# }
+```
+
+A codename is always `{action}_{model}` — `add_question`, `change_question`,
+`delete_question`, `view_question` — which is exactly what `sync_permissions`
+generates per registered model. Superusers bypass the check via
+`user.is_superuser()`, and missing permissions simply return `false` (they never
+raise).
+
+For permissions scoped to a *single row* rather than a whole model (for
+example "edit this one document"), see the [Object-Level Permissions
+guide](object-permissions.md) (`djangors-contrib-guardian`).
+
 ---
 
 ## Password Hashing & Password Reset
 
 - **Password Hashing**: `hash_password(password)` and `verify_password(password, hash)` use Argon2id with random salts.
 - **Password Reset**: `generate_password_reset_token`, `verify_password_reset_token`, `request_password_reset`, and `confirm_password_reset` provide HMAC-signed, time-bounded password reset tokens.
+
+### The reset flow
+
+The server never stores a reset token. `request_password_reset` looks the user
+up by email, mints an HMAC token keyed to that user (id + password hash, so a
+password change invalidates outstanding tokens), and emails it. The client
+posts the token back with a new password; `confirm_password_reset` verifies the
+signature and expiry, then re-hashes and stores the new password.
+
+```rust,illustrative
+use djangors_auth::{request_password_reset, confirm_password_reset, verify_password_reset_token};
+use djangors_mail::{SmtpBackend, SmtpConfig};
+
+let mail = SmtpBackend::new(SmtpConfig::new("smtp.example.com"))?;
+let secret: &[u8] = settings.secret_key.as_bytes();
+let base = "https://example.com/account/reset";
+
+// Step 1 — your /forgot-password handler:
+request_password_reset::<User>(&db, &mail, "alice@example.com", secret, base).await?;
+
+// Step 2 — your /reset endpoint (token + new password from the form):
+if verify_password_reset_token::<User>(&user, &token, secret) {
+    confirm_password_reset::<User>(&db, user.id, &token, &new_password, secret).await?;
+}
+```
+
+`verify_password_reset_token` and `confirm_password_reset` return `false` /
+`Err(AuthError::InvalidToken)` on a wrong, expired, or replayed token — there is
+no feedback that reveals whether the email existed, which is the desired
+behaviour for enumeration resistance.
+
+## Error handling (`AuthError`)
+
+Every `djangors-auth` call returns a concrete `AuthError` so you can branch on
+the cause rather than string-matching:
+
+| Variant | Meaning |
+| --- | --- |
+| `AuthError::Hashing` | Argon2id encode/verify failure |
+| `AuthError::Database` | Underlying ORM/db error |
+| `AuthError::RateLimited` | `RateLimitedBackend` tripped its window |
+| `AuthError::AccountLocked { retry_after_secs }` | `PersistentLockoutBackend` rejected with a locked account |
+| `AuthError::InvalidToken` | Reset token missing, malformed, or expired |
+| `AuthError::Mail` | `request_password_reset` failed to send |

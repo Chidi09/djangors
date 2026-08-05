@@ -31,6 +31,38 @@ async fn test_hello_route() {
 }
 ```
 
+### `RequestBuilder::with_state` & reading `TestResponse`
+
+Builders carry app state (`AppState`) into the request, and the resulting `TestResponse` exposes
+the raw status and body for assertions beyond the `assert_*` helpers:
+
+| Method | Signature | Notes |
+| --- | --- | --- |
+| `RequestBuilder::with_state<T>(state)` | `fn(self, T) -> Self` | Attach an `AppState` value; request handlers see it via `req.state::<T>()` |
+| `TestResponse::body_str()` | `fn(&self) -> String` | The response body as lossy UTF-8 |
+| `TestResponse::status()` | `fn(&self) -> StatusCode` | The raw HTTP status code |
+
+```rust,compile
+# use djangors_core::{Request, PathParams, Response, DjangorsError, StatusCode, Router};
+# use djangors_test::TestClient;
+#[derive(Clone, Debug)]
+struct Db(u32);
+
+async fn hi_handler(req: Request, _params: PathParams) -> Result<Response, DjangorsError> {
+    let db = req.state::<Db>().expect("state attached");
+    Ok(Response::text(StatusCode::OK, &format!("db={}", db.0)))
+}
+
+# #[tokio::main]
+# async fn main() {
+let client = TestClient::new(Router::new().get("/hi", hi_handler));
+
+let response = client.get("/hi").with_state(Db(7)).send().await;
+assert_eq!(response.status(), StatusCode::OK);
+assert_eq!(response.body_str(), "db=7");
+# }
+```
+
 ### Form & Session Testing
 ```rust,compile
 # async fn submit_handler(_: djangors_core::Request, _: djangors_core::PathParams) -> Result<djangors_core::Response, djangors_core::DjangorsError> { Ok(djangors_core::Response::text(djangors_core::StatusCode::CREATED, "")) }
@@ -68,6 +100,103 @@ async fn test_database_queries() {
     test_db.drop_table("test_table").await.unwrap();
 }
 ```
+
+#### Constructing a `TestDatabase`
+
+`TestDatabase` offers several constructors covering the shared vs. isolated database models:
+
+| Method | Signature | Returns |
+| --- | --- | --- |
+| `connect()` | `async fn() -> Result<Self, DbError>` | Backend chosen by `TEST_BACKEND`/`DATABASE_URL` (shared, no isolation) |
+| `connect_url(url)` | `async fn(&str) -> Result<Self, DbError>` | Connect to an explicit URL (shared) |
+| `new_for_backend(backend)` | `async fn(TestBackend) -> Result<Self, DbError>` | Fresh in-memory SQLite or isolated Postgres for that backend |
+| `isolated()` | `async fn() -> Result<Self, DbError>` | Throwaway database (uniquely named Postgres, or in-memory SQLite) |
+| `isolated_url(url)` | `async fn(&str) -> Result<Self, DbError>` | Same as `isolated()`, but using `url` as the base connection |
+
+```rust,illustrative
+use djangors_test::{TestBackend, TestDatabase};
+
+// Non-isolated: run against an existing database (you manage the schema).
+let shared = TestDatabase::connect_url("postgres://user:pass@localhost/my_app").await?;
+
+// Isolated: create a uniquely-named throwaway DB, then drop it on cleanup().
+let db = TestDatabase::isolated().await?;
+// ... create tables, insert fixtures, run queries ...
+db.cleanup().await?;
+
+// Explicitly pick a backend regardless of environment.
+let sqlite = TestDatabase::new_for_backend(TestBackend::Sqlite).await?;
+```
+
+##### `reset`, `cleanup`, `load_fixtures`
+
+| Method | Signature | Notes |
+| --- | --- | --- |
+| `reset(&[tables])` | `async fn(&self, &[&str]) -> Result<(), sqlx::Error>` | `DROP TABLE IF EXISTS` each table in order |
+| `cleanup()` | `async fn(self) -> Result<(), TestError>` | Drops the throwaway database (primary cleanup for isolated DBs) |
+| `load_fixtures::<M>(json)` | `async fn(&self, &str) -> Result<Vec<M>, TestError>` | Deserialize JSON as `Vec<M>` and `bulk_create`; `M: Model + FromRow + DeserializeOwned` |
+
+```rust,illustrative
+use djangors_test::TestDatabase;
+
+async fn seed(db: &TestDatabase) {
+    // Load rows into a freshly-created table from a JSON array.
+    let items = db.load_fixtures::<MyModel>(r#"[
+        {"id": 1, "name": "Alice"},
+        {"id": 2, "name": "Bob"}
+    ]"#).await.unwrap();
+
+    // Clear tables between tests.
+    db.reset(&["my_model"]).await.unwrap();
+}
+```
+
+SQLite in-memory databases need no `cleanup()` — they vanish with the connection (see
+[Choosing a Database Backend](#choosing-a-database-backend)).
+
+#### `TestBackend`
+
+```rust,compile
+# fn main() {
+use djangors_test::TestBackend;
+
+let current: TestBackend = TestBackend::current();
+
+// TEST_BACKEND=sqlite           => Sqlite
+// TEST_BACKEND=postgres         => Postgres
+// unset: DATABASE_URL set       => Postgres
+// unset: no DATABASE_URL        => Sqlite
+match current {
+    TestBackend::Postgres => println!("postgres"),
+    TestBackend::Sqlite => println!("sqlite"),
+}
+# }
+```
+
+#### Cross-process advisory locks
+
+`acquire_cross_process_lock` coordinates across *separate OS processes* (e.g. two crates racing to
+`DROP`/`CREATE` the same table under `cargo test --workspace`) using a Postgres session-level
+advisory lock. Unlike `std::sync::Mutex`, it spans test binaries:
+
+```rust,illustrative
+use djangors_test::{acquire_cross_process_lock, TestDatabase};
+
+async fn exclusive_setup() {
+    let db = TestDatabase::isolated().await.unwrap();
+
+    let lock = acquire_cross_process_lock(db.database(), "shared-table-setup").await.unwrap();
+    // ... create/drop the shared table ...
+    lock.release().await.unwrap(); // explicit release frees the advisory lock promptly
+```
+
+| Method | Signature | Notes |
+| --- | --- | --- |
+| `acquire_cross_process_lock(db, name)` | `async fn(&Database, &str) -> Result<CrossProcessLock, sqlx::Error>` | Blocks until the named advisory lock is free |
+| `CrossProcessLock::release()` | `async fn(self) -> Result<(), sqlx::Error>` | Releases the lock (`pg_advisory_unlock`) |
+
+Release is explicit because Rust can't run async code in `Drop`; an un-released lock stays held
+until its dedicated connection closes (i.e. when the test process exits).
 
 ---
 

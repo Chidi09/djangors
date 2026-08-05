@@ -90,6 +90,7 @@ SQLite permits a single writer at any given time. If your application has highly
 ### 4. Database Handles and the Connection Pool
 When interacting with the connection pool:
 * Calling `Database::pool()` returns a reference to the underlying `PgPool`. **This will panic** if the database handle is connected to SQLite.
+* `Database::sqlite_pool()` is the safe SQLite counterpart: it returns `Option<&SqlitePool>` — `Some` on a SQLite handle, `None` on a PostgreSQL handle.
 * To write code that runs on both backends, use `Database::conn()` instead. It returns a `Conn` enum wrapper that can execute queries on both PostgreSQL and SQLite pools.
 
 ---
@@ -134,7 +135,7 @@ Modifiers allow controlling wait and table locking behavior:
 
 ### Savepoints
 
-Savepoints allow partial rollback within a transaction handle (`Conn`):
+Savepoints allow partial rollback within a transaction handle (`Conn`). A savepoint only makes sense inside an open transaction: calling `savepoint` on a `Conn` obtained from the pool (`db.conn()`) returns `DbError::SavepointOutsideTransaction`, so issue them from inside `transaction_conn(...)` (or ORM-managed transactions) — supported on both backends:
 
 ```rust,illustrative
 conn.savepoint("transfer_checkpoint").await?;
@@ -197,4 +198,117 @@ pub async fn transfer_funds(
     })
     .await
 }
+
+---
+
+## Executor, Rows, and Raw SQL
+
+Beyond the ORM, `djangors-db` exposes a small executor layer for running raw SQL that works identically on PostgreSQL and SQLite. Everything hangs off a single borrowed handle — `Conn` — which can point at either a connection pool or an open transaction.
+
+### The `Conn` Executor
+
+`djangors_db::executor::Conn` is the low-level query runner. You obtain one for a pool with `db.conn()` — compare that to `Database::pool()`, which returns a `&PgPool` and is PostgreSQL-only.
+
+`Conn` is an enum over four targets:
+
+* `Conn::PgPool(&PgPool)` — a query against the PostgreSQL pool.
+* `Conn::PgTx(&mut PgConnection)` — a query inside a PostgreSQL transaction.
+* `Conn::SqlitePool(&SqlitePool)` — a query against the SQLite pool.
+* `Conn::SqliteTx(&mut SqliteConnection)` — a query inside a SQLite transaction.
+
+That variety is why the same call sites run on either backend: the pool variants back `db.conn()`, while `db.transaction_conn(...)` hands its closure a transaction variant.
+
+The executor methods all take a raw SQL string plus a slice of `BindValue` parameters:
+
+* `fetch_all(&mut self, sql, &[BindValue]) -> Result<Vec<DbRow>, sqlx::Error>` — run the query and collect every row.
+* `fetch_one(&mut self, sql, &[BindValue]) -> Result<DbRow, sqlx::Error>` — require exactly one row.
+* `fetch_optional(&mut self, sql, &[BindValue]) -> Result<Option<DbRow>, sqlx::Error>` — zero or one row.
+* `execute(&mut self, sql, &[BindValue]) -> Result<u64, sqlx::Error>` — run a statement and return the affected-row count.
+* `dialect(&self) -> Dialect` — which backend this handle targets.
+* `in_transaction(&self) -> bool` — whether this handle is a transaction variant.
+* `savepoint` / `rollback_to_savepoint` / `release_savepoint` — see [Savepoints](#savepoints).
+
+> [!NOTE]
+> For dual-backend code written once, reach for `Conn` (via `db.conn()`) rather than `Database::pool()`. `pool()` returns a `&PgPool` and panics on a SQLite handle; `conn()` returns a `Conn` and runs on both. `Conn` is also the handle shape the savepoint helpers and `transaction_conn` use, so executor code ports directly into a transaction.
+
+Here is `fetch_one` with a bound parameter. Postgres uses `$1` placeholders and SQLite uses `?`, but the `Conn` API is identical — only the SQL text changes:
+
+```rust,compile
+# use djangors_db::BindValue;
+# async fn run(db: &djangors_db::Database) -> Result<(), Box<dyn std::error::Error>> {
+# let id: i64 = 42;
+let row = db.conn().fetch_one("SELECT name FROM accounts WHERE id = $1", &[BindValue::I64(id)]).await?;
+# Ok(())
+# }
+```
+
+### Bind Parameters
+
+`BindValue` (in `djangors_db::bind`) is a typed, backend-agnostic query parameter:
+
+* `I64(i64)` — 64-bit integer.
+* `F64(f64)` — 64-bit float.
+* `Text(String)` — text.
+* `Bool(bool)` — boolean.
+* `DateTime(chrono::DateTime<chrono::Utc>)` — UTC timestamp.
+* `Bytes(Vec<u8>)` — byte vector.
+* `Null(NullKind)` — a typed SQL `NULL`.
+
+`NullKind` selects the SQL type a `NULL` is bound as: `I64`, `F64`, `Text`, `Bool`, `DateTime`, or `Bytes`. The kind is mandatory — Postgres rejects a `NULL` parameter whose type cannot be inferred.
+
+Constructing a parameter list:
+
+```rust,compile
+# use djangors_db::bind::{BindValue, NullKind};
+# use chrono::Utc;
+# fn build_params() {
+let params = vec![
+    BindValue::Text("alice".to_string()),
+    BindValue::I64(42),
+    BindValue::F64(1.5),
+    BindValue::Bool(true),
+    BindValue::DateTime(Utc::now()),
+    BindValue::Bytes(vec![0, 1, 2]),
+    BindValue::Null(NullKind::DateTime),
+];
+# let _ = params;
+# }
+```
+
+### Reading Rows
+
+The `fetch_*` methods return `DbRow`, a wrapper over the backend row (`PgRow` or `SqliteRow`). Every accessor returns `Result<Option<T>, sqlx::Error>` — `None` for a SQL `NULL`, an error when the column cannot be decoded. The integer accessors additionally accept narrower `i32`/`i16` columns.
+
+By column index:
+
+* `try_i64(idx)`, `try_f64(idx)`, `try_string(idx)`, `try_bool(idx)`, `try_datetime(idx)`, `try_bytes(idx)`.
+
+By column name:
+
+* `try_i64_by_name(name)`, `try_f64_by_name(name)`, `try_string_by_name(name)`, `try_bool_by_name(name)`, `try_datetime_by_name(name)`, `try_bytes_by_name(name)`.
+
+Reading a column by name needs no extra imports — it is an inherent method on `DbRow`:
+
+```rust,compile
+# async fn run(db: &djangors_db::Database) -> Result<(), Box<dyn std::error::Error>> {
+let row = db.conn().fetch_one("SELECT 1 AS one", &[]).await?;
+let v: Option<i64> = row.try_i64_by_name("one")?;
+assert_eq!(v, Some(1));
+# Ok(())
+# }
+```
+
+The `_by_name` variants are what the ORM relies on: the `FromRow` impl generated by `#[derive(Model)]` decodes every field through `row.try_*_by_name(column)` (see `djangors-macros`), never by position. Positional decoding is confined to this raw executor layer, which is why `q!`-based `eq` filters keep resolving correctly across renamed columns (`#[field(column = "...")]`): filters and `FromRow` both key off the resolved column name, so the two stay in lockstep.
+
+### Transactions and Isolation Levels
+
+`Database::transaction(f)` and `Database::transaction_with_isolation(level, f)` run `f` with a `&mut PgConnection` and are **PostgreSQL-only** — on a SQLite handle they return `DbError::TransactionFailed`. `Database::transaction_conn(f)` passes a `&mut Conn` instead and works on **both** backends; it is also the transaction entry point the `Conn` savepoint helpers expect.
+
+Isolation levels, from `djangors_db::IsolationLevel`:
+
+* `ReadCommitted` — the PostgreSQL default.
+* `RepeatableRead`
+* `Serializable`
+
+`transaction_with_isolation(level, f)` begins the transaction and issues the matching `SET TRANSACTION ISOLATION LEVEL ...` before running `f`.
 ```

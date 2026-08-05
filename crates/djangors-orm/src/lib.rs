@@ -30,7 +30,7 @@ pub use meta::{
     RelationKind, RelationMeta, RelationSnapshot, SnapshotDefault,
 };
 
-pub use aggregate::{AggExpr, AggResult};
+pub use aggregate::{AggExpr, AggResult, FuncExpr};
 pub use error::{FromRow, OrmError};
 pub use expr::{
     ArithOp, CompareOp, Exists, Expr, IntoSetExpr, NotExists, OuterRef, SetExpr, UnresolvedCompare,

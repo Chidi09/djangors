@@ -61,6 +61,32 @@ Each field maps to `{PREFIX}_{FIELD_NAME_UPPERCASE}`. With `#[djangors(prefix = 
 etc.), and `Vec<String>` (comma-separated: `MYAPP_ALLOWED_ORIGINS=a.com,b.com,c.com`). Wrap any of
 these in `Option<T>` to make the field optional instead of required.
 
+### Extending with `FromSettingsValue`
+
+All the above types work because they implement `djangors_core::settings::FromSettingsValue`
+(one method, `parse_settings_value(raw: &str) -> Result<Self, String>`). Implement it for your own
+newtype to get a parsed, validated field for free:
+
+```rust,compile
+use djangors_core::settings::FromSettingsValue;
+
+struct Port(u16);
+
+impl FromSettingsValue for Port {
+    fn parse_settings_value(raw: &str) -> Result<Self, String> {
+        let n = raw.parse::<u16>().map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err("port must be non-zero".to_string());
+        }
+        Ok(Port(n))
+    }
+}
+```
+
+Your type can then appear directly in a `#[derive(Settings)]` struct — with a
+`#[djangors(default = ...)]` fallback or `Option<T>` optionality, exactly like
+the built-in types.
+
 ## Errors
 
 `load()` returns `Result<Self, djangors_core::settings::SettingsError>` with two distinguishable

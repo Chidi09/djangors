@@ -13,7 +13,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd ${CLAUDE_PROJECT_DIR:-.} && DATABASE_URL=postgres://postgres:postgres@localhost/djangors_test cargo test",
+            "command": "cd ${CLAUDE_PROJECT_DIR:-.} && env -u DATABASE_URL TEST_BACKEND=sqlite cargo test",
             "timeout": 300
           }
         ]

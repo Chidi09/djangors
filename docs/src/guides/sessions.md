@@ -53,6 +53,64 @@ session.set("user_id", new_user_id);
 
 ---
 
+## Programmatic Session Access
+
+### `Session::is_empty()`
+
+Returns `true` when the session holds no application data (only the internal `_session_key`). Useful
+for "do I need to write a `Set-Cookie` at all?" checks:
+
+```rust,illustrative
+let session = Session::new_empty();
+assert!(session.is_empty());
+
+session.set("theme", "dark".to_string());
+assert!(!session.is_empty());
+```
+
+### Manual encode/decode with `SignedCookieStore`
+
+`SignedCookieStore` encodes and decodes sessions independently of the middleware — handy for custom
+middleware or code that must set the cookie header itself instead of delegating to `SessionLayer`.
+
+| Method | Signature | Notes |
+| --- | --- | --- |
+| `store.encode(&session)` | `fn(&self, &Session) -> String` | Serializes, base64-encodes, signs (HMAC-SHA256), returns `"<b64 payload>.<b64 expiry>.<b64 hmac>"` |
+| `store.decode(cookie_value)` | `fn(&self, &str) -> Option<Session>` | Verifies signature + expiry, then decodes; `None` for missing/malformed/tampered/expired cookies |
+
+```rust,illustrative
+use djangors_sessions::{Session, SignedCookieStore};
+
+let store = SignedCookieStore::new(b"my-32-byte-minimum-secret-key!!");
+let session = Session::new_empty();
+session.set("user_id", 42i64);
+
+let cookie_value = store.encode(&session);       // "<b64 payload>.<b64 expiry>.<b64 hmac>"
+let restored = store.decode(&cookie_value);       // Some(session) — data verified intact
+assert_eq!(restored.unwrap().get::<i64>("user_id"), Some(42));
+```
+
+### `SessionService`: the layer's service type
+
+`SessionLayer` is a
+[`tower::Layer`](https://docs.rs/tower/latest/tower/trait.Layer.html); wrapping an inner service
+yields a `SessionService<S>` (`djangors_sessions::SessionService`) as the concrete service type.
+This is the Tower middleware that does the per-request work: read the `Cookie` header, decode +
+verify it via the store, insert the `Session` into the request's `Extensions`, then write
+`Set-Cookie` back on the response when the session was modified or newly created.
+
+```rust,illustrative
+use djangors_sessions::{SessionService, SessionLayer, SignedCookieStore};
+use tower::Layer;
+
+fn stack(inner: djangors_core::router::RouterService) -> SessionService<djangors_core::router::RouterService> {
+    SessionLayer::new(SignedCookieStore::new(b"my-32-byte-minimum-secret-key!!"))
+        .layer(inner)
+}
+```
+
+---
+
 ## CSRF Protection
 
 Djangors uses a double-submit cookie scheme to protect against Cross-Site Request Forgery (CSRF).

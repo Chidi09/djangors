@@ -15,11 +15,12 @@ djangors-auth = { path = "../../crates/djangors-auth" }
 djangors-cache = { path = "../../crates/djangors-cache" }
 djangors-mail = { path = "../../crates/djangors-mail" }
 djangors-migrations = { path = "../../crates/djangors-migrations" }
-djangors-rest = { path = "../../crates/djangors-rest" }
+djangors-rest = { path = "../../crates/djangors-rest", features = ["jwt"] }
 djangors-sessions = { path = "../../crates/djangors-sessions" }
 djangors-staticfiles = { path = "../../crates/djangors-staticfiles" }
 djangors-tasks = { path = "../../crates/djangors-tasks" }
 djangors-template = { path = "../../crates/djangors-template" }
+djangors-views = { path = "../../crates/djangors-views" }
 djangors-macros = { path = "../../crates/djangors-macros" }
 djangors-test = { path = "../../crates/djangors-test" }
 djangors-i18n = { path = "../../crates/djangors-i18n" }

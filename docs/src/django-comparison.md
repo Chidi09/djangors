@@ -175,13 +175,21 @@ Django uses `python manage.py <command>`. Djangors provides the `dj` command-lin
 
 | Django Command | Djangors Command | Description |
 | :--- | :--- | :--- |
+| `python manage.py startproject` | `dj new` | Scaffolds a new project |
+| `python manage.py startapp` | `dj new-app` | Scaffolds a new app/module inside a project |
 | `python manage.py runserver` | `dj run` | Starts dev server with live-reloading file watch loop |
 | `python manage.py migrate` | `dj migrate` | Applies pending database migrations |
 | `python manage.py makemigrations` | `dj makemigrations` | Introspects the project binary; v1 detects new models and new fields |
+| `python manage.py sqlmigrate` | `dj sqlmigrate <app> <migration>` | Renders a migration's SQL without applying it |
+| `python manage.py showmigrations` | `dj showmigrations` | Lists migrations and their applied state |
 | `python manage.py createsuperuser` | `dj createsuperuser` | Prompts for superuser credentials and creates User |
+| `python manage.py collectstatic` | `dj collectstatic` | Bundles static assets into a production output dir |
+| `python manage.py runworker` | `dj runworker` | Starts the background-task worker loop |
 | `python manage.py test` | `dj test` | Runs workspace unit and integration test suite (`cargo test`) |
 | `python manage.py shell` | `dj shell` | Launches interactive Rust REPL via `evcxr` |
 | `python manage.py dbshell` | `dj dbshell` | Connects directly to configured database CLI |
+| `python manage.py check` | `dj check [--deploy]` | Runs static checks (with `--deploy`, production-safety checks) |
+| `python manage.py createpermissions` | `dj createpermissions` | Generates the standard `view`/`add`/`change`/`delete` permissions per model |
 
 ### `dj makemigrations` scope
 `dj` runs the project's own binary in a hidden model-introspection mode, so registrations from application crates are visible. It stores the last model state in `migrations/.schema_snapshot.json` and generates numbered SQL migrations. v1 covers new models and new fields; field-type changes, removals, renames, indexes, and relation alterations are deferred.

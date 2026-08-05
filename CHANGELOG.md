@@ -1,13 +1,62 @@
 # Changelog
 
 All notable changes to Djangors are documented here. Format loosely follows
-[Keep a Changelog](https://keepachangelog.com/en/1.0.0/); this project has not yet made a tagged
-release, so everything below is grouped by the `PLAN.md` phase it shipped under instead of a
-version number.
+[Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-See the versioned sections below for released work.
+## [0.6.2]
+
+### ORM
+- `QuerySet::get_or_create` / `QuerySet::update_or_create` — idempotent upsert helpers; the
+  `defaults`/`updates` closures return `Vec<(&'static str, Value)>` / `Vec<(&'static str, SetExpr)>`
+  (the `set!` form). Requires `T: Send`; not yet wrapped in a transaction.
+- `QuerySet::search(query, &fields)` — Postgres `to_tsvector`/`plainto_tsquery` full-text search that
+  chains into the query as a `search_condition`.
+- `QuerySet::explain()` — Postgres-only `EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)`, returns the plan
+  as a `String`; errors with `UnsupportedOnDialect` on SQLite.
+- `FuncExpr` (`aggregate.rs`) — `COALESCE`/`LOWER`/`UPPER`/`CONCAT`/`LENGTH` scalar functions usable
+  with `QuerySet::annotate_funcs`.
+- `Exists`/`OuterRef` correlated subqueries, `select_for_update` + savepoints (15.1).
+
+### Model macros (`#[derive(Model)]`)
+- `#[djangors(auto_now_add = true)]` / `#[djangors(auto_now = true)]` on `DateTime<Utc>` fields —
+  auto-stamp `chrono::Utc::now()` on `save()` (both) and `update()` (`auto_now` only).
+- `#[djangors(choices = ["a", "b"])]` on `String` fields — populates `FieldMeta.choices`.
+- Unblocked `uuid::Uuid`, `chrono::NaiveDate`, `chrono::NaiveTime`, `std::time::Duration`, and
+  `rust_decimal::Decimal` field types (persisted via text serialization; `Decimal` requires
+  `max_digits`/`decimal_places`).
+
+### Migrations
+- `Operation::CreateTable` now carries `check_constraints`; `build_create_all_plan` emits a
+  `CHECK (col IN (...))` constraint for every field declared with `#[djangors(choices = [...])]`.
+- Migration CLI verbs (`dj migrate`/`makemigrations`/`--rollback`), dialect-aware execution.
+
+### Admin
+- **Inlines** — `ModelAdminConfig { inlines: Some(&[InlineConfig { struct_name, relation_field, fields }]) }`
+  renders a child model's rows inside the parent's add/change form.
+- **Tenant scoping** — `AdminSite::with_tenant_scoping(tenant_field, extract_tenant_id)` filters
+  every changelist/add/change/delete query by the resolved tenant; inlines inherit the parent's scope.
+- `list_filter` accepts Boolean fields **and** fields declared with `#[djangors(choices = [...])]`.
+
+### REST
+- `scoped_viewset_routes_with_config::<M>(router, path, config)` — scoped routes with custom
+  `ViewSetConfig` (previously only default config was possible).
+- `request.user()` convenience — returns `Result<User, DjangorsError>` (wraps `current_user`).
+
+### Other
+- `djangors-views`: named routes + `reverse()`; template functions.
+- Multipart fuzz target and updated threat model (security).
+- SQLite runs in CI; five Postgres-only fake "passes" became honest skips.
+- Docs: new guides for class-based views, flatpages & redirects, messages, object-level permissions,
+  sites & 2FA, HTTP & middleware; augmented existing guides; full crate coverage in
+  `docs/src/django-comparison.md`.
+
+## [0.6.0 and earlier]
+
+The sections below group the history by the `PLAN.md` phase each change shipped under; the
+`[0.6.0]` heading lower in the file marks the first versioned crates.io release since this phased
+history was written.
 
 Everything to date, through Phase 12. Workspace version is `0.2.0`; most crates were first
 published to crates.io as `0.1.0`, but that snapshot predates every fix and feature in Phase 12

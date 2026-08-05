@@ -97,6 +97,7 @@ pub fn build_create_all_plan(dialect: Dialect) -> Result<Vec<Operation>, Migrati
         operations.push(Operation::CreateTable {
             table_name: model.table_name.to_string(),
             columns,
+            check_constraints: build_check_constraints(model),
         });
     }
 
@@ -204,6 +205,7 @@ pub fn build_create_plan_from_snapshots(
             Ok(Operation::CreateTable {
                 table_name: m.table_name.clone(),
                 columns,
+                check_constraints: vec![],
             })
         })
         .collect()
@@ -242,4 +244,28 @@ fn dfs(
     order.push(meta);
 
     Ok(())
+}
+
+fn build_check_constraints(model: &'static ModelMeta) -> Vec<String> {
+    let mut check_constraints = Vec::new();
+    for field in model.fields {
+        if !field.choices.is_empty() {
+            let col = field.column_name;
+            let table = model.table_name;
+            let choice_vals: Vec<String> = field
+                .choices
+                .iter()
+                .map(|(v, _)| format!("'{}'", v.replace('\'', "''")))
+                .collect();
+            let check = format!(
+                "CONSTRAINT chk_{}_{} CHECK (\"{}\" IN ({}))",
+                table,
+                col,
+                col,
+                choice_vals.join(", ")
+            );
+            check_constraints.push(check);
+        }
+    }
+    check_constraints
 }
