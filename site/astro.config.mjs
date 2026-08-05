@@ -1,20 +1,21 @@
 import { defineConfig } from 'astro/config';
 import sitemap from '@astrojs/sitemap';
 import { readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 
-function documentationPages(directory) {
+function documentationPages(directory, prefix = '') {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) return documentationPages(path);
+    if (entry.isDirectory()) return documentationPages(path, `${prefix}/${entry.name}`);
     if (!entry.name.endsWith('.html') || entry.name === '404.html' || entry.name === 'print.html') return [];
-    return [`https://djangors.vercel.app/docs/${relative(join('..', 'docs', 'book'), path)}`];
+    return [`https://djangors.vercel.app/docs${prefix}/${entry.name}`];
   });
 }
 
 const bookDirectory = join('..', 'docs', 'book');
-const documentationUrls = statSync(bookDirectory, { throwIfNoEntry: false })
-  ? documentationPages(bookDirectory)
+const docsDirectory = statSync(bookDirectory, { throwIfNoEntry: false }) ? bookDirectory : join('public', 'docs');
+const documentationUrls = statSync(docsDirectory, { throwIfNoEntry: false })
+  ? documentationPages(docsDirectory)
   : ['https://djangors.vercel.app/docs/'];
 
 export default defineConfig({

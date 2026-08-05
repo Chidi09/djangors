@@ -1,0 +1,735 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>HTTP Core and Middleware - Djangors Documentation</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="icon" href="../favicon-de23e50b.svg">
+        <link rel="shortcut icon" href="../favicon-8114d1fc.png">
+        <link rel="stylesheet" href="../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../css/general-e96d0476.css">
+        <link rel="stylesheet" href="../css/chrome-d279d366.css">
+        <link rel="stylesheet" href="../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+        <link rel="stylesheet" href="../theme/copy-as-markdown-dcef79f9.css">
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../searchindex-0dc34068.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../toc-8d29efe8.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Djangors Documentation</h1>
+
+                    <div class="right-buttons">
+                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <h1 id="http-core-and-middleware"><a class="header" href="#http-core-and-middleware">HTTP Core and Middleware</a></h1>
+<p>Djangors’s HTTP kernel (<code>djangors-core</code>) supplies the <code>Request</code>/<code>Response</code> types, the <code>Router</code>,
+Tower middleware layers, error handling, pagination primitives, and logging setup that every
+handler, admin site, and REST viewset builds on. The highest-level use is covered in the
+tutorial; this guide documents the core surface directly against the source.</p>
+<h2 id="request"><a class="header" href="#request">Request</a></h2>
+<p>The <a href="https://docs.rs/djangors_core/latest/djangors_core/request/index.html"><code>Request</code></a> wraps a fully
+buffered hyper request. Everything (including the body) is read eagerly at construction time, so
+handlers take <code>Request</code> by value and are free to move it into spawned tasks.</p>
+<p>Key methods (see <code>crates/djangors-core/src/request.rs</code>):</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Signature</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>new</code></td><td><code>new(method: Method, uri: Uri, headers: HeaderMap, body: Bytes) -&gt; Self</code></td><td>Parses + URL-decodes the query string at construction</td></tr>
+<tr><td><code>method</code></td><td><code>fn(&amp;self) -&gt; &amp;Method</code></td><td>HTTP verb</td></tr>
+<tr><td><code>path</code></td><td><code>fn(&amp;self) -&gt; &amp;str</code></td><td>URI path, e.g. <code>"/hello/world"</code></td></tr>
+<tr><td><code>header</code></td><td><code>fn(&amp;self, name: &amp;str) -&gt; Option&lt;&amp;HeaderValue&gt;</code></td><td>Single header lookup</td></tr>
+<tr><td><code>headers</code></td><td><code>fn(&amp;self) -&gt; &amp;HeaderMap</code></td><td>All headers</td></tr>
+<tr><td><code>query</code></td><td><code>fn(&amp;self, name: &amp;str) -&gt; Option&lt;&amp;str&gt;</code></td><td>Decoded query parameter</td></tr>
+<tr><td><code>raw_query</code></td><td><code>fn(&amp;self) -&gt; Option&lt;&amp;str&gt;</code></td><td>Undecoded query string, e.g. <code>"q=rust&amp;page=2"</code></td></tr>
+<tr><td><code>body_bytes</code></td><td><code>async fn(&amp;self) -&gt; &amp;[u8]</code></td><td>Buffered body (trivially async)</td></tr>
+<tr><td><code>state</code></td><td><code>fn&lt;T: Send + Sync + 'static&gt;(&amp;self) -&gt; Option&lt;&amp;T&gt;</code></td><td>Top-level app state (see below)</td></tr>
+<tr><td><code>require_state</code></td><td><code>fn&lt;T&gt;(&amp;self) -&gt; Result&lt;&amp;T, DjangorsError&gt;</code></td><td>Like <code>state</code>, but <code>DjangorsError::Internal</code> when missing</td></tr>
+<tr><td><code>ext</code></td><td><code>fn&lt;T: Send + Sync + 'static&gt;(&amp;self) -&gt; Option&lt;&amp;T&gt;</code></td><td>Per-request extension map</td></tr>
+<tr><td><code>with_state</code></td><td><code>fn(self, state: AppState) -&gt; Self</code></td><td>Attach app state</td></tr>
+<tr><td><code>with_extensions</code></td><td><code>fn(self, extensions: Extensions) -&gt; Self</code></td><td>Replace per-request extensions</td></tr>
+<tr><td><code>into_parts</code></td><td><code>fn(self) -&gt; (Method, Uri, HeaderMap, Bytes)</code></td><td>Consume and split</td></tr>
+</tbody>
+</table>
+</div>
+<h3 id="state-vs-ext-two-very-different-kinds-of-typed-value"><a class="header" href="#state-vs-ext-two-very-different-kinds-of-typed-value">State vs ext: two very different kinds of typed value</a></h3>
+<p>Djangors has <strong>two separate type maps</strong> and the distinction matters:</p>
+<ul>
+<li><strong><code>state</code></strong> is app-wide, configured <strong>once</strong> at startup via <code>Router::with_state(...)</code>, and stored in
+an <a href="#appstate"><code>AppState</code></a> on the request. Use it for long-lived singletons every handler needs —
+a <code>Database</code> connection pool, a <code>Groups</code> broadcast registry, a storage backend.</li>
+<li><strong><code>ext</code></strong> is a <strong>per-request</strong> map of values inserted by middleware into the incoming hyper
+request’s <code>Extensions</code> (which <code>Router::dispatch</code> propagates via <code>with_extensions</code>). Use it for
+request-scoped facts middleware computes — the resolved <code>Session</code>, <code>CurrentTenant</code>,
+<code>CsrfToken</code>, <code>ResolvedLocale</code>.</li>
+</ul>
+<p><code>state::&lt;T&gt;()</code> is persistent and shared; <code>ext::&lt;T&gt;()</code> is per-request scratch memory. A session
+handle belongs in <code>ext</code>; the database pool it was loaded from belongs in <code>state</code>.</p>
+<pre class="playground"><code class="language-rust compile"><span class="boring">fn main() {
+</span>use djangors_core::{Request, PathParams, Response, Router, DjangorsError, StatusCode};
+
+#[derive(Clone, Debug)]
+struct Database;
+
+// require_state() errors with a descriptive DjangorsError if the type
+// was never attached — a wiring mistake surfaces fast at first request.
+async fn index(req: Request, _params: PathParams) -&gt; Result&lt;Response, DjangorsError&gt; {
+    let db = req.require_state::&lt;Database&gt;()?;
+    let _ = db;
+    Ok(Response::text(StatusCode::OK, "ok"))
+}
+
+let router = Router::new()
+    .with_state(Database)
+    .get("/", index);
+<span class="boring">let _ = router;
+</span><span class="boring">}</span></code></pre>
+<pre class="playground"><code class="language-rust illustrative"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use djangors_core::{Request, PathParams, Response, DjangorsError, StatusCode};
+use djangors_core::middleware::CsrfToken;
+
+async fn show_form(req: Request, _params: PathParams) -&gt; Result&lt;Response, DjangorsError&gt; {
+    // Middleware injected this per-request (via csrf_layer).
+    let token = req.ext::&lt;CsrfToken&gt;().expect("csrf layer must be installed");
+    Ok(Response::html(
+        StatusCode::OK,
+        format!(r#"&lt;input name="csrfmiddlewaretoken" value="{}"&gt;"#, token.0),
+    ))
+}
+<span class="boring">}</span></code></pre>
+<p>For an end-to-end <code>state</code> + <code>ext</code> example see the router tests (<code>test_router_app_state</code> and
+<code>test_dispatch_propagates_hyper_extensions_to_handler</code> in <code>crates/djangors-core/src/router.rs</code>).</p>
+<h2 id="response"><a class="header" href="#response">Response</a></h2>
+<p><a href="https://docs.rs/djangors_core/latest/djangors_core/response/index.html"><code>Response</code></a> is a fully buffered
+response built with helper constructors and converted to hyper with <code>into_hyper</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Constructor</th><th>Signature</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>text</code></td><td><code>text(status: StatusCode, body: &amp;str) -&gt; Self</code></td><td><code>text/plain; charset=utf-8</code></td></tr>
+<tr><td><code>html</code></td><td><code>html(status: StatusCode, body: impl Into&lt;String&gt;) -&gt; Self</code></td><td><code>text/html; charset=utf-8</code></td></tr>
+<tr><td><code>bytes</code></td><td><code>bytes(status: StatusCode, content_type: &amp;str, body: Vec&lt;u8&gt;) -&gt; Self</code></td><td>Raw bytes, explicit content type</td></tr>
+<tr><td><code>json</code></td><td><code>json&lt;T: Serialize&gt;(status: StatusCode, value: &amp;T) -&gt; Result&lt;Self, DjangorsError&gt;</code></td><td><code>application/json; charset=utf-8</code>; <code>DjangorsError::Internal</code> on serialize failure</td></tr>
+<tr><td><code>redirect</code></td><td><code>redirect(location: &amp;str) -&gt; Self</code></td><td>302 Found + <code>Location</code></td></tr>
+<tr><td><code>sse</code></td><td><code>sse&lt;S&gt;(stream: S) -&gt; StreamingResponse</code> where <code>S: Stream&lt;Item = String&gt;</code></td><td>Builds an SSE stream (see <a href="../how-to/stream-sse.html">How to Stream Server-Sent Events</a>)</td></tr>
+<tr><td><code>header</code></td><td><code>header(name: &amp;str, value: &amp;str) -&gt; Self</code></td><td>Builder, overwrites existing value</td></tr>
+<tr><td><code>into_hyper</code></td><td><code>into_hyper(self) -&gt; hyper::Response&lt;Full&lt;Bytes&gt;&gt;</code></td><td>Converts for the server/<code>Service</code> path</td></tr>
+<tr><td><code>into_hyper_boxed</code></td><td><code>into_hyper_boxed(self) -&gt; hyper::Response&lt;BoxBody&lt;Bytes, Infallible&gt;&gt;</code></td><td>Boxed-body variant</td></tr>
+<tr><td><code>status</code> / <code>headers</code> / <code>body</code></td><td>accessors</td><td>Read back the buffered pieces</td></tr>
+</tbody>
+</table>
+</div>
+<pre class="playground"><code class="language-rust compile"><span class="boring">fn main() {
+</span>use djangors_core::{Response, StatusCode};
+use serde_json::json;
+
+let json_resp = Response::json(StatusCode::OK, &amp;json!({ "count": 3 })).unwrap();
+
+let bytes_resp = Response::bytes(
+    StatusCode::OK,
+    "image/png",
+    vec![1, 2, 3, 4],
+);
+
+let html_resp = Response::html(StatusCode::NOT_FOUND, "&lt;h1&gt;nope&lt;/h1&gt;");
+let redirect = Response::redirect("/login");
+let customized = Response::text(StatusCode::OK, "hello").header("X-Trace", "abc");
+<span class="boring">let _ = (json_resp, bytes_resp, html_resp, redirect, customized);
+</span><span class="boring">}</span></code></pre>
+<pre class="playground"><code class="language-rust compile"><span class="boring">fn main() {
+</span>use djangors_core::{Response, StatusCode};
+
+// json() returns Result — ? works from any handler returning DjangorsError.
+fn build_status_response() -&gt; Result&lt;Response, djangors_core::DjangorsError&gt; {
+    Ok(Response::json(
+        StatusCode::OK,
+        &amp;serde_json::json!({ "healthy": true }),
+    )?)
+}
+<span class="boring">let _ = build_status_response();
+</span><span class="boring">}</span></code></pre>
+<h2 id="appstate"><a class="header" href="#appstate">AppState</a></h2>
+<p><a href="https://docs.rs/djangors_core/latest/djangors_core/state/index.html"><code>AppState</code></a> is a type-erased map of
+<code>Send + Sync + 'static</code> values indexed by <code>TypeId</code>. It is clone-cheap (wraps the map in an <code>Arc</code>),
+which is why it can be copied onto every request. <code>Router::with_state</code> stores one; <code>req.state::&lt;T&gt;()</code>
+reads from it.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Signature</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>new</code></td><td><code>new() -&gt; Self</code></td><td>Empty state</td></tr>
+<tr><td><code>insert</code></td><td><code>insert&lt;T&gt;(self, value: T) -&gt; Self</code></td><td>Builder-style; returns a new <code>AppState</code></td></tr>
+<tr><td><code>get</code></td><td><code>get&lt;T&gt;(&amp;self) -&gt; Option&lt;&amp;T&gt;</code></td><td>Lookup by type</td></tr>
+<tr><td><code>contains</code></td><td><code>contains&lt;T&gt;(&amp;self) -&gt; bool</code></td><td>Type check</td></tr>
+<tr><td><code>len</code></td><td><code>fn(&amp;self) -&gt; usize</code></td><td>Number of distinct types</td></tr>
+<tr><td><code>is_empty</code></td><td><code>fn(&amp;self) -&gt; bool</code></td><td>No state attached</td></tr>
+<tr><td><code>merge</code></td><td><code>merge(self, other: &amp;AppState) -&gt; Self</code></td><td>Union; <code>self</code> wins on type conflicts (used by <code>mount</code>)</td></tr>
+</tbody>
+</table>
+</div>
+<p><code>insert</code> is used internally by <code>Router::with_state</code> and by <code>mount</code> when a sub-router wants to
+inherit the parent’s state (parent values win).</p>
+<pre class="playground"><code class="language-rust compile"><span class="boring">fn main() {
+</span>use djangors_core::AppState;
+
+#[derive(Clone)]
+struct Database;
+#[derive(Clone)]
+struct Cache;
+
+let state = AppState::new()
+    .insert(Database)
+    .insert(Cache);
+
+assert!(state.contains::&lt;Database&gt;());
+assert_eq!(state.get::&lt;Cache&gt;().is_some(), true);
+assert_eq!(state.len(), 2);
+
+let merged = state.merge(&amp;AppState::new().insert(Database));
+assert!(!merged.is_empty());
+<span class="boring">}</span></code></pre>
+<h2 id="router-extras"><a class="header" href="#router-extras">Router extras</a></h2>
+<p>Beyond <code>get</code>/<code>post</code>/<code>put</code>/<code>delete</code>, the <a href="https://docs.rs/djangors_core/latest/djangors_core/router/index.html"><code>Router</code></a>
+exposes a lower-level route API, named-route reversing, and mounting. Path syntax supports literal
+segments, <code>{name}</code> (String capture), <code>{name:i64}</code>, and <code>{name:slug}</code>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Signature</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>route</code></td><td><code>route(path: &amp;str, method: Method, handler: impl Handler)</code></td><td>Register with an explicit method</td></tr>
+<tr><td><code>route_streaming</code></td><td><code>route_streaming(path: &amp;str, method: Method, handler: impl StreamingHandler)</code></td><td>Streaming handlers for non-GET too</td></tr>
+<tr><td><code>get_sse</code> / <code>sse</code></td><td><code>get_sse(path: &amp;str, handler: impl StreamingHandler)</code></td><td>SSE GET helper (alias: <code>sse</code>)</td></tr>
+<tr><td><code>name</code></td><td><code>name(name: &amp;str) -&gt; Self</code></td><td>Name the most recently registered route (panics on duplicates)</td></tr>
+<tr><td><code>reverse</code></td><td><code>reverse(name: &amp;str, params: &amp;[(&amp;str, &amp;str)]) -&gt; Result&lt;String, ReverseError&gt;</code></td><td>Path reconstruction; values are percent-encoded</td></tr>
+<tr><td><code>mount</code></td><td><code>mount(prefix: &amp;str, sub_router: Router) -&gt; Self</code></td><td>Prefixes every sub-router route; inherits sub-router state the parent lacks</td></tr>
+</tbody>
+</table>
+</div>
+<pre class="playground"><code class="language-rust compile"><span class="boring">fn main() {
+</span>use djangors_core::{Request, PathParams, Response, Router, DjangorsError, StatusCode};
+use hyper::Method;
+
+async fn poll(_req: Request, _params: PathParams) -&gt; Result&lt;Response, DjangorsError&gt; {
+    Ok(Response::text(StatusCode::OK, "poll"))
+}
+
+let router = Router::new()
+    .route("/polls/{id:i64}", Method::GET, poll)
+    .name("poll-detail")
+    .get_sse("/polls/{id:i64}/live", |_req: Request, _params: PathParams| {
+        async { Err(djangors_core::DjangorsError::NotFound) }
+    })
+    .mount("/api", Router::new().get("/users/{id}", poll).name("user-detail"));
+
+assert_eq!(router.reverse("poll-detail", &amp;[("id", "42")]).unwrap(), "/polls/42");
+assert_eq!(router.reverse("user-detail", &amp;[("id", "7")]).unwrap(), "/api/users/7");
+<span class="boring">}</span></code></pre>
+<blockquote class="blockquote-tag blockquote-tag-note">
+<p class="blockquote-tag-title"><svg viewbox="0 0 16 16" width="18" height="18"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"></path></svg>Note</p>
+<p><code>get_sse</code> was used here to keep the snippet self-contained; a real SSE handler returns a
+<code>StreamingResponse</code>. See <a href="../how-to/stream-sse.html">How to Stream Server-Sent Events</a>.</p>
+</blockquote>
+<p><strong><code>ReverseError</code></strong> (in <code>djangors_core::router::ReverseError</code>) has three variants:</p>
+<ul>
+<li><code>UnknownName(String)</code> — no route registered under that name.</li>
+<li><code>MissingParam { route, param }</code> — the pattern needs a parameter the caller didn’t supply.</li>
+<li><code>UnexpectedParam { route, param }</code> — the caller supplied a parameter the pattern doesn’t use.</li>
+</ul>
+<p>Typed converters are not type-validated during reversing (<code>{id:i64}</code> won’t reject <code>"abc"</code>), but
+captured values are always percent-encoded before substitution.</p>
+<h2 id="middleware-layers"><a class="header" href="#middleware-layers">Middleware layers</a></h2>
+<p>All middleware lives in <code>djangors_core::middleware</code> and composes with
+<a href="https://docs.rs/tower/latest/tower/struct.ServiceBuilder.html"><code>tower::ServiceBuilder</code></a>
+around <code>RouterService::new(router, debug)</code> — the same stack shape as
+<a href="tutorial/06-static-files-and-middleware.html">layer middleware in the Django world</a>.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Layer</th><th>Builder</th><th>Behavior</th></tr>
+</thead>
+<tbody>
+<tr><td><code>logging_layer()</code></td><td><code>fn() -&gt; TraceLayer</code></td><td><code>tower_http::trace</code>, logs method/path/status/latency via <code>tracing</code></td></tr>
+<tr><td><code>security_headers_layer()</code></td><td><code>fn() -&gt; SecurityHeadersLayer</code></td><td><code>X-Content-Type-Options: nosniff</code>, <code>X-Frame-Options: DENY</code>, <code>Referrer-Policy: same-origin</code></td></tr>
+<tr><td><code>hsts_layer(max_age)</code></td><td><code>fn(max_age_secs: u64) -&gt; HstsLayer</code></td><td><code>Strict-Transport-Security</code>; <code>.with_include_subdomains(bool)</code> (default off)</td></tr>
+<tr><td><code>normalize_path_layer()</code></td><td><code>fn() -&gt; NormalizePathLayer</code></td><td>Trims trailing slashes (Django <code>CommonMiddleware</code>-ish)</td></tr>
+<tr><td><code>compression_layer()</code></td><td><code>fn() -&gt; CompressionLayer</code></td><td>gzip + brotli response compression</td></tr>
+<tr><td><code>request_id_layer()</code></td><td><code>fn() -&gt; RequestIdLayer</code></td><td>Sets/propagates <code>X-Request-ID</code> (UUID)</td></tr>
+<tr><td><code>csrf_layer()</code></td><td><code>fn() -&gt; CsrfLayer</code></td><td>Double-submit cookie CSRF; <code>.with_cookie_name/.with_header_name/.with_secure</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Also available: <code>HostValidationLayer::new(allowed_hosts)</code> and <code>CspBuilder</code> — both documented in
+depth in the <a href="security.html">Security guide</a>.</p>
+<p>The <code>CsrfLayer</code> injects a <code>CsrfToken(String)</code> extension on every request (plus a pending-check
+marker for form bodies). Sessions and tenancy similarly communicate through <code>ext</code>; see
+<a href="sessions.html">Sessions and CSRF Protection</a> and <a href="multi-tenancy.html">Multi-tenancy</a>.</p>
+<pre class="playground"><code class="language-rust compile"><span class="boring">fn main() {
+</span>use djangors_core::middleware::{
+    logging_layer, security_headers_layer, hsts_layer, normalize_path_layer,
+    compression_layer, request_id_layer, csrf_layer,
+};
+use djangors_core::router::RouterService;
+use tower::ServiceBuilder;
+
+<span class="boring">let debug = false;
+</span><span class="boring">let router = djangors_core::Router::new();
+</span>let router_service = RouterService::new(router, debug);
+
+let service = ServiceBuilder::new()
+    .layer(compression_layer()) // outermost; changes the body type
+    .layer(logging_layer())
+    .layer(request_id_layer())
+    .layer(normalize_path_layer())
+    .layer(security_headers_layer())
+    .layer(hsts_layer(31536000).with_include_subdomains(true))
+    .layer(csrf_layer().with_secure(!debug))
+    .service(router_service);
+<span class="boring">let _ = service;
+</span><span class="boring">}</span></code></pre>
+<blockquote class="blockquote-tag blockquote-tag-important">
+<p class="blockquote-tag-title"><svg viewbox="0 0 16 16" width="18" height="18"><path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v9.5A1.75 1.75 0 0 1 14.25 13H8.06l-2.573 2.573A1.458 1.458 0 0 1 3 14.543V13H1.75A1.75 1.75 0 0 1 0 11.25Zm1.75-.25a.25.25 0 0 0-.25.25v9.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h6.5a.25.25 0 0 0 .25-.25v-9.5a.25.25 0 0 0-.25-.25Zm7 2.25v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 9a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"></path></svg>Important</p>
+<p><strong>Layer order matters.</strong> <code>compression_layer()</code> rewraps the response body, so anything that
+requires a plain <code>Full&lt;Bytes&gt;</code> body (e.g. <code>security_headers_layer</code>) must sit <em>inside</em> it —
+put compression first in the <code>ServiceBuilder</code> chain as shown above.
+<code>csrf_layer().with_secure(true)</code> (and <code>SignedCookieStore::with_secure</code>) must be enabled off HTTP
+in production — see <a href="security.html#csrf-protection-csrflayer">Security</a>.
+Serve the stack with <code>Djangors::serve_service(listener, service)</code>; the plain <code>serve()</code>/<code>run()</code>
+loops do not apply middleware layers.</p>
+</blockquote>
+<h2 id="djangorserror"><a class="header" href="#djangorserror">DjangorsError</a></h2>
+<p><a href="https://docs.rs/djangors_core/latest/djangors_core/error/index.html"><code>DjangorsError</code></a> is the single error
+type handlers return. Built-in variants map 1:1 to HTTP statuses, plus the application-defined
+<code>Api</code> carrier:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Variant</th><th>Status</th><th>Domain code</th></tr>
+</thead>
+<tbody>
+<tr><td><code>NotFound</code></td><td>404</td><td><code>not_found</code></td></tr>
+<tr><td><code>BadRequest(String)</code></td><td>400</td><td><code>bad_request</code></td></tr>
+<tr><td><code>Internal(String)</code></td><td>500</td><td><code>internal</code></td></tr>
+<tr><td><code>Panicked(String)</code></td><td>500</td><td><code>panicked</code></td></tr>
+<tr><td><code>Unauthorized(String)</code></td><td>401</td><td><code>unauthorized</code></td></tr>
+<tr><td><code>Forbidden(String)</code></td><td>403</td><td><code>forbidden</code></td></tr>
+<tr><td><code>TooManyRequests(String)</code></td><td>429</td><td><code>too_many_requests</code></td></tr>
+<tr><td><code>Api(ApiError)</code></td><td><code>api.status</code></td><td><code>api.code</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Every variant exposes <code>status_code()</code>, <code>code()</code>, <code>message()</code>, and <code>details()</code>.</p>
+<h3 id="apierror-and-constructors"><a class="header" href="#apierror-and-constructors">ApiError and constructors</a></h3>
+<p><code>ApiError</code> is a struct with public fields <code>status: StatusCode</code>, <code>code: String</code>, <code>message: String</code>,
+and <code>details: Option&lt;serde_json::Value&gt;</code> — the escape hatch for domain errors that need a custom
+status/code/JSON payload.</p>
+<ul>
+<li><code>DjangorsError::api(status, code, message)</code> builds the <code>Api</code> variant.</li>
+<li><code>.with_details(json!(...))</code> attaches a structured payload; when chained onto a <em>built-in</em> variant
+it promotes it to <code>Api</code>, preserving its status, code, and message.</li>
+</ul>
+<h3 id="apiresultext"><a class="header" href="#apiresultext">ApiResultExt</a></h3>
+<p><code>ApiResultExt&lt;T&gt;</code> is implemented for <strong>any</strong> <code>Result&lt;T, E: Display&gt;</code> and removes hand-written
+<code>map_err</code> closures:</p>
+<ul>
+<li><code>.api_err(status, code)</code> — uses the source error’s <code>Display</code> text as the message.</li>
+<li><code>.api_err_msg(status, code, message)</code> — fixed message, discards the source error’s text (use when
+the underlying error leaks internals).</li>
+</ul>
+<pre class="playground"><code class="language-rust compile"><span class="boring">fn main() {
+</span>use djangors_core::DjangorsError;
+use djangors_core::error::ApiResultExt;
+use djangors_core::StatusCode;
+use serde_json::json;
+
+fn parse_quantity(raw: &amp;str) -&gt; Result&lt;u32, DjangorsError&gt; {
+    raw.parse::&lt;u32&gt;().api_err(StatusCode::BAD_REQUEST, "invalid_quantity")
+}
+
+let err = DjangorsError::api(StatusCode::CONFLICT, "seat_taken", "That seat is already booked")
+    .with_details(json!({ "seat": "12A", "flight": "DL404" }));
+
+assert_eq!(err.status_code(), StatusCode::CONFLICT);
+assert_eq!(err.code(), "seat_taken");
+assert!(err.details().is_some());
+<span class="boring">let _ = parse_quantity("x");
+</span><span class="boring">}</span></code></pre>
+<h3 id="custom-rendering"><a class="header" href="#custom-rendering">Custom rendering</a></h3>
+<p>By default the router renders errors as the JSON envelope <code>{"error": {status, code, message, details?}}</code>
+when the caller accepts JSON or the error is an <code>Api</code>, otherwise as a debug page (when <code>debug</code>) or a
+minimal production page. To take full control, implement the <code>ErrorRenderer</code> trait and register an
+<code>Arc&lt;dyn ErrorRenderer&gt;</code> as router state; there is a ready-made <code>JsonErrorRenderer</code>:</p>
+<pre class="playground"><code class="language-rust illustrative"><span class="boring">#![allow(unused)]
+</span><span class="boring">fn main() {
+</span>use djangors_core::{DjangorsError, Request};
+use djangors_core::error::{ErrorRenderer, JsonErrorRenderer};
+use djangors_core::Response;
+use std::sync::Arc;
+
+#[derive(Clone)]
+struct MyErrorRenderer; // render every error as JSON, e.g. for a pure API
+
+impl ErrorRenderer for MyErrorRenderer {
+    fn render(&amp;self, err: &amp;DjangorsError, req: &amp;Request) -&gt; Response {
+        JsonErrorRenderer.render(err, req)
+    }
+}
+
+fn configure(router: djangors_core::Router) -&gt; djangors_core::Router {
+    router.with_state(Arc::new(MyErrorRenderer) as Arc&lt;dyn ErrorRenderer&gt;)
+}
+<span class="boring">}</span></code></pre>
+<blockquote class="blockquote-tag blockquote-tag-note">
+<p class="blockquote-tag-title"><svg viewbox="0 0 16 16" width="18" height="18"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"></path></svg>Note</p>
+<p>The renderer is looked up from <strong>state</strong>, so it is configured exactly like the database pool:
+<code>.with_state(Arc::new(...) as Arc&lt;dyn ErrorRenderer&gt;)</code>.</p>
+</blockquote>
+<h2 id="paginator-and-cursor-primitives"><a class="header" href="#paginator-and-cursor-primitives">Paginator and cursor primitives</a></h2>
+<p><a href="https://docs.rs/djangors_core/latest/djangors_core/pagination/index.html"><code>Paginator</code></a> does the offset
+math. <code>total_items</code> is clamped to ≥ 0 and <code>page_size</code> must be &gt; 0; per the admin convention, 0 items
+still yields 1 page.</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Method</th><th>Signature</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>new</code></td><td><code>new(total_items: i64, page_size: i64) -&gt; Self</code></td><td>Panics if <code>page_size &lt;= 0</code></td></tr>
+<tr><td><code>total_pages</code></td><td><code>fn(&amp;self) -&gt; i64</code></td><td>Ceiling division; 0 items ⇒ 1 page</td></tr>
+<tr><td><code>offset</code></td><td><code>fn(&amp;self, page: i64) -&gt; i64</code></td><td>0-indexed SQL <code>OFFSET</code>, clamped into <code>[1, total_pages()]</code></td></tr>
+<tr><td><code>has_previous</code></td><td><code>fn(&amp;self, page: i64) -&gt; bool</code></td><td><code>page &gt; 1</code></td></tr>
+<tr><td><code>has_next</code></td><td><code>fn(&amp;self, page: i64) -&gt; bool</code></td><td><code>page * page_size &lt; total_items</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>Cursor helpers are the building blocks behind <code>djangors-rest</code> cursor pagination:</p>
+<ul>
+<li><code>encode_cursor(pk: i64, order_value: Option&lt;&amp;str&gt;) -&gt; String</code> — base64 of <code>pk|order-value</code>
+(order value may itself contain <code>|</code>).</li>
+<li><code>decode_cursor(cursor: &amp;str) -&gt; Result&lt;(i64, Option&lt;String&gt;), CursorError&gt;</code>.</li>
+<li><code>CursorError</code> variants: <code>InvalidEncoding</code>, <code>InvalidFormat</code>, <code>InvalidPrimaryKey</code>.</li>
+<li><code>CursorPage&lt;T&gt; { items: Vec&lt;T&gt;, next_cursor: Option&lt;String&gt;, previous_cursor: Option&lt;String&gt; }</code>.</li>
+</ul>
+<pre class="playground"><code class="language-rust compile"><span class="boring">fn main() {
+</span>use djangors_core::{
+    Paginator, CursorPage, encode_cursor, decode_cursor,
+};
+
+let p = Paginator::new(250, 100);
+assert_eq!(p.total_pages(), 3);
+assert_eq!(p.offset(2), 100);
+assert!(p.has_next(1));
+assert!(p.has_previous(2));
+assert!(!p.has_next(3));
+
+let cursor = encode_cursor(42, Some("title|with|pipes"));
+assert_eq!(
+    decode_cursor(&amp;cursor).unwrap(),
+    (42, Some("title|with|pipes".to_string()))
+);
+
+let page: CursorPage&lt;String&gt; = CursorPage {
+    items: vec!["a".into(), "b".into()],
+    next_cursor: Some(cursor),
+    previous_cursor: None,
+};
+assert_eq!(page.items.len(), 2);
+<span class="boring">}</span></code></pre>
+<h2 id="logging-setup"><a class="header" href="#logging-setup">Logging setup</a></h2>
+<p>Call exactly one of these <strong>once</strong>, early in <code>main()</code> (before starting the server). A second call
+is a harmless no-op (only one global <code>tracing</code> subscriber can be installed).</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Function</th><th>Output</th><th>Notes</th></tr>
+</thead>
+<tbody>
+<tr><td><code>init_dev_logging()</code></td><td>compact colored console output</td><td>Default level <code>"info,djangors_core=debug"</code></td></tr>
+<tr><td><code>init_production_logging()</code></td><td>structured JSON lines</td><td>Default level <code>"info,djangors_core=info"</code>, ideal for log aggregators</td></tr>
+<tr><td><code>init_production_logging_with_sentry(dsn)</code> <em>(<code>sentry</code> feature)</em></td><td>JSON + Sentry capture</td><td><code>ERROR</code> events → Sentry, <code>WARN..TRACE</code> → breadcrumbs, panics captured</td></tr>
+</tbody>
+</table>
+</div>
+<p>All three respect the standard <code>RUST_LOG</code> env var (e.g. <code>RUST_LOG=djangors_core=trace</code>).
+<code>init_production_logging_with_sentry</code> returns a <code>ClientInitGuard</code> that <strong>must be held for the
+process lifetime</strong>: <code>let _guard = init_production_logging_with_sentry(&amp;dsn);</code>. An empty/invalid DSN
+produces a disabled client rather than an error, so it is safe to call unconditionally.</p>
+<pre class="playground"><code class="language-rust compile"><span class="boring">fn main() {
+</span>use djangors_core::logging::{init_dev_logging, init_production_logging};
+
+// Pick one per environment:
+init_dev_logging();
+// init_production_logging();
+<span class="boring">}</span></code></pre>
+<h2 id="management-commands"><a class="header" href="#management-commands">Management commands</a></h2>
+<p><code>#[management_command(name = "...")]</code> (from <code>djangors_macros</code>, applied to an <code>async fn</code> taking
+<code>Vec&lt;String&gt;</code> and returning nothing) registers a custom command through an <code>inventory</code> registry.
+Two helper functions driven by env vars replace the CLI plumbing in <code>main()</code>:</p>
+<ul>
+<li><code>run_management_command_if_requested()</code> — exits (with code 0) and runs the command named by
+<code>DJANGORS_RUN_COMMAND</code>; unknown names print an error and exit 1. <strong>Async</strong> — call it from
+<code>#[tokio::main]</code> (it relies on the runtime already installed).</li>
+<li><code>introspect_models_if_requested()</code> — dumps the compiled model registry as JSON and exits, when
+<code>DJANGORS_INTROSPECT_MODELS=1</code>.</li>
+</ul>
+<pre class="playground"><code class="language-rust illustrative">use djangors_macros::management_command;
+
+#[management_command(name = "seed")]
+async fn seed(_args: Vec&lt;String&gt;) {
+    println!("seeding database...");
+}
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    djangors_core::logging::init_dev_logging();
+
+    // dj run ... --env DJANGORS_RUN_COMMAND=seed, or DJANGORS_INTROSPECT_MODELS=1
+    djangors_core::run_management_command_if_requested().await;
+    djangors_core::introspect_models_if_requested();
+
+    // ... build settings + router, app.run().await
+    Ok(())
+}</code></pre>
+<pre><code class="language-bash">DJANGORS_RUN_COMMAND=seed cargo run
+DJANGORS_INTROSPECT_MODELS=1 cargo run   # prints JSON model registry
+</code></pre>
+<h2 id="html_escape"><a class="header" href="#html_escape">html_escape</a></h2>
+<p><code>djangors_core::html_escape(input: &amp;str) -&gt; String</code> escapes HTML-significant characters
+(<code>&lt;</code> <code>&gt;</code> <code>&amp;</code> <code>"</code> <code>'</code> and <code>/</code>) to their entities.</p>
+<pre class="playground"><code class="language-rust compile"><span class="boring">fn main() {
+</span>use djangors_core::html_escape;
+
+let escaped = html_escape("&lt;script&gt;alert('x&amp;y')&lt;/script&gt;");
+assert!(escaped.contains("&amp;lt;script&amp;gt;"));
+assert!(escaped.contains("&amp;amp;"));
+assert!(escaped.contains("&amp;#x27;"));
+<span class="boring">}</span></code></pre>
+<h2 id="where-to-go-next"><a class="header" href="#where-to-go-next">Where to go next</a></h2>
+<ul>
+<li><a href="../tutorial/01-requests-and-responses.html">Requests and Responses tutorial</a> — the fast path to a first endpoint.</li>
+<li><a href="security.html">Security</a> — CSRF, HSTS, host validation, CSP, and the production checklist.</li>
+<li><a href="sessions.html">Sessions and CSRF Protection</a> — session middleware and <code>SignedCookieStore</code>.</li>
+<li><a href="../how-to/stream-sse.html">How to Stream Server-Sent Events</a> — <code>Response::sse</code> / <code>Router::get_sse</code> in practice.</li>
+<li><a href="rest.html">REST Framework</a> — where <code>Paginator</code>/cursor primitives surface as cursor pagination.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../guides/flatpages-and-redirects.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../guides/auth.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../guides/flatpages-and-redirects.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../guides/auth.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../mark-09e88c2c.min.js"></script>
+        <script src="../searcher-09f2665d.js"></script>
+
+        <script src="../clipboard-1626706a.min.js"></script>
+        <script src="../highlight-abc7f01d.js"></script>
+        <script src="../book-609e4cb8.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../theme/copy-as-markdown-97430012.js"></script>
+
+
+
+    </div>
+    </body>
+</html>

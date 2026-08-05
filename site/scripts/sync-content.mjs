@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, rm, writeFile, access } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
@@ -7,6 +7,17 @@ const content = resolve('src/content');
 const publicDir = resolve('public');
 await mkdir(content, { recursive: true });
 await mkdir(publicDir, { recursive: true });
+
+// Vercel builds from the `site/` directory, so the monorepo files one level
+// above are not available there. The generated content and docs are checked
+// in for that deployment path; keep them as-is when the source tree is absent.
+try {
+  await access(join(root, 'README.md'));
+} catch {
+  console.warn('Monorepo sources are unavailable; using checked-in site content.');
+  process.exit(0);
+}
+
 await cp(join(root, 'README.md'), join(content, 'README.md'));
 await cp(join(root, 'docs/src/django-comparison.md'), join(content, 'django-comparison.md'));
 await cp(join(root, 'docs/src/benchmarks.md'), join(content, 'benchmarks.md'));

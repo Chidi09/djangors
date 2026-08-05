@@ -1,0 +1,9 @@
+# Djangors
+
+The Django of Rust: batteries-included web development with Rust.
+
+- [Home](/)
+- [Django comparison](/compare)
+- [Benchmarks](/benchmarks)
+- [Full documentation](/docs/)
+- [Full Markdown corpus](/llms-full.txt)
