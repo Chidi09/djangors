@@ -1,10 +1,26 @@
 import { defineConfig } from 'astro/config';
 import sitemap from '@astrojs/sitemap';
+import { readdirSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+
+function documentationPages(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return documentationPages(path);
+    if (!entry.name.endsWith('.html') || entry.name === '404.html' || entry.name === 'print.html') return [];
+    return [`https://djangors.vercel.app/docs/${relative(join('..', 'docs', 'book'), path)}`];
+  });
+}
+
+const bookDirectory = join('..', 'docs', 'book');
+const documentationUrls = statSync(bookDirectory, { throwIfNoEntry: false })
+  ? documentationPages(bookDirectory)
+  : ['https://djangors.vercel.app/docs/'];
 
 export default defineConfig({
   output: 'static',
   site: 'https://djangors.vercel.app',
-  integrations: [sitemap()],
+  integrations: [sitemap({ customPages: documentationUrls })],
   vite: {
     build: {
       // Without an explicit target the CSS minifier rewrites
