@@ -233,6 +233,24 @@ fn parse_filter_value<M: Model>(field_name: &str, raw_val: &str) -> Option<Value
 /// - `create` (POST): Create a new record
 /// - `update` (PUT / PATCH /{pk}): Update an existing record
 /// - `destroy` (DELETE /{pk}): Remove a record
+///
+/// # No built-in permission check
+///
+/// `ViewSet`'s associated functions (`list`, `retrieve`, `create`, `update`,
+/// `destroy`, and their `_with_options` variants) perform **no authentication
+/// or authorization check of their own** — that is intentional, so a caller
+/// can compose any [`Permission`] policy at the mounting layer, including
+/// [`AllowAny`] for deliberately public endpoints. Registering these functions
+/// as bare route handlers (`router.get("/x", ViewSet::<M>::retrieve)`) mounts
+/// a completely unauthenticated endpoint. Always mount through
+/// [`viewset_routes`], [`viewset_routes_with_config`],
+/// [`viewset_routes_with_permission`], or
+/// [`viewset_routes_with_config_and_permission`] — each already wraps every
+/// handler in the permission check for you. If you must register one of
+/// these associated functions as a bare handler yourself, call
+/// `your_permission.has_permission(&req).await` and return
+/// [`DjangorsError::Unauthorized`] before delegating, the same way those
+/// helpers do internally.
 pub struct ViewSet<M: Model + FromRow> {
     _marker: PhantomData<M>,
 }
@@ -250,6 +268,20 @@ pub trait Scoped: Model + FromRow + Send + Sync + 'static {
 }
 
 /// CRUD controller whose model must implement [`Scoped`].
+///
+/// # No built-in permission check
+///
+/// Like [`ViewSet`], `ScopedViewSet`'s associated functions (`list_with_config`,
+/// `retrieve`, `create`, `update`, `destroy`) perform **no authentication
+/// check of their own** — only the [`Scoped::scope`] row filter, which
+/// constrains *which rows* are visible (typically "this tenant") but says
+/// nothing about *who* the caller is or what role they hold. Registering
+/// these functions as bare route handlers gives every authenticated member
+/// of that scope full read/write access, regardless of role. Always mount
+/// through [`scoped_viewset_routes`] or [`scoped_viewset_routes_with_config`]
+/// — both wrap every handler in an `IsAuthenticated` check — and layer your
+/// own role check inside [`Scoped::scope`] (or in a custom handler) if
+/// writes must be restricted further than "any authenticated tenant member."
 pub struct ScopedViewSet<M: Scoped> {
     _marker: PhantomData<M>,
 }
@@ -1069,11 +1101,18 @@ where
     let permission = Arc::new(IsAuthenticated);
     let list_config = Arc::new(config);
 
+    let list_permission = permission.clone();
     let list_handler = {
         let list_config = list_config.clone();
         move |req: Request, params: PathParams| {
+            let perm = list_permission.clone();
             let cfg = list_config.clone();
-            async move { ScopedViewSet::<M>::list_with_config(req, params, &cfg).await }
+            async move {
+                if !perm.has_permission(&req).await {
+                    return Err(DjangorsError::Unauthorized("not authenticated".to_string()));
+                }
+                ScopedViewSet::<M>::list_with_config(req, params, &cfg).await
+            }
         }
     };
 

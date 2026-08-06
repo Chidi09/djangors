@@ -238,7 +238,20 @@ pub fn urls() -> Router {
 }
 ```
 
-Path params use Rust format strings: `{pk:i64}` where the type annotation is mandatory.
+Path params use Rust format strings: `{pk:i64}`; the type annotation is optional (bare `{pk}`
+captures an untyped `String`) but recommended, since it makes the router itself reject a
+malformed segment instead of your handler's `.parse()`.
+
+**Do not write Django/Express-style `<uuid:pk>` or `:pk` segments in `.rs` files.** Muscle memory
+from the Django URLconf on the left routinely produces `.post("/students/:pk/approve", ...)`
+instead of `.post("/students/{pk:i64}/approve", ...)` during a mechanical migration pass — a real
+25-app migration shipped 79 routes with this exact mistake across ~20 apps (clearance/payment
+approval, result-sheet submit/approve/release, invitation acceptance, LMS course provisioning,
+device management, timetable publishing, and more) before it was caught. `:pk` is accepted as an
+alias for `{pk}` as of Djangors 0.6.3+ specifically so an existing mistake like that degrades to
+"works, but untyped" instead of "route is silently unreachable" — but treat that as a safety net
+for legacy code, not permission to write `:name` in a fresh migration. Grep your `urls.rs` files
+for `"[^"]*:[a-zA-Z_]` after a Django→Djangors pass to catch any that slipped through.
 
 ---
 

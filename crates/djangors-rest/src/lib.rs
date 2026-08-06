@@ -1354,6 +1354,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scoped_viewset_routes_with_config_requires_authentication_on_list() {
+        // Regression test: `scoped_viewset_routes_with_config`'s list handler
+        // used to skip the permission check that create/retrieve/update/destroy
+        // already got on the same router, so an unauthenticated `GET /` reached
+        // `Scoped::scope` instead of being rejected up front. Every route this
+        // helper mounts — including list — must require authentication before
+        // running.
+        let router = scoped_viewset_routes_with_config::<TestNote>(
+            Router::new(),
+            "/api/notes",
+            ViewSetConfig::default(),
+        );
+        let req = Request::new(
+            Method::GET,
+            Uri::from_static("/api/notes"),
+            HeaderMap::new(),
+            Bytes::new(),
+        );
+        assert!(matches!(
+            router.handle(req).await,
+            Err(DjangorsError::Unauthorized(_))
+        ));
+    }
+
+    #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn test_scoped_viewset_cursor_pagination_preserves_isolation_across_pages() {
         let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());

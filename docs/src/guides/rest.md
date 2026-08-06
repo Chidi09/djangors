@@ -55,7 +55,8 @@ customise:
 | `viewset_routes_with_config::<M>(router, base, config)` | No | Yes | No |
 | `viewset_routes_with_config_and_permission::<M,P>(router, base, config, perm)` | Yes | Yes | No |
 | `viewset_routes_with_options::<M,P>(router, base, options, perm)` | Yes | Yes (via options) | Yes |
-| `scoped_viewset_routes::<M>(router, base)` | No | No | No — mandates `M: Scoped` |
+| `scoped_viewset_routes::<M>(router, base)` | No (`IsAuthenticated`) | No | No — mandates `M: Scoped` |
+| `scoped_viewset_routes_with_config::<M>(router, base, config)` | No (`IsAuthenticated`) | Yes | No — mandates `M: Scoped` |
 
 ```rust,illustrative
 use djangors_rest::{
@@ -187,10 +188,25 @@ djangors_rest::scoped_viewset_routes::<Note>(router, "/notes")
 # }
 ```
 
-`scoped_viewset_routes` takes no `ViewSetConfig` — if you need filtering or
-ordering on a scoped endpoint, mount the handlers yourself and pass the config
-to `ScopedViewSet::<M>::list_with_config` (see the
+`scoped_viewset_routes` takes no `ViewSetConfig`. If you need filtering or
+ordering on a scoped endpoint, reach for `scoped_viewset_routes_with_config`
+first — it mounts the same five CRUD routes with a custom config on `list`,
+and wraps every one of them in `IsAuthenticated` for you (see the
 [Multi-tenancy guide](multi-tenancy.md) for the `tenant_scope` helper).
+
+> [!WARNING]
+> `ScopedViewSet::<M>`'s associated functions (`list_with_config`, `retrieve`,
+> `create`, `update`, `destroy`) check **only** `Scoped::scope` — the same "no
+> built-in permission check" rule from the note above applies here too, and
+> the consequence is sharper: `scope` decides *which rows* are visible
+> (typically "this tenant"), not *who's allowed to write*. If you mount these
+> functions yourself instead of going through `scoped_viewset_routes*`, every
+> authenticated member of that scope gets full read/write access regardless of
+> role — there is no framework-enforced distinction between "can view my own
+> school's records" and "can edit anyone's." Prefer the `scoped_viewset_routes*`
+> helpers; if you must hand-mount, add your own `IsAuthenticated` (or stricter)
+> check before delegating, and encode any role restriction directly in
+> `Scoped::scope` or a wrapping handler.
 
 ## Resolving the current user (`current_user`)
 

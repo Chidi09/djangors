@@ -183,7 +183,10 @@ assert!(!merged.is_empty());
 
 Beyond `get`/`post`/`put`/`delete`, the [`Router`](https://docs.rs/djangors_core/latest/djangors_core/router/index.html)
 exposes a lower-level route API, named-route reversing, and mounting. Path syntax supports literal
-segments, `{name}` (String capture), `{name:i64}`, and `{name:slug}`.
+segments, `{name}` (String capture), `{name:i64}`, and `{name:slug}`. `:name` is also accepted as a
+shorthand alias for `{name}`, for muscle memory carried over from Express/Django URLconfs — prefer
+the typed `{name}`/`{name:i64}`/`{name:slug}` forms in new code, since they validate the segment at
+match time instead of leaving that to the handler.
 
 | Method | Signature | Notes |
 | --- | --- | --- |

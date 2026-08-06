@@ -83,6 +83,10 @@ pub enum ReverseError {
 /// - `{name}` captures any single path segment as a `String`
 /// - `{name:i64}` captures a segment that must parse as `i64`
 /// - `{name:slug}` captures a segment matching `[a-zA-Z0-9_-]+`
+/// - `:name` is accepted as a shorthand alias for `{name}` (an untyped
+///   `String` capture), for developers coming from Express/Django URLconf
+///   muscle memory. Prefer `{name}`/`{name:i64}`/`{name:slug}` in new code —
+///   the typed forms give you request-time validation the alias can't.
 ///
 /// Routers can be nested with [`mount`](Self::mount).
 ///
@@ -344,6 +348,13 @@ impl Router {
                 };
                 param_names.push(name.to_string());
                 segments.push(Segment::Capture(capture_type));
+            } else if let Some(name) = part.strip_prefix(':') {
+                // Express/Django-style `:name` segments never matched anything real —
+                // a real request path segment is never the literal text `:name` — so
+                // every route written this way was silently unreachable. Treat it as
+                // an alias for the untyped `{name}` capture instead of a 404 trap.
+                param_names.push(name.to_string());
+                segments.push(Segment::Capture(CaptureType::String));
             } else {
                 segments.push(Segment::Literal(part.to_string()));
             }
@@ -852,6 +863,17 @@ mod tests {
     #[tokio::test]
     async fn string_capture() {
         let router = Router::new().get("/hello/{name}", echo_name_fn);
+        let req = make_request(Method::GET, "/hello/world");
+        let resp = router.handle(req).await.unwrap();
+        let body = String::from_utf8(resp.body().to_vec()).unwrap();
+        assert_eq!(body, "world");
+    }
+
+    #[tokio::test]
+    async fn colon_alias_capture() {
+        // `:name` must behave exactly like the untyped `{name}` capture, not
+        // like a literal segment that can never match a real request path.
+        let router = Router::new().get("/hello/:name", echo_name_fn);
         let req = make_request(Method::GET, "/hello/world");
         let resp = router.handle(req).await.unwrap();
         let body = String::from_utf8(resp.body().to_vec()).unwrap();

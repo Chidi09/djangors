@@ -552,6 +552,19 @@ These modules are **private** — import from the crate root, not the submodule:
 8. **Admin `search_fields` panics on FK fields** — only text-like fields allowed
 9. **`build_create_all_plan` needs all registered models** — models must use `#[derive(Model)]`
 10. **`save()` is INSERT-only, `update()` is UPDATE-only** — track persisted state yourself
+11. **Never mount `ViewSet::<M>`/`ScopedViewSet::<M>`'s associated functions (`list`,
+    `list_with_config`, `retrieve`, `create`, `update`, `destroy`) as bare route handlers** —
+    e.g. `router.post("/x", ScopedViewSet::<M>::create)`. They perform **no** authentication
+    check themselves; `Scoped::scope` only restricts *which rows* are visible (typically "this
+    tenant"), not *who's allowed to write*. A hand-rolled mount silently gives every
+    authenticated tenant member — any role — full read/write on the model. Always mount
+    through `viewset_routes*` / `scoped_viewset_routes*`, which wrap every handler in
+    `IsAuthenticated` for you. If you need a custom `ViewSetConfig` on a scoped endpoint, that's
+    exactly what `scoped_viewset_routes_with_config` is for — there is no case where hand-mounting
+    the raw associated functions is the right call.
+12. **`:name`-style path params work but are a compatibility alias, not the recommended
+    syntax** — write `{name}` / `{name:i64}` / `{name:slug}` in new code so the router validates
+    the segment before your handler runs, instead of leaving that to a `.parse()` inside it.
 
 ---
 
