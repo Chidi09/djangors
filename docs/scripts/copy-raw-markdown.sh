@@ -14,13 +14,14 @@ if [ ! -d "$BOOK_DIR" ]; then
   exit 1
 fi
 
-count=0
-while IFS= read -r -d '' md_file; do
+# Do not use process substitution here. Vercel's build sandbox does not expose
+# the /dev/fd path that Bash uses for it.
+count="$(find "$SRC_DIR" -name "*.md" -print | wc -l | tr -d ' ')"
+find "$SRC_DIR" -name "*.md" -print0 | while IFS= read -r -d '' md_file; do
   rel_path="${md_file#"$SRC_DIR"/}"
   dest_path="$BOOK_DIR/$rel_path"
   mkdir -p "$(dirname "$dest_path")"
   cp "$md_file" "$dest_path"
-  count=$((count + 1))
-done < <(find "$SRC_DIR" -name "*.md" -print0)
+done
 
 echo "copied $count raw markdown file(s) into $BOOK_DIR"
