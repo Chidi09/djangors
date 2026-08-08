@@ -9,3 +9,5 @@
 # chunk active sidecar tracking
 .chunk/sidecar.json
 .chunk/sidecar.*.json
+.vercel
+.env*
