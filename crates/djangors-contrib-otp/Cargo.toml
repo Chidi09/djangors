@@ -21,4 +21,3 @@ totp-rs = { version = "5.7.2", features = ["gen_secret", "otpauth"] }
 [dev-dependencies]
 djangors-test = { path = "../djangors-test" }
 tokio = { version = "1.53.0", features = ["macros", "rt-multi-thread"] }
-sqlx = { version = "0.9.0", features = ["runtime-tokio", "postgres"] }

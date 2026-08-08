@@ -1011,7 +1011,6 @@ dependencies = [
  "djangors-macros",
  "djangors-orm",
  "djangors-test",
- "sqlx",
  "tokio",
  "totp-rs",
 ]

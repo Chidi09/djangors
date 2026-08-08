@@ -2,6 +2,10 @@
 
 This tutorial guides you through building a Polls application in Djangors, mirroring the structure of Django's official tutorial. In Part 1, we will set up a new project, create our first HTTP view, configure routing, and launch the development server.
 
+After the tutorial, use the [Application Architecture guide](../guides/application-architecture.md)
+to see how a larger feature is split into models, contracts, repositories, services, views, URLs,
+permissions, and tests.
+
 > [!NOTE]
 > The source of truth for all code snippets in this tutorial is the working [`examples/polls`](file:///root/dev/Rango/examples/polls) project in this repository.
 

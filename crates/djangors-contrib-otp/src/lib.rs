@@ -100,7 +100,10 @@ mod tests {
         let Ok(db) = djangors_test::TestDatabase::connect().await else {
             return;
         };
-        db.create_table("CREATE TABLE IF NOT EXISTS djangors_otp_device (id BIGSERIAL PRIMARY KEY, \"user\" BIGINT NOT NULL, secret VARCHAR(255) NOT NULL, confirmed BOOLEAN NOT NULL)").await.unwrap();
+        let pk_type = db.database().dialect().auto_pk_type();
+        db.create_table(&format!(
+            "CREATE TABLE IF NOT EXISTS djangors_otp_device (id {pk_type}, \"user\" BIGINT NOT NULL, secret VARCHAR(255) NOT NULL, confirmed BOOLEAN NOT NULL)"
+        )).await.unwrap();
         let user_id = 42;
         let device = OtpDevice {
             id: 0,
@@ -112,9 +115,10 @@ mod tests {
         .await
         .unwrap();
         assert!(!device.confirmed);
-        sqlx::query("UPDATE djangors_otp_device SET confirmed = TRUE WHERE id = $1")
-            .bind(device.id)
-            .execute(db.database().pool())
+        OtpDevice::objects()
+            .filter(djangors_orm::q!(id = device.id))
+            .unwrap()
+            .update(db.database(), djangors_orm::set!(confirmed = true))
             .await
             .unwrap();
         let loaded = OtpDevice::objects()
