@@ -112,6 +112,12 @@ builds the same polls app Django's own tutorial does, one part at a time, using 
 codebase's real APIs (every snippet in it is compiled and checked in the workspace's own test
 suite, see `tools/doc-code-check`).
 
+When you move beyond the tutorial, read the [Application Architecture guide](docs/src/guides/application-architecture.md).
+It explains the recommended beginner-friendly boundary between models, contracts, repositories,
+services, views, URLs, permissions, and tests, with examples of how a request flows through them.
+Rust web developers can also use [Moving from Actix Web or Axum](docs/src/migration/from-actix-axum.md),
+which maps handlers, extractors, state, middleware, errors, databases, tasks, and testing to Djangors.
+
 Coming from Django? Start with
 [**Djangors for Django developers**](docs/src/django-comparison.md), a direct, side-by-side
 translation reference.

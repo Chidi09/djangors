@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-0dc34068.js";
+            window.path_to_searchindex_js = "../searchindex-208ebb8b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-8d29efe8.js"></script>
+        <script src="../toc-15287f60.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -238,7 +238,8 @@ customise:</p>
 <tr><td><code>viewset_routes_with_config::&lt;M&gt;(router, base, config)</code></td><td>No</td><td>Yes</td><td>No</td></tr>
 <tr><td><code>viewset_routes_with_config_and_permission::&lt;M,P&gt;(router, base, config, perm)</code></td><td>Yes</td><td>Yes</td><td>No</td></tr>
 <tr><td><code>viewset_routes_with_options::&lt;M,P&gt;(router, base, options, perm)</code></td><td>Yes</td><td>Yes (via options)</td><td>Yes</td></tr>
-<tr><td><code>scoped_viewset_routes::&lt;M&gt;(router, base)</code></td><td>No</td><td>No</td><td>No — mandates <code>M: Scoped</code></td></tr>
+<tr><td><code>scoped_viewset_routes::&lt;M&gt;(router, base)</code></td><td>No (<code>IsAuthenticated</code>)</td><td>No</td><td>No — mandates <code>M: Scoped</code></td></tr>
+<tr><td><code>scoped_viewset_routes_with_config::&lt;M&gt;(router, base, config)</code></td><td>No (<code>IsAuthenticated</code>)</td><td>Yes</td><td>No — mandates <code>M: Scoped</code></td></tr>
 </tbody>
 </table>
 </div>
@@ -376,10 +377,26 @@ impl Scoped for Note {
 </span>djangors_rest::scoped_viewset_routes::&lt;Note&gt;(router, "/notes")
 <span class="boring">}
 </span><span class="boring">}</span></code></pre>
-<p><code>scoped_viewset_routes</code> takes no <code>ViewSetConfig</code> — if you need filtering or
-ordering on a scoped endpoint, mount the handlers yourself and pass the config
-to <code>ScopedViewSet::&lt;M&gt;::list_with_config</code> (see the
+<p><code>scoped_viewset_routes</code> takes no <code>ViewSetConfig</code>. If you need filtering or
+ordering on a scoped endpoint, reach for <code>scoped_viewset_routes_with_config</code>
+first — it mounts the same five CRUD routes with a custom config on <code>list</code>,
+and wraps every one of them in <code>IsAuthenticated</code> for you (see the
 <a href="multi-tenancy.html">Multi-tenancy guide</a> for the <code>tenant_scope</code> helper).</p>
+<blockquote class="blockquote-tag blockquote-tag-warning">
+<p class="blockquote-tag-title"><svg viewbox="0 0 16 16" width="18" height="18"><path d="M6.457 1.047c.659-1.234 2.427-1.234 3.086 0l6.082 11.378A1.75 1.75 0 0 1 14.082 15H1.918a1.75 1.75 0 0 1-1.543-2.575Zm1.763.707a.25.25 0 0 0-.44 0L1.698 13.132a.25.25 0 0 0 .22.368h12.164a.25.25 0 0 0 .22-.368Zm.53 3.996v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 11a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"></path></svg>Warning</p>
+<p><code>ScopedViewSet::&lt;M&gt;</code>’s associated functions (<code>list_with_config</code>, <code>retrieve</code>,
+<code>create</code>, <code>update</code>, <code>destroy</code>) check <strong>only</strong> <code>Scoped::scope</code> — the same “no
+built-in permission check” rule from the note above applies here too, and
+the consequence is sharper: <code>scope</code> decides <em>which rows</em> are visible
+(typically “this tenant”), not <em>who’s allowed to write</em>. If you mount these
+functions yourself instead of going through <code>scoped_viewset_routes*</code>, every
+authenticated member of that scope gets full read/write access regardless of
+role — there is no framework-enforced distinction between “can view my own
+school’s records” and “can edit anyone’s.” Prefer the <code>scoped_viewset_routes*</code>
+helpers; if you must hand-mount, add your own <code>IsAuthenticated</code> (or stricter)
+check before delegating, and encode any role restriction directly in
+<code>Scoped::scope</code> or a wrapping handler.</p>
+</blockquote>
 <h2 id="resolving-the-current-user-current_user"><a class="header" href="#resolving-the-current-user-current_user">Resolving the current user (<code>current_user</code>)</a></h2>
 <p><code>current_user(&amp;req)</code> resolves the authenticated user from the same sources
 <code>IsAuthenticated</code> checks — session auth, then API token, then JWT when enabled —

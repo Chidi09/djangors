@@ -16,6 +16,14 @@
 - [Django Developer Comparison Guide](django-comparison.md)
 - [Honest HTTP Benchmarks](benchmarks.md)
 
+# Building Applications
+
+- [Application Architecture](guides/application-architecture.md)
+
+# For Rust Web Developers
+
+- [Moving from Actix Web or Axum](migration/from-actix-axum.md)
+
 # Project Governance
 
 - [API Stability & Deprecation Policy](api-stability.md)

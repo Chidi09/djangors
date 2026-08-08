@@ -5,6 +5,33 @@ All notable changes to Djangors are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.6.3]
+
+### Router
+- **Fix**: `:name`-style path segments (Express/Django URLconf syntax) are now accepted as an alias
+  for the untyped `{name}` capture. Previously `parse_pattern` only recognized `{name}`/`{name:type}`
+  as a capture; a segment written `:name` was stored as the literal string `":name"`, which a real
+  request path segment can never equal — every route registered with that syntax 404'd
+  unconditionally, silently. `{name}`/`{name:i64}`/`{name:slug}` remain the recommended forms (they
+  give request-time validation the alias doesn't); `:name` is a compatibility shim for code migrated
+  from Express/Django-style URLconfs.
+
+### REST
+- **Fix**: `scoped_viewset_routes_with_config`'s `GET` list handler was missing the `IsAuthenticated`
+  check that its own `create`/`retrieve`/`update`/`destroy` routes already had (and that the sibling
+  `viewset_routes_with_config_and_permission` list handler already had) — an unauthenticated `GET /`
+  reached `Scoped::scope` directly instead of being rejected up front. Every route this helper mounts
+  now requires authentication before running.
+- **Docs**: `ViewSet` and `ScopedViewSet` now carry an explicit "No built-in permission check" section
+  warning that their associated functions (`list`/`list_with_config`, `retrieve`, `create`, `update`,
+  `destroy`, and the `_with_options` variants) perform no authentication or authorization check of
+  their own — that's intentional, so callers can compose any `Permission` (including `AllowAny`) at
+  the mounting layer — but it means registering one of these functions as a bare route handler
+  (`router.post("/x", ScopedViewSet::<M>::create)`) mounts a completely unauthenticated endpoint, with
+  `Scoped::scope`'s row filter as the only remaining check (and most `scope` implementations only
+  constrain *which tenant's rows*, not *which role*). Always mount through `viewset_routes*` /
+  `scoped_viewset_routes*`, which wrap every handler in the permission check for you.
+
 ## [0.6.2]
 
 ### ORM

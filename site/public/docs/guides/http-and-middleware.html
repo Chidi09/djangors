@@ -36,10 +36,10 @@
             const path_to_root = "../";
             const default_light_theme = "light";
             const default_dark_theme = "navy";
-            window.path_to_searchindex_js = "../searchindex-0dc34068.js";
+            window.path_to_searchindex_js = "../searchindex-208ebb8b.js";
         </script>
         <!-- Start loading toc.js asap -->
-        <script src="../toc-8d29efe8.js"></script>
+        <script src="../toc-15287f60.js"></script>
     </head>
     <body>
     <div id="mdbook-help-container">
@@ -352,7 +352,10 @@ assert!(!merged.is_empty());
 <h2 id="router-extras"><a class="header" href="#router-extras">Router extras</a></h2>
 <p>Beyond <code>get</code>/<code>post</code>/<code>put</code>/<code>delete</code>, the <a href="https://docs.rs/djangors_core/latest/djangors_core/router/index.html"><code>Router</code></a>
 exposes a lower-level route API, named-route reversing, and mounting. Path syntax supports literal
-segments, <code>{name}</code> (String capture), <code>{name:i64}</code>, and <code>{name:slug}</code>.</p>
+segments, <code>{name}</code> (String capture), <code>{name:i64}</code>, and <code>{name:slug}</code>. <code>:name</code> is also accepted as a
+shorthand alias for <code>{name}</code>, for muscle memory carried over from Express/Django URLconfs — prefer
+the typed <code>{name}</code>/<code>{name:i64}</code>/<code>{name:slug}</code> forms in new code, since they validate the segment at
+match time instead of leaving that to the handler.</p>
 <div class="table-wrapper">
 <table>
 <thead>
