@@ -37,21 +37,34 @@ impl PaymentProvider for DummyPaystackProvider {
     }
 }
 
-const CREATE_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS djangors_payments_transaction (
-            id BIGSERIAL PRIMARY KEY,
+/// The DDL has to be built per dialect rather than kept as a `&'static str`: `BIGSERIAL` and
+/// `TIMESTAMPTZ` are Postgres spellings, and SQLite needs `INTEGER PRIMARY KEY AUTOINCREMENT`
+/// for the id to actually auto-assign. SQLite is permissive enough to *accept* the Postgres
+/// text, so the CREATE succeeded and the failure only surfaced later as an insert returning
+/// no row. `Dialect` already exposes both spellings — use them.
+fn create_table_sql(dialect: djangors_orm::djangors_db::Dialect) -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS djangors_payments_transaction (
+            id {},
             reference VARCHAR(255) NOT NULL UNIQUE,
             provider VARCHAR(50) NOT NULL,
             amount_minor BIGINT NOT NULL,
             currency VARCHAR(3) NOT NULL,
             status VARCHAR(20) NOT NULL,
             metadata TEXT,
-            created_at TIMESTAMPTZ NOT NULL,
-            updated_at TIMESTAMPTZ NOT NULL
-        )";
+            created_at {} NOT NULL,
+            updated_at {} NOT NULL
+        )",
+        dialect.auto_pk_type(),
+        dialect.timestamp_type(),
+        dialect.timestamp_type(),
+    )
+}
 
 async fn setup_isolated_db() -> Option<djangors_test::TestDatabase> {
     let db = djangors_test::TestDatabase::isolated().await.ok()?;
-    db.create_table(CREATE_TABLE_SQL).await.unwrap();
+    let sql = create_table_sql(db.database().dialect());
+    db.create_table(&sql).await.unwrap();
     Some(db)
 }
 

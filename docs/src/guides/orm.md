@@ -470,14 +470,14 @@ rows in one statement.
 
 Foreign keys reference the primary key of another model:
 
-```rust,ignore
+```rust,illustrative
 #[djangors(foreign_key(on_delete = "cascade", related_name = "choices"))]
 pub question: ForeignKey<Question>,
 ```
 
 To access the related ID directly, read `choice.question.id`. To load the related model instance lazily, call `.fetch(&db)`:
 
-```rust,ignore
+```rust,illustrative
 if let Some(question) = choice.question.fetch(db).await? {
     println!("{}", question.question_text);
 }
@@ -487,7 +487,7 @@ if let Some(question) = choice.question.fetch(db).await? {
 
 A `OneToOne<T>` relationship is declared using the `OneToOne` wrapper. While it behaves similarly to a `ForeignKey`, migrations will automatically emit a `UNIQUE` constraint on the underlying column to ensure uniqueness:
 
-```rust,ignore
+```rust,illustrative
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "polls", table_name = "polls_user_profile")]
 pub struct UserProfile {
@@ -500,7 +500,7 @@ pub struct UserProfile {
 
 Like foreign keys, you can resolve the relationship lazily via `.fetch(db)`:
 
-```rust,ignore
+```rust,illustrative
 let profile = UserProfile::objects().get(db).await?;
 if let Some(user) = profile.user.fetch(db).await? {
     println!("User name: {}", user.name);
@@ -511,7 +511,7 @@ if let Some(user) = profile.user.fetch(db).await? {
 
 A `ManyToMany<T>` relation uses the `ManyToMany` wrapper as a zero-sized marker field. This field does not correspond to any column in the model's table. Instead, a dedicated through (junction) table named `{source_table_name}_{field_name}` is created automatically by migrations.
 
-```rust,ignore
+```rust,illustrative
 #[derive(Model, Debug, Clone)]
 #[djangors(app = "polls", table_name = "polls_school")]
 pub struct School {
@@ -525,7 +525,7 @@ pub struct School {
 
 You can interact with Many-to-Many relationships using the free helper functions `m2m_related`, `m2m_add`, and `m2m_remove`:
 
-```rust,ignore
+```rust,illustrative
 use djangors_orm::{m2m_add, m2m_related, m2m_remove};
 
 // Add relationship entries
@@ -546,7 +546,7 @@ m2m_remove::<School, Student, _>(db, school.id, "students", student.id).await?;
 
 You can enable result caching on a `QuerySet` via `.cache(duration)` and fetch cached results via `.cached_all(db)`:
 
-```rust,ignore
+```rust,illustrative
 use std::time::Duration;
 
 // First call queries the database and caches the results
@@ -576,7 +576,7 @@ Write operations (`save()`, `update()`, and `delete()`) automatically invalidate
 
 For multi-database setups, `djangors-orm` provides metadata-level routing via `ModelDatabaseMap`. This allows you to map specific model struct names to distinct database instances:
 
-```rust,ignore
+```rust,illustrative
 use djangors_orm::ModelDatabaseMap;
 
 // Construct routing map

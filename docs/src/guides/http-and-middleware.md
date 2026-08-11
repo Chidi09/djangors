@@ -353,14 +353,13 @@ assert!(err.details().is_some());
 
 By default the router renders errors as the JSON envelope `{"error": {status, code, message, details?}}`
 when the caller accepts JSON or the error is an `Api`, otherwise as a debug page (when `debug`) or a
-minimal production page. To take full control, implement the `ErrorRenderer` trait and register an
-`Arc<dyn ErrorRenderer>` as router state; there is a ready-made `JsonErrorRenderer`:
+minimal production page. To take full control, implement the `ErrorRenderer` trait and register it with
+`Router::set_error_renderer(renderer)`; there is a ready-made `JsonErrorRenderer`:
 
 ```rust,illustrative
 use djangors_core::{DjangorsError, Request};
 use djangors_core::error::{ErrorRenderer, JsonErrorRenderer};
 use djangors_core::Response;
-use std::sync::Arc;
 
 #[derive(Clone)]
 struct MyErrorRenderer; // render every error as JSON, e.g. for a pure API
@@ -372,13 +371,21 @@ impl ErrorRenderer for MyErrorRenderer {
 }
 
 fn configure(router: djangors_core::Router) -> djangors_core::Router {
-    router.with_state(Arc::new(MyErrorRenderer) as Arc<dyn ErrorRenderer>)
+    router.set_error_renderer(MyErrorRenderer)
 }
 ```
 
-> [!NOTE]
-> The renderer is looked up from **state**, so it is configured exactly like the database pool:
-> `.with_state(Arc::new(...) as Arc<dyn ErrorRenderer>)`.
+`set_error_renderer` is the ergonomic equivalent of the manual cast form:
+
+```rust,illustrative
+Router::new().with_state(Arc::new(MyRenderer) as Arc<dyn ErrorRenderer>)
+```
+
+The helper exists because the `as Arc<dyn ErrorRenderer>` cast is easy to omit, and
+`with_state(Arc::new(MyRenderer))` compiles perfectly well while storing the value under its
+concrete type — where the renderer lookup never finds it. The custom renderer is then silently
+ignored, with no error at compile time or run time. That silent-failure mode is exactly what
+`set_error_renderer` removes: it always performs the trait-object cast for you.
 
 ## Paginator and cursor primitives
 

@@ -73,7 +73,7 @@ pub async fn record_charge_initiated(
                 .as_database_error()
                 .and_then(|e| e.code())
                 .as_deref()
-                == Some("23505") =>
+                .is_some_and(is_unique_violation) =>
         {
             find_by_reference(db, reference).await?.ok_or_else(|| {
                 PaymentError::UnexpectedResponse(format!(
@@ -85,6 +85,20 @@ pub async fn record_charge_initiated(
             "failed to record transaction: {e}"
         ))),
     }
+}
+
+/// Whether a driver-reported error code means "a UNIQUE constraint was violated".
+///
+/// Every supported backend has to be listed here, not just Postgres: this is what makes
+/// `record_charge_initiated` idempotent, so a code that is not recognised turns a concurrent
+/// webhook redelivery into a hard error instead of a no-op.
+///
+/// - `23505` — Postgres `unique_violation`.
+/// - `2067` — SQLite `SQLITE_CONSTRAINT_UNIQUE`.
+/// - `1555` — SQLite `SQLITE_CONSTRAINT_PRIMARYKEY`, which is what a conflict on an
+///   `INTEGER PRIMARY KEY` reports rather than 2067.
+fn is_unique_violation(code: &str) -> bool {
+    matches!(code, "23505" | "2067" | "1555")
 }
 
 /// Looks up a transaction by its reference.

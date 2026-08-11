@@ -28,17 +28,24 @@ async fn returns_redirect_and_falls_through_for_other_path() {
     let Ok(db) = djangors_test::TestDatabase::connect().await else {
         return;
     };
-    db.create_table("CREATE TABLE IF NOT EXISTS djangors_redirect (id BIGSERIAL PRIMARY KEY, old_path VARCHAR(255) UNIQUE NOT NULL, new_path VARCHAR(255) NOT NULL)").await.unwrap();
-    sqlx::query("DELETE FROM djangors_redirect")
-        .execute(db.database().pool())
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO djangors_redirect (old_path, new_path) VALUES ($1, $2)")
-        .bind("/old/")
-        .bind("/new/")
-        .execute(db.database().pool())
-        .await
-        .unwrap();
+    // Build the DDL and the seed row through the dialect/ORM rather than raw Postgres SQL:
+    // `BIGSERIAL`, the `$1` placeholders, and `Database::pool()` are all Postgres-only, so the
+    // original version of this test panicked outright under `TEST_BACKEND=sqlite`.
+    let auto_pk = db.database().dialect().auto_pk_type();
+    db.create_table(&format!(
+        "CREATE TABLE IF NOT EXISTS djangors_redirect (id {auto_pk}, old_path VARCHAR(255) UNIQUE NOT NULL, new_path VARCHAR(255) NOT NULL)"
+    ))
+    .await
+    .unwrap();
+    Redirect::objects().delete(db.database()).await.unwrap();
+    Redirect {
+        id: 0,
+        old_path: "/old/".to_string(),
+        new_path: "/new/".to_string(),
+    }
+    .save(db.database())
+    .await
+    .unwrap();
     let req = |path: &str| {
         Request::new(
             Method::GET,

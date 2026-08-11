@@ -959,6 +959,7 @@ dependencies = [
  "djangors-db",
  "djangors-macros",
  "djangors-orm",
+ "djangors-test",
  "thiserror 2.0.18",
  "tokio",
 ]

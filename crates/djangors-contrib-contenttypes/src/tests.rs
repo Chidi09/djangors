@@ -1,4 +1,6 @@
 use super::*;
+// `objects()` is a `Model` trait method, so the trait has to be in scope to call it here.
+use djangors_orm::Model as _;
 use std::sync::Mutex;
 
 #[derive(Model, Debug, Clone)]
@@ -21,18 +23,22 @@ static DB_MUTEX: Mutex<()> = Mutex::new(());
 #[allow(clippy::await_holding_lock)]
 async fn sync_and_generic_lookup_are_stable_and_reversible() {
     let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
-    let config = djangors_db::config::DatabaseConfig::new(
-        "postgres://postgres:postgres@localhost/djangors_test",
-    );
-    let db = djangors_db::Database::connect(&config).await.unwrap();
-    djangors_orm::sqlx::query("CREATE TABLE IF NOT EXISTS djangors_content_type (id BIGSERIAL PRIMARY KEY, app_label VARCHAR(100) NOT NULL, model_name VARCHAR(100) NOT NULL, UNIQUE (app_label, model_name))")
-            .execute(db.pool())
-            .await
-            .unwrap();
-    djangors_orm::sqlx::query("DELETE FROM djangors_content_type")
-        .execute(db.pool())
+    // Go through TestDatabase rather than a hardcoded Postgres URL. The old version connected
+    // to a literal `postgres://postgres:postgres@localhost/djangors_test` and used `BIGSERIAL`
+    // plus `Database::pool()`, so it ignored both TEST_BACKEND and DATABASE_URL and could only
+    // ever pass against one specific local Postgres instance.
+    let Ok(test_db) = djangors_test::TestDatabase::connect().await else {
+        return;
+    };
+    let db = test_db.database().clone();
+    let auto_pk = db.dialect().auto_pk_type();
+    test_db
+        .create_table(&format!(
+            "CREATE TABLE IF NOT EXISTS djangors_content_type (id {auto_pk}, app_label VARCHAR(100) NOT NULL, model_name VARCHAR(100) NOT NULL, UNIQUE (app_label, model_name))"
+        ))
         .await
         .unwrap();
+    ContentType::objects().delete(&db).await.unwrap();
 
     sync_content_types(&db).await.unwrap();
     let alpha = generic_key_for::<Alpha>(&db, 42).await.unwrap();
@@ -50,14 +56,16 @@ async fn sync_and_generic_lookup_are_stable_and_reversible() {
 
     sync_content_types(&db).await.unwrap();
     let alpha_after = generic_key_for::<Alpha>(&db, 7).await.unwrap();
-    let rows: i64 = djangors_orm::sqlx::query_scalar(
-        "SELECT COUNT(*) FROM djangors_content_type WHERE app_label = $1 AND model_name = $2",
-    )
-    .bind("contenttypes_tests")
-    .bind("Alpha")
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
+    // Counted through the ORM: the raw form used `$1` placeholders and `Database::pool()`,
+    // neither of which exists on a SQLite handle.
+    let rows = ContentType::objects()
+        .filter(djangors_orm::q!(app_label = "contenttypes_tests"))
+        .unwrap()
+        .filter(djangors_orm::q!(model_name = "Alpha"))
+        .unwrap()
+        .count(&db)
+        .await
+        .unwrap();
     assert_eq!(rows, 1);
     assert_eq!(alpha.content_type_id, alpha_after.content_type_id);
 }
