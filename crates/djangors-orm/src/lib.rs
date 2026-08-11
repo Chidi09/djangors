@@ -13,6 +13,8 @@ pub mod error;
 pub mod expr;
 /// Model runtime metadata structures and field definitions.
 pub mod meta;
+/// Process-local query result cache and invalidation.
+pub mod query_cache;
 /// Type-safe fluent QuerySet query builder.
 pub mod queryset;
 /// Model lifecycle signals.
@@ -25,9 +27,10 @@ pub use sqlx;
 
 pub use djangors_db::{BindValue, DbRow, Dialect, NullKind};
 pub use meta::{
-    all_registered_models, DefaultValue, FieldKind, FieldMeta, FieldSnapshot, ForeignKey,
-    IndexMeta, Model, ModelForm, ModelMeta, ModelRegistration, ModelSnapshot, OnDelete,
-    RelationKind, RelationMeta, RelationSnapshot, SnapshotDefault,
+    all_registered_models, m2m_through_table, DefaultValue, FieldKind, FieldMeta, FieldSnapshot,
+    ForeignKey, IndexMeta, IndexSnapshot, Manager, ManyToMany, Model, ModelDatabaseMap, ModelForm,
+    ModelMeta, ModelRegistration, ModelSnapshot, OnDelete, OneToOne, RelationKind, RelationMeta,
+    RelationSnapshot, SnapshotDefault,
 };
 
 pub use aggregate::{AggExpr, AggResult, FuncExpr};
@@ -36,7 +39,7 @@ pub use expr::{
     ArithOp, CompareOp, Exists, Expr, IntoSetExpr, NotExists, OuterRef, SetExpr, UnresolvedCompare,
     UnresolvedExpr, UnresolvedFieldCompare, UnresolvedOuterCompare, Value, F,
 };
-pub use queryset::{prefetch_related, QuerySet};
+pub use queryset::{m2m_add, m2m_related, m2m_remove, prefetch_related, GroupRow, QuerySet};
 
 #[cfg(test)]
 #[allow(unused_extern_crates)]

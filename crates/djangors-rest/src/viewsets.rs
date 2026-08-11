@@ -1135,7 +1135,10 @@ where
             hyper::http::Method::PATCH,
             guarded(permission.clone(), ScopedViewSet::<M>::update),
         )
-        .delete(&detail_path, guarded(permission, ScopedViewSet::<M>::destroy))
+        .delete(
+            &detail_path,
+            guarded(permission, ScopedViewSet::<M>::destroy),
+        )
 }
 
 /// Mounts standard REST routes with custom configuration and an explicit permission policy.

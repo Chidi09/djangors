@@ -382,3 +382,39 @@ async fn tenant_scope_reads_current_tenant_set_via_extensions_like_real_middlewa
     );
     assert_eq!(rows[0].id, tenant_a.id);
 }
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn tenant_scope_returns_internal_on_failed_resolution() {
+    use crate::middleware::TenantResolutionFailed;
+    use djangors_core::error::DjangorsError;
+    use djangors_core::request::Request;
+    use djangors_orm::queryset::QuerySet;
+    use hyper::http::Extensions;
+
+    let _guard = DB_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let db = connect_db().await;
+    setup_tables(&db).await;
+
+    let mut extensions = Extensions::new();
+    extensions.insert(TenantResolutionFailed);
+    let req = Request::new(
+        hyper::Method::GET,
+        hyper::Uri::from_static("http://example.com/"),
+        hyper::HeaderMap::new(),
+        bytes::Bytes::new(),
+    )
+    .with_extensions(extensions);
+
+    let qs = QuerySet::<Tenant>::new();
+    let result = crate::tenant_scope(&req, qs, "id");
+    match result {
+        Err(DjangorsError::Internal(msg)) => {
+            assert!(
+                msg.contains("tenant membership lookup failed"),
+                "msg: {msg}"
+            );
+        }
+        other => panic!("expected Internal, got: {other:?}"),
+    }
+}

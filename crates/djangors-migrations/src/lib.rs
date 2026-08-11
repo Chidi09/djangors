@@ -27,6 +27,7 @@ pub use error::MigrationError;
 pub use operation::{ColumnDef, ForeignKeyRef, Operation};
 pub use plan::build_create_all_plan;
 pub use plan::build_create_plan_from_snapshots;
+pub use plan::detect_changes;
 
 use djangors_db::BindValue;
 use std::path::{Path, PathBuf};
@@ -611,6 +612,7 @@ mod migrate_from_dir_tests {
             relations: vec![],
             unique_together: vec![],
             ordering: vec![],
+            indexes: vec![],
         };
 
         let plan = build_create_plan_from_snapshots(&[snapshot], Dialect::Sqlite).unwrap();
@@ -709,5 +711,198 @@ mod migrate_from_dir_tests {
 
         let applied = get_applied_migrations(&db).await.unwrap();
         assert_eq!(applied, vec!["0001_initial", "0002_add_field"]);
+    }
+
+    #[test]
+    fn test_create_and_drop_index_operations() {
+        use crate::operation::Operation;
+        use djangors_db::Dialect;
+
+        let create = Operation::CreateIndex {
+            index_name: "idx_testapp_item_slug".to_string(),
+            table_name: "testapp_item".to_string(),
+            columns: vec!["slug".to_string(), "author".to_string()],
+        };
+        assert_eq!(
+            create.to_sql(Dialect::Postgres).unwrap(),
+            "CREATE INDEX IF NOT EXISTS \"idx_testapp_item_slug\" ON \"testapp_item\" (\"slug\", \"author\");"
+        );
+
+        // Reverse of CreateIndex is DropIndex.
+        let drop = create.reverse().unwrap();
+        assert_eq!(
+            drop.to_sql(Dialect::Sqlite).unwrap(),
+            "DROP INDEX IF EXISTS \"idx_testapp_item_slug\";"
+        );
+    }
+
+    #[test]
+    fn test_create_plan_from_snapshots_emits_indexes() {
+        use djangors_db::Dialect;
+        use djangors_orm::{
+            FieldKind, FieldSnapshot, IndexSnapshot, ModelSnapshot, SnapshotDefault,
+        };
+
+        let snapshot = ModelSnapshot {
+            app_label: "testapp".to_string(),
+            table_name: "testapp_item".to_string(),
+            struct_name: "Item".to_string(),
+            fields: vec![FieldSnapshot {
+                name: "id".to_string(),
+                column_name: "id".to_string(),
+                kind: FieldKind::BigInt,
+                nullable: false,
+                primary_key: true,
+                unique: false,
+                db_index: false,
+                default: SnapshotDefault::None,
+                max_length: None,
+                auto: true,
+            }],
+            relations: vec![],
+            unique_together: vec![],
+            ordering: vec![],
+            indexes: vec![IndexSnapshot {
+                name: "idx_item_slug".to_string(),
+                fields: vec!["slug".to_string()],
+            }],
+        };
+
+        let plan =
+            crate::plan::build_create_plan_from_snapshots(&[snapshot], Dialect::Sqlite).unwrap();
+        let index_ops: Vec<_> = plan
+            .iter()
+            .filter(|op| matches!(op, crate::operation::Operation::CreateIndex { .. }))
+            .collect();
+        assert_eq!(index_ops.len(), 1);
+    }
+
+    #[test]
+    fn test_create_plan_from_snapshots_emits_m2m_join_table() {
+        use djangors_db::Dialect;
+        use djangors_orm::{
+            FieldKind, FieldSnapshot, ModelSnapshot, OnDelete, RelationKind, RelationSnapshot,
+            SnapshotDefault,
+        };
+
+        let pk = FieldSnapshot {
+            name: "id".to_string(),
+            column_name: "id".to_string(),
+            kind: FieldKind::BigInt,
+            nullable: false,
+            primary_key: true,
+            unique: false,
+            db_index: false,
+            default: SnapshotDefault::None,
+            max_length: None,
+            auto: true,
+        };
+        let school = ModelSnapshot {
+            app_label: "app".to_string(),
+            table_name: "app_school".to_string(),
+            struct_name: "School".to_string(),
+            fields: vec![pk.clone()],
+            relations: vec![RelationSnapshot {
+                field_name: "students".to_string(),
+                kind: RelationKind::ManyToMany,
+                target_struct: "Student".to_string(),
+                on_delete: OnDelete::Cascade,
+                related_name: Some("schools".to_string()),
+            }],
+            unique_together: vec![],
+            ordering: vec![],
+            indexes: vec![],
+        };
+        let student = ModelSnapshot {
+            app_label: "app".to_string(),
+            table_name: "app_student".to_string(),
+            struct_name: "Student".to_string(),
+            fields: vec![pk],
+            relations: vec![],
+            unique_together: vec![],
+            ordering: vec![],
+            indexes: vec![],
+        };
+
+        let plan =
+            crate::plan::build_create_plan_from_snapshots(&[school, student], Dialect::Sqlite)
+                .unwrap();
+
+        // Join table `app_school_students` must be created with both FK columns.
+        let join: Vec<_> = plan
+            .iter()
+            .filter(|op| {
+                matches!(op, crate::operation::Operation::CreateTable { table_name, .. }
+                    if table_name == "app_school_students")
+            })
+            .collect();
+        assert_eq!(join.len(), 1);
+        if let crate::operation::Operation::CreateTable { columns, .. } = &join[0] {
+            let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+            assert!(names.contains(&"school_id"));
+            assert!(names.contains(&"student_id"));
+        } else {
+            panic!("expected CreateTable");
+        }
+    }
+
+    #[test]
+    fn test_detect_changes_new_and_removed_columns() {
+        use djangors_db::Dialect;
+        use djangors_orm::{FieldKind, FieldSnapshot, ModelSnapshot, SnapshotDefault};
+
+        let pk = FieldSnapshot {
+            name: "id".to_string(),
+            column_name: "id".to_string(),
+            kind: FieldKind::BigInt,
+            nullable: false,
+            primary_key: true,
+            unique: false,
+            db_index: false,
+            default: SnapshotDefault::None,
+            max_length: None,
+            auto: true,
+        };
+        let prev = ModelSnapshot {
+            app_label: "a".to_string(),
+            table_name: "a_m".to_string(),
+            struct_name: "M".to_string(),
+            fields: vec![pk.clone()],
+            relations: vec![],
+            unique_together: vec![],
+            ordering: vec![],
+            indexes: vec![],
+        };
+        let mut curr = prev.clone();
+        curr.fields.push(FieldSnapshot {
+            name: "extra".to_string(),
+            column_name: "extra".to_string(),
+            kind: FieldKind::Char,
+            nullable: true,
+            primary_key: false,
+            unique: false,
+            db_index: false,
+            default: SnapshotDefault::None,
+            max_length: Some(100),
+            auto: false,
+        });
+
+        let ops = crate::plan::detect_changes(
+            std::slice::from_ref(&prev),
+            std::slice::from_ref(&curr),
+            Dialect::Postgres,
+        )
+        .unwrap();
+        let add = ops
+            .iter()
+            .find(|o| matches!(o, crate::operation::Operation::AddColumn { .. }));
+        assert!(add.is_some());
+
+        let prev = prev.clone();
+        let ops_rev = crate::plan::detect_changes(&[curr], &[prev], Dialect::Postgres).unwrap();
+        let drop = ops_rev
+            .iter()
+            .find(|o| matches!(o, crate::operation::Operation::DropColumn { .. }));
+        assert!(drop.is_some());
     }
 }

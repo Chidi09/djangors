@@ -5,10 +5,12 @@
 //! code for Decimal fields, and integer minor units is the correct money representation anyway -
 //! it's the same convention Paystack's and Stripe's own APIs use on the wire).
 
+mod bachs;
 mod paystack;
 mod provider;
 mod transaction;
 
+pub use bachs::{handle_bachs_webhook, BachsProvider};
 pub use paystack::PaystackProvider;
 pub use provider::{
     InitiateChargeRequest, InitiateChargeResponse, PaymentError, PaymentProvider, RefundResult,

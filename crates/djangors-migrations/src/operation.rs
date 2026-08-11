@@ -67,6 +67,20 @@ pub enum Operation {
     },
     /// Drops a table.
     DropTable { table_name: String },
+    /// Creates an index on a table.
+    CreateIndex {
+        /// Name of the index.
+        index_name: String,
+        /// Name of the table the index is on.
+        table_name: String,
+        /// Column names to index.
+        columns: Vec<String>,
+    },
+    /// Drops an index.
+    DropIndex {
+        /// Name of the index to drop.
+        index_name: String,
+    },
 }
 
 impl Operation {
@@ -127,6 +141,22 @@ impl Operation {
                 table_name, old_name, new_name
             )),
             Operation::DropTable { table_name } => Ok(format!("DROP TABLE \"{}\";", table_name)),
+            Operation::CreateIndex {
+                index_name,
+                table_name,
+                columns,
+            } => {
+                let cols: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c)).collect();
+                Ok(format!(
+                    "CREATE INDEX IF NOT EXISTS \"{}\" ON \"{}\" ({});",
+                    index_name,
+                    table_name,
+                    cols.join(", ")
+                ))
+            }
+            Operation::DropIndex { index_name } => {
+                Ok(format!("DROP INDEX IF EXISTS \"{}\";", index_name))
+            }
         }
     }
 
@@ -150,6 +180,10 @@ impl Operation {
                 new_name: old_name.clone(),
             }),
             Self::DropColumn { .. } | Self::AlterColumnType { .. } | Self::DropTable { .. } => None,
+            Self::CreateIndex { index_name, .. } => Some(Self::DropIndex {
+                index_name: index_name.clone(),
+            }),
+            Self::DropIndex { .. } => None,
         }
     }
 

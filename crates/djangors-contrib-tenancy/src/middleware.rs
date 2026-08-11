@@ -15,6 +15,16 @@ use tower::{Layer, Service};
 #[derive(Debug, Clone, Copy)]
 pub struct CurrentTenant(pub i64);
 
+/// Marker inserted by [`TenantResolutionLayer`] when the tenant-membership lookup itself
+/// failed (a database error), as opposed to the lookup succeeding and finding no membership.
+///
+/// The two cases are indistinguishable from the absence of [`CurrentTenant`] alone, but they
+/// mean very different things: no membership is a genuine authorization failure, while a failed
+/// lookup is a server-side fault that must not be reported to the client as "unauthorized".
+/// [`crate::tenant_scope`] reads this to pick the right error.
+#[derive(Debug, Clone, Copy)]
+pub struct TenantResolutionFailed;
+
 /// Middleware that reads an `X-Tenant-Id` header, and - if a `CurrentUserId`-equivalent identity
 /// is already present on the request from an upstream auth layer - verifies the requesting user
 /// actually has a `TenantMembership` row for that tenant before inserting `CurrentTenant`. A
@@ -111,9 +121,20 @@ where
                     .filter(djangors_orm::q!(user = uid))
                     .and_then(|qs| qs.filter(djangors_orm::q!(tenant = tenant_id)));
 
-                if let Ok(qs) = qs {
-                    if let Ok(Some(_)) = qs.first(&*db).await {
-                        req.extensions_mut().insert(CurrentTenant(tenant_id));
+                match qs {
+                    Ok(qs) => match qs.first(&*db).await {
+                        Ok(Some(_)) => {
+                            req.extensions_mut().insert(CurrentTenant(tenant_id));
+                        }
+                        Ok(None) => {}
+                        Err(_e) => {
+                            // Surfaced via TenantResolutionFailed instead of logging (no log/tracing dependency)
+                            req.extensions_mut().insert(TenantResolutionFailed);
+                        }
+                    },
+                    Err(_e) => {
+                        // Surfaced via TenantResolutionFailed instead of logging (no log/tracing dependency)
+                        req.extensions_mut().insert(TenantResolutionFailed);
                     }
                 }
             }

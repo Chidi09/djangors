@@ -10,7 +10,9 @@ mod middleware;
 mod models;
 mod scope;
 
-pub use middleware::{CurrentTenant, TenantResolutionLayer};
+pub use middleware::{
+    CurrentTenant, TenantResolutionFailed, TenantResolutionLayer, TenantResolutionService,
+};
 pub use models::{Tenant, TenantMembership};
 pub use scope::tenant_scope;
 

@@ -84,9 +84,15 @@ fn field_value_expr(f: &ModelField) -> TokenStream {
                 "String" => quote! { djangors_orm::expr::Value::from(self.#ident.clone()) },
                 "i32" => quote! { djangors_orm::expr::Value::from(self.#ident as i64) },
                 "f32" => quote! { djangors_orm::expr::Value::from(self.#ident as f64) },
-                "NaiveDate" => quote! { djangors_orm::expr::Value::Text(format!("{}", self.#ident)) },
-                "NaiveTime" => quote! { djangors_orm::expr::Value::Text(format!("{}", self.#ident)) },
-                "Duration" => quote! { djangors_orm::expr::Value::Text(format!("{:?}", self.#ident)) },
+                "NaiveDate" => {
+                    quote! { djangors_orm::expr::Value::Text(format!("{}", self.#ident)) }
+                }
+                "NaiveTime" => {
+                    quote! { djangors_orm::expr::Value::Text(format!("{}", self.#ident)) }
+                }
+                "Duration" => {
+                    quote! { djangors_orm::expr::Value::Text(format!("{:?}", self.#ident)) }
+                }
                 "Uuid" => quote! { djangors_orm::expr::Value::Text(self.#ident.to_string()) },
                 "Decimal" => quote! { djangors_orm::expr::Value::Text(self.#ident.to_string()) },
                 _ => quote! { djangors_orm::expr::Value::from(self.#ident) },
@@ -101,6 +107,8 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     let mut ordering = None;
     let mut table_name = None;
     let mut unique_together = None;
+    let mut indexes = None;
+    let mut manager = None;
 
     let struct_name_ident = &input.ident;
     let struct_name = struct_name_ident.to_string();
@@ -178,6 +186,76 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                         }
                     }
                     unique_together = Some(ut_outer);
+                } else if meta.path.is_ident("indexes") {
+                    let expr: syn::Expr = meta.value()?.parse()?;
+                    let mut idx_outer = Vec::new();
+                    match expr {
+                        syn::Expr::Array(expr_array) => {
+                            for el in expr_array.elems {
+                                match el {
+                                    syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit_str), .. }) => {
+                                        idx_outer.push((lit_str.value(), Vec::new()));
+                                    }
+                                    syn::Expr::Tuple(inner_tuple) => {
+                                        let mut name = None;
+                                        let mut fields = Vec::new();
+                                        for inner_el in inner_tuple.elems {
+                                            match inner_el {
+                                                syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit_str), .. }) => {
+                                                    if name.is_none() {
+                                                        name = Some(lit_str.value());
+                                                    } else {
+                                                        fields.push(lit_str.value());
+                                                    }
+                                                }
+                                                syn::Expr::Array(arr) => {
+                                                    for item in arr.elems {
+                                                        if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit_str), .. }) = item {
+                                                            fields.push(lit_str.value());
+                                                        } else {
+                                                            return Err(syn::Error::new_spanned(item, "index field names must be string literals"));
+                                                        }
+                                                    }
+                                                }
+                                                _ => {
+                                                    return Err(syn::Error::new_spanned(inner_el, "index must be a string (name) or a tuple (name, [fields])"));
+                                                }
+                                            }
+                                        }
+                                        match name {
+                                            Some(n) => idx_outer.push((n, fields)),
+                                            None => {
+                                                return Err(syn::Error::new(
+                                                    proc_macro2::Span::call_site(),
+                                                    "index tuple must start with a name string literal",
+                                                ))
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        return Err(syn::Error::new_spanned(el, "indexes must contain a string (name) or tuple (name, [fields])"));
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            return Err(syn::Error::new_spanned(expr, "indexes must be an array of strings or (name, [fields]) tuples"));
+                        }
+                    }
+                    indexes = Some(idx_outer);
+                } else if meta.path.is_ident("manager") {
+                    let expr: syn::Expr = meta.value()?.parse()?;
+                    match expr {
+                        syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(lit_str), .. }) => {
+                            manager = Some(syn::parse_str::<syn::Path>(&lit_str.value())?);
+                        }
+                        _ => {
+                            return Err(syn::Error::new_spanned(
+                                expr,
+                                "manager must be a string literal naming a type implementing djangors_orm::Manager",
+                            ));
+                        }
+                    }
                 }
                 Ok(())
             })?;
@@ -222,8 +300,14 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
         ident: Ident,
         primary_key: bool,
         field_meta_tokens: TokenStream,
+        // Parsed and baked into `field_meta_tokens` above rather than read back out here, but
+        // kept as named fields so the parse stays self-documenting and so a future codegen step
+        // that needs them doesn't have to re-parse the attribute.
+        #[allow(dead_code)]
         choices: Option<Vec<String>>,
+        #[allow(dead_code)]
         auto_now_add: bool,
+        #[allow(dead_code)]
         auto_now: bool,
     }
 
@@ -236,6 +320,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     let mut column_names = std::collections::HashMap::new();
     let mut from_row_assignments = Vec::new();
     let mut model_fields = Vec::new();
+    let mut m2m_construct = Vec::new();
     let mut form_names = Vec::new();
     let mut form_types = Vec::new();
     let mut form_validators = Vec::new();
@@ -318,6 +403,18 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                             }
                             Ok(())
                         })?;
+                    } else if meta.path.is_ident("many_to_many") {
+                        meta.parse_nested_meta(|nested| {
+                            if nested.path.is_ident("related_name") {
+                                let lit: LitStr = nested.value()?.parse()?;
+                                related_name = Some(lit.value());
+                            } else if nested.path.is_ident("to") {
+                                let _: syn::Expr = nested.value()?.parse()?;
+                            } else {
+                                return Err(nested.error("unrecognized many_to_many option"));
+                            }
+                            Ok(())
+                        })?;
                     } else if meta.path.is_ident("auto_now_add") {
                         if meta.input.peek(syn::Token![=]) {
                             let value = meta.value()?;
@@ -367,9 +464,39 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             ));
         }
 
-        // 2b. Check if ForeignKey relation
-        if let Some(target_ty) = get_foreign_key_target(&field.ty) {
-            // It is a relation!
+        // 2b. Check if ForeignKey/OneToOne relation
+        if let Some(relation_field) = get_relation_field(&field.ty) {
+            let target_ty = relation_field.target_ty;
+
+            // ManyToMany is a relation but NOT a column: it lives in a join table.
+            // Record the relation metadata and construct the marker on from_row,
+            // but expose no column (no save/filter/field_values/form entry).
+            if relation_field.kind == RelationFieldKind::ManyToMany {
+                let related_name_tok = match &related_name {
+                    Some(rn) => quote! { Some(#rn) },
+                    None => quote! { None },
+                };
+                let relation_meta_tokens = quote! {
+                    djangors_orm::RelationMeta {
+                        field_name: #field_name_str,
+                        kind: djangors_orm::RelationKind::ManyToMany,
+                        target: <#target_ty as djangors_orm::Model>::meta,
+                        on_delete: djangors_orm::OnDelete::Cascade,
+                        related_name: #related_name_tok,
+                    }
+                };
+                parsed_relations.push(ParsedRelation {
+                    relation_meta_tokens,
+                });
+                from_row_assignments.push(quote! {
+                    #field_ident: djangors_orm::ManyToMany::<#target_ty>::new()
+                });
+                m2m_construct.push(quote! {
+                    #field_ident: djangors_orm::ManyToMany::<#target_ty>::new()
+                });
+                continue;
+            }
+
             let on_delete_enum = match on_delete.as_deref().map(|s| s.to_lowercase()).as_deref() {
                 Some("cascade") => quote! { djangors_orm::OnDelete::Cascade },
                 Some("protect") => quote! { djangors_orm::OnDelete::Protect },
@@ -390,12 +517,26 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 None => quote! { None },
             };
 
+            let target_ty = relation_field.target_ty;
+            let (kind_tok, wrapper_tok) = match relation_field.kind {
+                RelationFieldKind::ForeignKey => (
+                    quote! { djangors_orm::RelationKind::ForeignKey },
+                    quote! { djangors_orm::ForeignKey },
+                ),
+                RelationFieldKind::OneToOne => (
+                    quote! { djangors_orm::RelationKind::OneToOne },
+                    quote! { djangors_orm::OneToOne },
+                ),
+                RelationFieldKind::ManyToMany => {
+                    unreachable!("ManyToMany handled before the column path")
+                }
+            };
+
             // target resolves to `TargetType::meta`
-            // Note: drops the redundant `to = Question` attribute since the field's own type ForeignKey<Question> already says it.
             let relation_meta_tokens = quote! {
                 djangors_orm::RelationMeta {
                     field_name: #field_name_str,
-                    kind: djangors_orm::RelationKind::ForeignKey,
+                    kind: #kind_tok,
                     target: <#target_ty as djangors_orm::Model>::meta,
                     on_delete: #on_delete_enum,
                     related_name: #related_name_tok,
@@ -405,7 +546,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 relation_meta_tokens,
             });
             from_row_assignments.push(quote! {
-                #field_ident: djangors_orm::ForeignKey::new(
+                #field_ident: #wrapper_tok::new(
                     row.try_i64_by_name(#field_name_str)
                         .map_err(djangors_orm::OrmError::from)?
                         .ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?
@@ -427,7 +568,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             form_idents.push(field_ident.clone());
             form_types.push(quote! { Option<i64> });
             form_validators.push(quote! { djangors_orm::djangors_forms::IntegerField { min: None, max: None, required: true } });
-            form_assignments.push(quote! { djangors_orm::ForeignKey::new(cleaned.unwrap()) });
+            form_assignments.push(quote! { #wrapper_tok::new(cleaned.unwrap()) });
         } else {
             // It is a regular field!
             let (inner_ty, nullable) = resolve_option_type(&field.ty);
@@ -634,7 +775,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                     quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?.parse().map_err(|e| djangors_orm::OrmError::InvalidQuery(format!("failed to parse NaiveTime '{}'", #final_column)))? }
                 }
                 (Some("Duration"), true) => {
-                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.and_then(|_s| None::<std::time::Duration>) }
+                    quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.and_then(|s| s.parse().ok()) }
                 }
                 (Some("Duration"), false) => {
                     quote! { row.try_string_by_name(#final_column).map_err(djangors_orm::OrmError::from)?.ok_or_else(|| djangors_orm::OrmError::Query(djangors_orm::sqlx::Error::RowNotFound))?.parse().map_err(|e| djangors_orm::OrmError::InvalidQuery(format!("failed to parse {} field: {}", #final_column, e)))? }
@@ -690,7 +831,8 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                             None => quote! { None },
                         };
                         if let Some(ref choice_vec) = choices {
-                            let choice_strs: Vec<&str> = choice_vec.iter().map(|s| s.as_str()).collect();
+                            let choice_strs: Vec<&str> =
+                                choice_vec.iter().map(|s| s.as_str()).collect();
                             quote! { djangors_orm::djangors_forms::ChoiceField { choices: &[ #(#choice_strs),* ], required: #required } }
                         } else {
                             quote! { djangors_orm::djangors_forms::CharField { max_length: #max_len, required: #required } }
@@ -781,6 +923,36 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             quote! { &[ #(#inner_lists),* ] }
         }
         None => quote! { &[] },
+    };
+
+    let indexes_tok = match indexes {
+        Some(idx) => {
+            let structs = idx.iter().map(|(name, fields)| {
+                let field_items = fields.iter().map(|f| quote! { #f });
+                quote! {
+                    djangors_orm::IndexMeta {
+                        name: #name,
+                        fields: &[ #(#field_items),* ],
+                    }
+                }
+            });
+            quote! { &[ #(#structs),* ] }
+        }
+        None => quote! { &[] },
+    };
+
+    let objects_override = match &manager {
+        Some(manager_path) => {
+            quote! {
+                fn objects() -> djangors_orm::queryset::QuerySet<Self>
+                where
+                    Self: Sized + djangors_orm::FromRow,
+                {
+                    <#manager_path as djangors_orm::Manager<Self>>::objects()
+                }
+            }
+        }
+        None => quote! {},
     };
 
     // 5. Generate save, update, delete SQL building & binds
@@ -896,7 +1068,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             }
 
             pub fn from_cleaned_form(cleaned: #form_cleaned_name) -> Self {
-                Self { #(#form_construct),* }
+                Self { #(#form_construct),* #(,#m2m_construct)* }
             }
 
             pub fn apply_cleaned_form(&mut self, cleaned: #form_cleaned_name) {
@@ -915,7 +1087,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                     relations: &[
                         #(#relations_expanded),*
                     ],
-                    indexes: &[],
+                    indexes: #indexes_tok,
                     unique_together: #unique_together_tok,
                     ordering: #ordering_tok,
                 })
@@ -968,6 +1140,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                 #(#save_bind_stmts)*
                 let row = db_ref.conn().fetch_one(&sql, &bind_values).await?;
                 let saved = Self::from_row(&row)?;
+                djangors_orm::query_cache::invalidate_table(#table_name);
                 Self::post_save_signal().send(djangors_orm::Model::field_values(&saved)).await;
                 Ok(saved)
             }
@@ -1003,6 +1176,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                         model: Self::meta().struct_name,
                     })
                 } else {
+                    djangors_orm::query_cache::invalidate_table(#table_name);
                     Self::post_save_signal().send(djangors_orm::Model::field_values(self)).await;
                     Ok(())
                 }
@@ -1031,6 +1205,7 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
                         model: Self::meta().struct_name,
                     })
                 } else {
+                    djangors_orm::query_cache::invalidate_table(#table_name);
                     Self::post_delete_signal().send(payload).await;
                     Ok(())
                 }
@@ -1058,10 +1233,12 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
             }
 
             fn field_names() -> Vec<&'static str> {
-                vec![
-                    #(#field_names_list),*
-                ]
-            }
+                    vec![
+                        #(#field_names_list),*
+                    ]
+                }
+
+                #objects_override
         }
 
         #[allow(missing_docs)]
@@ -1079,14 +1256,43 @@ pub fn expand_derive_model(input: DeriveInput) -> syn::Result<TokenStream> {
     })
 }
 
-// Extracts the target model type from a field wrapped in `ForeignKey<TargetModel>`.
-fn get_foreign_key_target(ty: &Type) -> Option<&Type> {
+// The kind of scalar-to-relation wrapper a model field uses.
+#[derive(Clone, Copy, PartialEq)]
+enum RelationFieldKind {
+    ForeignKey,
+    OneToOne,
+    ManyToMany,
+}
+
+struct ParsedRelationField<'a> {
+    target_ty: &'a syn::Type,
+    kind: RelationFieldKind,
+}
+
+// Extracts the target model type and wrapper kind from a field wrapped in
+// `ForeignKey<TargetModel>`, `OneToOne<TargetModel>`, or `ManyToMany<TargetModel>`.
+fn get_relation_field(ty: &Type) -> Option<ParsedRelationField<'_>> {
     if let Type::Path(type_path) = ty {
         if let Some(segment) = type_path.path.segments.last() {
-            if segment.ident == "ForeignKey" {
-                if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
-                    if let Some(syn::GenericArgument::Type(target_ty)) = args.args.first() {
-                        return Some(target_ty);
+            if let syn::PathArguments::AngleBracketed(args) = &segment.arguments {
+                if let Some(syn::GenericArgument::Type(target_ty)) = args.args.first() {
+                    if segment.ident == "ForeignKey" {
+                        return Some(ParsedRelationField {
+                            target_ty,
+                            kind: RelationFieldKind::ForeignKey,
+                        });
+                    }
+                    if segment.ident == "OneToOne" {
+                        return Some(ParsedRelationField {
+                            target_ty,
+                            kind: RelationFieldKind::OneToOne,
+                        });
+                    }
+                    if segment.ident == "ManyToMany" {
+                        return Some(ParsedRelationField {
+                            target_ty,
+                            kind: RelationFieldKind::ManyToMany,
+                        });
                     }
                 }
             }

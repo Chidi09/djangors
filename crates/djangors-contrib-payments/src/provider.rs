@@ -137,6 +137,19 @@ pub trait PaymentProvider: Send + Sync {
     /// the exact byte sequence the provider sent.
     fn verify_webhook_signature(&self, raw_body: &[u8], signature: &str) -> bool;
 
+    /// Verifies a webhook signature for providers that sign over a timestamp plus the body
+    /// (Bachs). Providers that sign the body alone (Paystack) ignore `timestamp` via this
+    /// default implementation.
+    fn verify_webhook_signature_with_timestamp(
+        &self,
+        raw_body: &[u8],
+        timestamp: Option<&str>,
+        signature: &str,
+    ) -> bool {
+        let _ = timestamp;
+        self.verify_webhook_signature(raw_body, signature)
+    }
+
     /// Refunds a previously successful transaction, fully if `amount_minor` is `None`, partially
     /// otherwise.
     async fn refund(

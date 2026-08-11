@@ -1,6 +1,6 @@
 //! A one-line helper for implementing `djangors_rest::Scoped` on a tenant-scoped model.
 
-use crate::middleware::CurrentTenant;
+use crate::middleware::{CurrentTenant, TenantResolutionFailed};
 use djangors_core::error::DjangorsError;
 use djangors_core::request::Request;
 use djangors_orm::{
@@ -9,6 +9,7 @@ use djangors_orm::{
 
 /// Filters `qs` to only rows where `tenant_field` (the model's foreign-key column to `Tenant`,
 /// e.g. `"tenant"`) matches the current request's resolved, membership-verified tenant. Returns
+/// `DjangorsError::Internal` if the tenant-membership lookup itself failed (a database error), or
 /// `DjangorsError::Unauthorized` if no `CurrentTenant` has been resolved for this request (no
 /// `X-Tenant-Id` header, or the header's tenant failed the real membership check in
 /// `TenantResolutionLayer` - either way, this is a hard rejection, never a default/fallback
@@ -27,6 +28,12 @@ pub fn tenant_scope<T: Model + FromRow>(
     qs: QuerySet<T>,
     tenant_field: &'static str,
 ) -> Result<QuerySet<T>, DjangorsError> {
+    if req.ext::<TenantResolutionFailed>().is_some() {
+        return Err(DjangorsError::Internal(
+            "tenant membership lookup failed".to_string(),
+        ));
+    }
+
     // `CurrentTenant` is set by `TenantResolutionLayer` via `req.extensions_mut()` (a real,
     // per-request tower middleware) - `Router::dispatch` propagates the incoming hyper request's
     // extensions into `Request::ext()`, NOT into `Request::state()` (which is app-wide state set

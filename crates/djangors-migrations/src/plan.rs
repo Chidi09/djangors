@@ -54,6 +54,10 @@ pub fn build_create_all_plan(dialect: Dialect) -> Result<Vec<Operation>, Migrati
 
         // Relation fields
         for relation in model.relations {
+            // ManyToMany is not a column: its join table is emitted separately below.
+            if relation.kind == djangors_orm::RelationKind::ManyToMany {
+                continue;
+            }
             let target_meta = (relation.target)();
             let target_pk = target_meta
                 .fields
@@ -84,7 +88,7 @@ pub fn build_create_all_plan(dialect: Dialect) -> Result<Vec<Operation>, Migrati
                 sql_type,
                 nullable,
                 primary_key: false,
-                unique: false,
+                unique: relation.kind == djangors_orm::RelationKind::OneToOne,
                 default_sql: None,
                 references: Some(ForeignKeyRef {
                     table: target_meta.table_name.to_string(),
@@ -99,6 +103,79 @@ pub fn build_create_all_plan(dialect: Dialect) -> Result<Vec<Operation>, Migrati
             columns,
             check_constraints: build_check_constraints(model),
         });
+
+        for index in model.indexes {
+            if index.fields.is_empty() {
+                continue;
+            }
+            let columns: Vec<String> = index.fields.iter().map(|f| f.to_string()).collect();
+            operations.push(Operation::CreateIndex {
+                index_name: index.name.to_string(),
+                table_name: model.table_name.to_string(),
+                columns,
+            });
+        }
+
+        // Emit join tables for every many-to-many relation on this model.
+        for relation in model.relations {
+            if relation.kind != djangors_orm::RelationKind::ManyToMany {
+                continue;
+            }
+            let target_meta = (relation.target)();
+            let source_pk = model.fields.iter().find(|f| f.primary_key).ok_or_else(|| {
+                MigrationError::Database(djangors_db::DbError::ConnectionFailed(
+                    "M2M source model has no primary key".into(),
+                ))
+            })?;
+            let target_pk = target_meta
+                .fields
+                .iter()
+                .find(|f| f.primary_key)
+                .ok_or_else(|| {
+                    MigrationError::Database(djangors_db::DbError::ConnectionFailed(
+                        "M2M target model has no primary key".into(),
+                    ))
+                })?;
+
+            let source_col = format!("{}_id", model.struct_name.to_lowercase());
+            let target_col = format!("{}_id", target_meta.struct_name.to_lowercase());
+            let source_type = field_meta_to_sql_type(source_pk, dialect)?;
+            let target_type = field_meta_to_sql_type(target_pk, dialect)?;
+
+            let through = djangors_orm::m2m_through_table(model, relation);
+            operations.push(Operation::CreateTable {
+                table_name: through,
+                columns: vec![
+                    ColumnDef {
+                        name: source_col,
+                        sql_type: source_type,
+                        nullable: false,
+                        primary_key: false,
+                        unique: false,
+                        default_sql: None,
+                        references: Some(ForeignKeyRef {
+                            table: model.table_name.to_string(),
+                            column: source_pk.column_name.to_string(),
+                            on_delete: "CASCADE".to_string(),
+                        }),
+                    },
+                    ColumnDef {
+                        name: target_col,
+                        sql_type: target_type,
+                        nullable: false,
+                        primary_key: false,
+                        unique: false,
+                        default_sql: None,
+                        references: Some(ForeignKeyRef {
+                            table: target_meta.table_name.to_string(),
+                            column: target_pk.column_name.to_string(),
+                            on_delete: "CASCADE".to_string(),
+                        }),
+                    },
+                ],
+                check_constraints: vec![],
+            });
+        }
     }
 
     Ok(operations)
@@ -137,7 +214,7 @@ pub fn build_create_plan_from_snapshots(
     for m in snapshots {
         visit(m, &by_name, &mut visited, &mut ordered);
     }
-    ordered
+    Ok(ordered
         .into_iter()
         .map(|m| {
             let mut columns = Vec::new();
@@ -159,6 +236,9 @@ pub fn build_create_plan_from_snapshots(
                 });
             }
             for r in &m.relations {
+                if r.kind == djangors_orm::RelationKind::ManyToMany {
+                    continue;
+                }
                 let target = by_name.get(r.target_struct.as_str()).ok_or_else(|| {
                     MigrationError::Database(djangors_db::DbError::ConnectionFailed(format!(
                         "unknown relation target {}",
@@ -193,7 +273,7 @@ pub fn build_create_plan_from_snapshots(
                     )?,
                     nullable: matches!(r.on_delete, djangors_orm::OnDelete::SetNull),
                     primary_key: false,
-                    unique: false,
+                    unique: r.kind == djangors_orm::RelationKind::OneToOne,
                     default_sql: None,
                     references: Some(ForeignKeyRef {
                         table: target.table_name.clone(),
@@ -202,13 +282,97 @@ pub fn build_create_plan_from_snapshots(
                     }),
                 });
             }
-            Ok(Operation::CreateTable {
+            let mut ops = vec![Operation::CreateTable {
                 table_name: m.table_name.clone(),
                 columns,
                 check_constraints: vec![],
-            })
+            }];
+            for i in &m.indexes {
+                if i.fields.is_empty() {
+                    continue;
+                }
+                ops.push(Operation::CreateIndex {
+                    index_name: i.name.clone(),
+                    table_name: m.table_name.clone(),
+                    columns: i.fields.clone(),
+                });
+            }
+            for r in &m.relations {
+                if r.kind != djangors_orm::RelationKind::ManyToMany {
+                    continue;
+                }
+                let target = by_name.get(r.target_struct.as_str()).ok_or_else(|| {
+                    MigrationError::Database(djangors_db::DbError::ConnectionFailed(format!(
+                        "unknown M2M target {}",
+                        r.target_struct
+                    )))
+                })?;
+                let source_pk = m.fields.iter().find(|f| f.primary_key).ok_or_else(|| {
+                    MigrationError::Database(djangors_db::DbError::ConnectionFailed(
+                        "M2M source snapshot has no primary key".into(),
+                    ))
+                })?;
+                let target_pk = target
+                    .fields
+                    .iter()
+                    .find(|f| f.primary_key)
+                    .ok_or_else(|| {
+                        MigrationError::Database(djangors_db::DbError::ConnectionFailed(
+                            "M2M target snapshot has no primary key".into(),
+                        ))
+                    })?;
+                let through = format!("{}_{}", m.table_name, r.field_name);
+                ops.push(Operation::CreateTable {
+                    table_name: through,
+                    columns: vec![
+                        ColumnDef {
+                            name: format!("{}_id", m.struct_name.to_lowercase()),
+                            sql_type: crate::type_mapping::sql_type_for(
+                                &source_pk.kind,
+                                source_pk.max_length,
+                                false,
+                                &source_pk.name,
+                                dialect,
+                            )?,
+                            nullable: false,
+                            primary_key: false,
+                            unique: false,
+                            default_sql: None,
+                            references: Some(ForeignKeyRef {
+                                table: m.table_name.clone(),
+                                column: source_pk.column_name.clone(),
+                                on_delete: "CASCADE".into(),
+                            }),
+                        },
+                        ColumnDef {
+                            name: format!("{}_id", target.struct_name.to_lowercase()),
+                            sql_type: crate::type_mapping::sql_type_for(
+                                &target_pk.kind,
+                                target_pk.max_length,
+                                false,
+                                &target_pk.name,
+                                dialect,
+                            )?,
+                            nullable: false,
+                            primary_key: false,
+                            unique: false,
+                            default_sql: None,
+                            references: Some(ForeignKeyRef {
+                                table: target.table_name.clone(),
+                                column: target_pk.column_name.clone(),
+                                on_delete: "CASCADE".into(),
+                            }),
+                        },
+                    ],
+                    check_constraints: vec![],
+                });
+            }
+            Ok(ops)
         })
-        .collect()
+        .collect::<Result<Vec<Vec<Operation>>, MigrationError>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<Operation>>())
 }
 
 fn dfs(
@@ -268,4 +432,109 @@ fn build_check_constraints(model: &'static ModelMeta) -> Vec<String> {
         }
     }
     check_constraints
+}
+
+/// Compares two model snapshots and returns incremental DDL operations to bring
+/// the database from `previous` to `current`. Django's `makemigrations` logic.
+///
+/// Detects new tables (CreateTable), new columns (AddColumn), dropped columns
+/// (DropColumn), and column type changes (AlterColumnType — Postgres only).
+pub fn detect_changes(
+    previous: &[djangors_orm::ModelSnapshot],
+    current: &[djangors_orm::ModelSnapshot],
+    dialect: Dialect,
+) -> Result<Vec<Operation>, MigrationError> {
+    let prev: std::collections::HashMap<&str, &djangors_orm::ModelSnapshot> = previous
+        .iter()
+        .map(|s| (s.struct_name.as_str(), s))
+        .collect();
+    let curr: std::collections::HashMap<&str, &djangors_orm::ModelSnapshot> = current
+        .iter()
+        .map(|s| (s.struct_name.as_str(), s))
+        .collect();
+
+    let mut ops = Vec::new();
+
+    for (name, snap) in &curr {
+        if let Some(prev_snap) = prev.get(name) {
+            let mut dropped = Vec::new();
+            for pf in &prev_snap.fields {
+                if !snap.fields.iter().any(|f| f.name == pf.name) {
+                    dropped.push(pf.clone());
+                }
+            }
+            for df in &dropped {
+                ops.push(Operation::DropColumn {
+                    table_name: snap.table_name.clone(),
+                    column_name: df.column_name.clone(),
+                });
+            }
+
+            for cf in &snap.fields {
+                if let Some(pf) = prev_snap.fields.iter().find(|p| p.name == cf.name) {
+                    if cf.kind != pf.kind || cf.max_length != pf.max_length {
+                        let sql_type = crate::type_mapping::sql_type_for(
+                            &cf.kind,
+                            cf.max_length,
+                            cf.auto,
+                            &cf.name,
+                            dialect,
+                        )?;
+                        ops.push(Operation::AlterColumnType {
+                            table_name: snap.table_name.clone(),
+                            column_name: cf.column_name.clone(),
+                            new_sql_type: sql_type,
+                        });
+                    }
+                } else {
+                    let sql_type = crate::type_mapping::sql_type_for(
+                        &cf.kind,
+                        cf.max_length,
+                        cf.auto,
+                        &cf.name,
+                        dialect,
+                    )?;
+                    ops.push(Operation::AddColumn {
+                        table_name: snap.table_name.clone(),
+                        column: ColumnDef {
+                            name: cf.column_name.clone(),
+                            sql_type,
+                            nullable: cf.nullable,
+                            primary_key: cf.primary_key,
+                            unique: cf.unique,
+                            default_sql: None,
+                            references: None,
+                        },
+                    });
+                }
+            }
+        } else {
+            // New table: generate CreateTable from the live build_plan logic.
+            let mut columns = Vec::new();
+            for f in &snap.fields {
+                columns.push(ColumnDef {
+                    name: f.column_name.clone(),
+                    sql_type: crate::type_mapping::sql_type_for(
+                        &f.kind,
+                        f.max_length,
+                        f.auto,
+                        &f.name,
+                        dialect,
+                    )?,
+                    nullable: f.nullable,
+                    primary_key: f.primary_key,
+                    unique: f.unique,
+                    default_sql: None,
+                    references: None,
+                });
+            }
+            ops.push(Operation::CreateTable {
+                table_name: snap.table_name.clone(),
+                columns,
+                check_constraints: vec![],
+            });
+        }
+    }
+
+    Ok(ops)
 }

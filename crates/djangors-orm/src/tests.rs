@@ -1,6 +1,6 @@
 use crate::meta::{
-    all_registered_models, DefaultValue, FieldKind, FieldMeta, ForeignKey, Model, ModelMeta,
-    ModelRegistration, OnDelete, RelationKind, RelationMeta,
+    all_registered_models, DefaultValue, FieldKind, FieldMeta, ForeignKey, ManyToMany, Model,
+    ModelMeta, ModelRegistration, OnDelete, OneToOne, RelationKind, RelationMeta,
 };
 use djangors_db::DbExecutor;
 
@@ -202,7 +202,7 @@ fn test_foreign_key_clone_copy() {
 use crate::q;
 use djangors_macros::Model;
 
-#[derive(Model, Debug)]
+#[derive(Model, Debug, Clone)]
 #[djangors(app = "test_app", table_name = "test_queryset_model")]
 #[allow(dead_code)]
 pub struct QuerySetTestModel {
@@ -214,9 +214,294 @@ pub struct QuerySetTestModel {
     pub is_active: bool,
 }
 
+pub struct ActiveManager;
+
+impl crate::meta::Manager<ManagedModel> for ActiveManager {
+    fn objects() -> crate::queryset::QuerySet<ManagedModel> {
+        crate::queryset::QuerySet::<ManagedModel>::new()
+            .filter(q!(is_active = true))
+            .expect("valid filter")
+    }
+}
+
+#[derive(Model, Debug)]
+#[djangors(
+    app = "test_app",
+    table_name = "test_manager_model",
+    manager = "ActiveManager"
+)]
+#[allow(dead_code)]
+pub struct ManagedModel {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+
+    pub name: String,
+
+    pub is_active: bool,
+}
+
+#[tokio::test]
+async fn test_custom_manager_objects() {
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_manager_model", &[])
+        .await;
+    db.conn()
+        .execute(
+            &format!(
+                "CREATE TABLE test_manager_model (
+                    id {auto_pk},
+                    name TEXT NOT NULL,
+                    is_active BOOLEAN NOT NULL
+                )"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+
+    for (name, active) in [("a", true), ("b", false), ("c", true)] {
+        let row = ManagedModel {
+            id: 0,
+            name: name.to_string(),
+            is_active: active,
+        };
+        row.save(db).await.unwrap();
+    }
+
+    // objects() is the custom manager: only active rows
+    let active = ManagedModel::objects().all(db).await.unwrap();
+    assert_eq!(active.len(), 2);
+    assert!(active.iter().all(|r| r.is_active));
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_subquery_author", &[])
+        .await;
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_one_to_one_user")]
+pub struct OneToOneUser {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_one_to_one_profile")]
+pub struct OneToOneProfile {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    #[djangors(foreign_key(on_delete = "cascade", related_name = "profile"))]
+    pub user: OneToOne<OneToOneUser>,
+}
+
+#[tokio::test]
+async fn test_one_to_one_metadata_and_fetch() {
+    assert_eq!(
+        OneToOneProfile::meta().relations[0].kind,
+        RelationKind::OneToOne
+    );
+
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_one_to_one_profile", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_one_to_one_user", &[])
+        .await;
+    db.conn()
+        .execute(
+            &format!("CREATE TABLE test_one_to_one_user (id {auto_pk}, name TEXT NOT NULL)"),
+            &[],
+        )
+        .await
+        .unwrap();
+    // The OneToOne column must be UNIQUE. `user` is a reserved word in Postgres (but not in
+    // SQLite), so the identifier has to be quoted through the dialect here exactly the way the
+    // queryset builder quotes it at query time — a bare `user` parses on SQLite and is a syntax
+    // error on Postgres.
+    let user_col = db.dialect().quote_ident("user");
+    let create_profile = format!(
+        "CREATE TABLE test_one_to_one_profile (id {auto_pk}, {user_col} BIGINT NOT NULL UNIQUE REFERENCES test_one_to_one_user(id) ON DELETE CASCADE)"
+    );
+    db.conn().execute(&create_profile, &[]).await.unwrap();
+
+    let user = OneToOneUser {
+        id: 0,
+        name: "u1".to_string(),
+    };
+    let saved = user.save(db).await.unwrap();
+    let profile = OneToOneProfile {
+        id: 0,
+        user: OneToOne::new(saved.id),
+    };
+    let saved_profile = profile.save(db).await.unwrap();
+
+    // Lazy fetch through the OneToOne accessor.
+    let fetched = saved_profile.user.fetch(db).await.unwrap();
+    assert_eq!(fetched.as_ref().map(|u| u.name.as_str()), Some("u1"));
+
+    // Drop the child first: the profile's FK references the user table.
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_one_to_one_profile", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_one_to_one_user", &[])
+        .await;
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_m2m_student")]
+pub struct M2MStudent {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_m2m_school")]
+pub struct M2MSchool {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+    // A `ManyToMany<T>` is a zero-sized marker that only exists to drive the derive's relation
+    // metadata — it has no column and is never read back, so `dead_code` fires on it.
+    #[allow(dead_code)]
+    #[djangors(many_to_many(related_name = "schools"))]
+    pub students: ManyToMany<M2MStudent>,
+}
+
+#[tokio::test]
+async fn test_many_to_many_metadata_join_and_helpers() {
+    use crate::m2m_add;
+    use crate::m2m_related;
+    use crate::m2m_remove;
+
+    assert_eq!(
+        M2MSchool::meta().relations[0].kind,
+        RelationKind::ManyToMany
+    );
+    assert_eq!(
+        crate::meta::m2m_through_table(M2MSchool::meta(), &M2MSchool::meta().relations[0]),
+        "test_m2m_school_students"
+    );
+
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_m2m_school_students", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_m2m_school", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_m2m_student", &[])
+        .await;
+    db.conn()
+        .execute(
+            &format!("CREATE TABLE test_m2m_student (id {auto_pk}, name TEXT NOT NULL)"),
+            &[],
+        )
+        .await
+        .unwrap();
+    db.conn()
+        .execute(
+            &format!("CREATE TABLE test_m2m_school (id {auto_pk}, name TEXT NOT NULL)"),
+            &[],
+        )
+        .await
+        .unwrap();
+    db.conn()
+        .execute(
+            "CREATE TABLE test_m2m_school_students (
+                    m2mschool_id BIGINT NOT NULL REFERENCES test_m2m_school(id) ON DELETE CASCADE,
+                    m2mstudent_id BIGINT NOT NULL REFERENCES test_m2m_student(id) ON DELETE CASCADE
+                )",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let s1 = M2MStudent {
+        id: 0,
+        name: "ann".to_string(),
+    }
+    .save(db)
+    .await
+    .unwrap();
+    let s2 = M2MStudent {
+        id: 0,
+        name: "bob".to_string(),
+    }
+    .save(db)
+    .await
+    .unwrap();
+    let school = M2MSchool {
+        id: 0,
+        name: "hs".to_string(),
+        students: ManyToMany::new(),
+    }
+    .save(db)
+    .await
+    .unwrap();
+
+    m2m_add::<M2MSchool, M2MStudent, _>(db, school.id, "students", s1.id)
+        .await
+        .unwrap();
+    m2m_add::<M2MSchool, M2MStudent, _>(db, school.id, "students", s2.id)
+        .await
+        .unwrap();
+
+    let related = m2m_related::<M2MSchool, M2MStudent, _>(db, school.id, "students")
+        .await
+        .unwrap();
+    assert_eq!(related.len(), 2);
+    let names: Vec<&str> = related.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"ann") && names.contains(&"bob"));
+
+    m2m_remove::<M2MSchool, M2MStudent, _>(db, school.id, "students", s1.id)
+        .await
+        .unwrap();
+    let after = m2m_related::<M2MSchool, M2MStudent, _>(db, school.id, "students")
+        .await
+        .unwrap();
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].name, "bob");
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_m2m_school_students", &[])
+        .await;
+    let _ = db.conn().execute("DROP TABLE test_m2m_school", &[]).await;
+    let _ = db.conn().execute("DROP TABLE test_m2m_student", &[]).await;
+}
+
 #[tokio::test]
 async fn test_queryset_operations() {
-    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    // Isolated per-test database: four tests in this file all create and drop the same
+    // `test_queryset_model` table (the model's `table_name` is fixed at derive time, so they
+    // cannot simply use different names). Sharing one Postgres database made them race —
+    // one test dropping the table while another queried it — which SQLite never showed,
+    // because each SQLite test already gets its own database.
+    let test_db = djangors_test::TestDatabase::isolated().await.unwrap();
     let db = test_db.database();
     let auto_pk = db.dialect().auto_pk_type();
 
@@ -451,8 +736,13 @@ async fn test_queryset_operations() {
 }
 
 #[tokio::test]
-async fn test_get_or_create_and_update_or_create() {
-    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+async fn test_queryset_bulk_delete() {
+    // Isolated per-test database: four tests in this file all create and drop the same
+    // `test_queryset_model` table (the model's `table_name` is fixed at derive time, so they
+    // cannot simply use different names). Sharing one Postgres database made them race —
+    // one test dropping the table while another queried it — which SQLite never showed,
+    // because each SQLite test already gets its own database.
+    let test_db = djangors_test::TestDatabase::isolated().await.unwrap();
     let db = test_db.database();
     let auto_pk = db.dialect().auto_pk_type();
 
@@ -474,10 +764,146 @@ async fn test_get_or_create_and_update_or_create() {
         .await
         .unwrap();
 
-    let defaults = || vec![
-        ("name", crate::expr::Value::Text("Dana".into())),
-        ("is_active", crate::expr::Value::Bool(true)),
-    ];
+    for (name, active) in [
+        ("a", true),
+        ("b", true),
+        ("c", false),
+        ("d", false),
+        ("e", true),
+    ] {
+        let row = QuerySetTestModel {
+            id: 0,
+            name: name.to_string(),
+            is_active: active,
+        };
+        row.save(db).await.unwrap();
+    }
+    assert_eq!(QuerySetTestModel::objects().count(db).await.unwrap(), 5);
+
+    // Filtered bulk delete: only inactive rows
+    let deleted = QuerySetTestModel::objects()
+        .filter(q!(is_active = false))
+        .unwrap()
+        .delete(db)
+        .await
+        .unwrap();
+    assert_eq!(deleted, 2);
+    assert_eq!(QuerySetTestModel::objects().count(db).await.unwrap(), 3);
+
+    // Remaining rows are all active
+    let remaining = QuerySetTestModel::objects().all(db).await.unwrap();
+    assert!(remaining.iter().all(|r| r.is_active));
+
+    // Unfiltered bulk delete clears the table
+    let deleted_all = QuerySetTestModel::objects().delete(db).await.unwrap();
+    assert_eq!(deleted_all, 3);
+    assert_eq!(QuerySetTestModel::objects().count(db).await.unwrap(), 0);
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_queryset_model", &[])
+        .await;
+}
+
+#[tokio::test]
+async fn test_queryset_cached_all_and_invalidation() {
+    // Isolated per-test database: four tests in this file all create and drop the same
+    // `test_queryset_model` table (the model's `table_name` is fixed at derive time, so they
+    // cannot simply use different names). Sharing one Postgres database made them race —
+    // one test dropping the table while another queried it — which SQLite never showed,
+    // because each SQLite test already gets its own database.
+    let test_db = djangors_test::TestDatabase::isolated().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_queryset_model", &[])
+        .await;
+    db.conn()
+        .execute(
+            &format!(
+                "CREATE TABLE test_queryset_model (
+                    id {auto_pk},
+                    name TEXT NOT NULL,
+                    is_active BOOLEAN NOT NULL
+                )"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+
+    for name in ["a", "b", "c"] {
+        let row = QuerySetTestModel {
+            id: 0,
+            name: name.to_string(),
+            is_active: true,
+        };
+        row.save(db).await.unwrap();
+    }
+
+    // Prime and reuse the cache.
+    let qs = QuerySetTestModel::objects()
+        .order_by("name")
+        .unwrap()
+        .cache(std::time::Duration::from_secs(60));
+    let first = qs.cached_all(db).await.unwrap();
+    let second = qs.cached_all(db).await.unwrap();
+    assert_eq!(first.len(), 3);
+    assert_eq!(second.len(), 3);
+
+    // A write invalidates the table cache.
+    let new_row = QuerySetTestModel {
+        id: 0,
+        name: "d".to_string(),
+        is_active: true,
+    };
+    new_row.save(db).await.unwrap();
+    let after = qs.cached_all(db).await.unwrap();
+    assert_eq!(after.len(), 4);
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_queryset_model", &[])
+        .await;
+}
+
+#[tokio::test]
+async fn test_get_or_create_and_update_or_create() {
+    // Isolated per-test database: four tests in this file all create and drop the same
+    // `test_queryset_model` table (the model's `table_name` is fixed at derive time, so they
+    // cannot simply use different names). Sharing one Postgres database made them race —
+    // one test dropping the table while another queried it — which SQLite never showed,
+    // because each SQLite test already gets its own database.
+    let test_db = djangors_test::TestDatabase::isolated().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_queryset_model", &[])
+        .await;
+    db.conn()
+        .execute(
+            &format!(
+                "CREATE TABLE test_queryset_model (
+                    id {auto_pk},
+                    name TEXT NOT NULL,
+                    is_active BOOLEAN NOT NULL
+                )"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let defaults = || {
+        vec![
+            ("name", crate::expr::Value::Text("Dana".into())),
+            ("is_active", crate::expr::Value::Bool(true)),
+        ]
+    };
 
     // get_or_create: creates when absent
     let (created_1, was_created) = QuerySetTestModel::objects()
@@ -504,11 +930,7 @@ async fn test_get_or_create_and_update_or_create() {
     let (updated, was_created) = QuerySetTestModel::objects()
         .filter(crate::q!(name = "Dana"))
         .unwrap()
-        .update_or_create(
-            db,
-            defaults,
-            || crate::set!(is_active = true),
-        )
+        .update_or_create(db, defaults, || crate::set!(is_active = true))
         .await
         .unwrap();
     assert!(!was_created);
@@ -521,17 +943,19 @@ async fn test_get_or_create_and_update_or_create() {
         .unwrap()
         .update_or_create(
             db,
-            || vec![
-                ("name", crate::expr::Value::Text("Erin".into())),
-                ("is_active", crate::expr::Value::Bool(false)),
-            ],
+            || {
+                vec![
+                    ("name", crate::expr::Value::Text("Erin".into())),
+                    ("is_active", crate::expr::Value::Bool(false)),
+                ]
+            },
             || crate::set!(is_active = false),
         )
         .await
         .unwrap();
     assert!(was_created);
     assert_eq!(made.name, "Erin");
-    assert_eq!(made.is_active, false);
+    assert!(!made.is_active);
     assert_eq!(QuerySetTestModel::objects().count(db).await.unwrap(), 2);
 
     // Cleanup
@@ -976,6 +1400,87 @@ async fn test_queryset_select_related() {
     let _ = db
         .conn()
         .execute("DROP TABLE test_select_related_parent", &[])
+        .await;
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_fk_fetch_parent")]
+pub struct FetchParent {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    pub name: String,
+}
+
+#[derive(Model, Debug, Clone)]
+#[djangors(app = "test_app", table_name = "test_fk_fetch_child")]
+pub struct FetchChild {
+    #[djangors(primary_key, auto)]
+    pub id: i64,
+    #[djangors(foreign_key(on_delete = "cascade", related_name = "children"))]
+    pub parent: ForeignKey<FetchParent>,
+}
+
+#[tokio::test]
+async fn test_foreign_key_fetch() {
+    let test_db = djangors_test::TestDatabase::connect().await.unwrap();
+    let db = test_db.database();
+    let auto_pk = db.dialect().auto_pk_type();
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_fk_fetch_child", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE IF EXISTS test_fk_fetch_parent", &[])
+        .await;
+    db.conn()
+        .execute(
+            &format!(
+                "CREATE TABLE test_fk_fetch_parent (
+                    id {auto_pk},
+                    name TEXT NOT NULL
+                )"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+    db.conn()
+        .execute(
+            &format!(
+                "CREATE TABLE test_fk_fetch_child (
+                    id {auto_pk},
+                    parent BIGINT NOT NULL REFERENCES test_fk_fetch_parent(id) ON DELETE CASCADE
+                )"
+            ),
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let parent = FetchParent {
+        id: 0,
+        name: "parent-1".to_string(),
+    };
+    let saved_parent = parent.save(db).await.unwrap();
+
+    // Fetch the related row through the ForeignKey's lazy accessor.
+    let fk = ForeignKey::<FetchParent>::new(saved_parent.id);
+    let fetched = fk.fetch(db).await.unwrap() as Option<FetchParent>;
+    assert_eq!(fetched.as_ref().map(|p| p.name.as_str()), Some("parent-1"));
+
+    // Missing row -> None.
+    let missing = ForeignKey::<FetchParent>::new(999999);
+    assert!(missing.fetch(db).await.unwrap().is_none());
+
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_fk_fetch_child", &[])
+        .await;
+    let _ = db
+        .conn()
+        .execute("DROP TABLE test_fk_fetch_parent", &[])
         .await;
 }
 

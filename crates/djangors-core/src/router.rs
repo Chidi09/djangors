@@ -127,6 +127,25 @@ impl Router {
         self
     }
 
+    /// Register a project-wide [`crate::error::ErrorRenderer`] used to turn [`DjangorsError`]
+    /// values into responses.
+    ///
+    /// This is the ergonomic equivalent of
+    /// `with_state(Arc::new(renderer) as Arc<dyn ErrorRenderer>)` — the trait-object
+    /// cast is the part that is easy to get wrong, because
+    /// `with_state(Arc::new(renderer))` compiles perfectly well while storing the
+    /// value under its concrete type, where the renderer lookup never finds it and
+    /// the custom renderer is silently ignored.
+    ///
+    /// ```ignore
+    /// let router = Router::new().set_error_renderer(MyRenderer);
+    /// ```
+    pub fn set_error_renderer<R: crate::error::ErrorRenderer + 'static>(self, renderer: R) -> Self {
+        self.with_state(
+            std::sync::Arc::new(renderer) as std::sync::Arc<dyn crate::error::ErrorRenderer>
+        )
+    }
+
     /// Register a handler for the given path and HTTP method.
     ///
     /// # Panics
@@ -1206,6 +1225,49 @@ mod tests {
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json["error"]["status"], 404);
         assert_eq!(json["error"]["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn test_set_error_renderer_matches_manual_cast() {
+        let router_manual = Router::new()
+            .with_state(std::sync::Arc::new(crate::error::JsonErrorRenderer)
+                as std::sync::Arc<dyn crate::error::ErrorRenderer>);
+        let router_helper = Router::new().set_error_renderer(crate::error::JsonErrorRenderer);
+
+        let hyper_req_manual = hyper::Request::builder()
+            .method("GET")
+            .uri("/does-not-exist")
+            .body(http_body_util::Full::new(Bytes::new()))
+            .unwrap();
+        let hyper_resp_manual = router_manual.dispatch(hyper_req_manual).await;
+
+        let hyper_req_helper = hyper::Request::builder()
+            .method("GET")
+            .uri("/does-not-exist")
+            .body(http_body_util::Full::new(Bytes::new()))
+            .unwrap();
+        let hyper_resp_helper = router_helper.dispatch(hyper_req_helper).await;
+
+        assert_eq!(hyper_resp_manual.status(), hyper_resp_helper.status());
+        assert_eq!(
+            hyper_resp_manual.headers().get("content-type"),
+            hyper_resp_helper.headers().get("content-type")
+        );
+
+        use http_body_util::BodyExt;
+        let body_manual = hyper_resp_manual
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        let body_helper = hyper_resp_helper
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+        assert_eq!(body_manual, body_helper);
     }
 
     #[tokio::test]

@@ -150,6 +150,17 @@ pub struct ModelAdminConfig {
     pub inlines: Option<&'static [InlineConfig]>,
 }
 
+/// A resolved, request-scoped tenant restriction: the tenant FK field name on the
+/// model plus the tenant id every row must match. `None` means "no restriction"
+/// (the admin site is not tenant-scoped, or the acting user is a superuser).
+///
+/// This is passed *per call* rather than stored on the `ModelAdmin`. A
+/// `ModelAdmin` is constructed once at registration and shared across every
+/// concurrent request via `Arc`, so storing the active tenant on the admin would
+/// let one request's tenant leak into another's query while the first is awaiting
+/// the database.
+pub type TenantFilter = Option<(&'static str, i64)>;
+
 /// Pluggable administration interface trait for managing ORM models.
 #[async_trait]
 pub trait ModelAdmin: Send + Sync {
@@ -168,6 +179,7 @@ pub trait ModelAdmin: Send + Sync {
         search: Option<&str>,
         filters: &[(&'static str, bool)],
         date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+        tenant: TenantFilter,
     ) -> Result<ChangelistPage, DjangorsError>;
 
     /// Queries and returns headers and rows for CSV export.
@@ -179,6 +191,7 @@ pub trait ModelAdmin: Send + Sync {
         search: Option<&str>,
         filters: &[(&'static str, bool)],
         date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+        tenant: TenantFilter,
     ) -> Result<(Vec<&'static str>, Vec<Vec<String>>), DjangorsError>;
 
     /// Returns search field names for this model admin.
@@ -211,15 +224,16 @@ pub trait ModelAdmin: Send + Sync {
         &[]
     }
 
-    /// Sets the tenant filter for this admin, scoping subsequent queries to a
-    /// specific tenant. The default implementation does nothing.
-    fn set_tenant_filter(&self, _field: &'static str, _id: i64) {}
-
     /// Fetches a single object by primary key as name/value tuples.
+    ///
+    /// Returns `None` when the row does not exist *or* belongs to another
+    /// tenant, so a cross-tenant primary key is indistinguishable from a
+    /// missing one.
     async fn get_by_pk(
         &self,
         db: &djangors_db::Database,
         pk: i64,
+        tenant: TenantFilter,
     ) -> Result<Option<Vec<(&'static str, djangors_orm::expr::Value)>>, DjangorsError>;
 
     /// Updates an existing object from form parameters.
@@ -228,6 +242,7 @@ pub trait ModelAdmin: Send + Sync {
         db: &djangors_db::Database,
         pk: i64,
         form: &std::collections::HashMap<String, String>,
+        tenant: TenantFilter,
     ) -> Result<Result<(), std::collections::HashMap<String, String>>, DjangorsError>;
 
     /// Updates specific fields of an existing object from form parameters.
@@ -236,28 +251,42 @@ pub trait ModelAdmin: Send + Sync {
         db: &djangors_db::Database,
         pk: i64,
         form: &std::collections::HashMap<String, String>,
+        tenant: TenantFilter,
     ) -> Result<Result<(), std::collections::HashMap<String, String>>, DjangorsError>;
 
     /// Creates a new model instance from form parameters.
+    ///
+    /// When `tenant` is set, the new row's tenant field is forced to that
+    /// tenant, so a submitted form can never plant a row in another tenant.
     async fn create_from_form(
         &self,
         db: &djangors_db::Database,
         form: &std::collections::HashMap<String, String>,
+        tenant: TenantFilter,
     ) -> Result<Result<i64, std::collections::HashMap<String, String>>, DjangorsError>;
 
-    /// Deletes a single object by primary key.
+    /// Deletes a single object by primary key. Returns `false` without deleting
+    /// anything when the row belongs to another tenant.
     async fn delete_by_pk(
         &self,
         db: &djangors_db::Database,
         pk: i64,
+        tenant: TenantFilter,
     ) -> Result<bool, DjangorsError>;
+}
+
+/// Builds the `field = tenant_id` comparison for a resolved [`TenantFilter`].
+fn tenant_compare(tenant: TenantFilter) -> Option<djangors_orm::expr::UnresolvedCompare> {
+    tenant.map(|(field, id)| djangors_orm::expr::UnresolvedCompare {
+        field,
+        value: djangors_orm::expr::Value::I64(id),
+    })
 }
 
 /// Blanket impl so any real Model can be registered with zero boilerplate.
 pub struct DefaultModelAdmin<M: Model> {
     config: ModelAdminConfig,
     _marker: PhantomData<M>,
-    tenant_filter: std::sync::Mutex<Option<(&'static str, i64)>>,
 }
 
 impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> DefaultModelAdmin<M> {
@@ -268,12 +297,14 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> DefaultMod
             .unwrap_or_else(M::field_names)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_filtered_queryset(
         &self,
         order: Option<&str>,
         search: Option<&str>,
         filters: &[(&'static str, bool)],
         date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+        tenant: TenantFilter,
     ) -> Result<djangors_orm::queryset::QuerySet<M>, DjangorsError> {
         let mut qs = M::objects();
         if let Some(o) = order {
@@ -313,19 +344,37 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> DefaultMod
                 .filter(bf.clone())
                 .map_err(|e| DjangorsError::Internal(e.to_string()))?;
         }
-        {
-            let tf = self.tenant_filter.lock().unwrap();
-            if let Some((field, id)) = tf.as_ref() {
-                let compare = djangors_orm::expr::UnresolvedCompare {
-                    field,
-                    value: djangors_orm::expr::Value::I64(*id),
-                };
-                qs = qs
-                    .filter(djangors_orm::expr::UnresolvedExpr::And(vec![compare]))
-                    .map_err(|e| DjangorsError::Internal(e.to_string()))?;
-            }
+        if let Some(compare) = tenant_compare(tenant) {
+            qs = qs
+                .filter(djangors_orm::expr::UnresolvedExpr::And(vec![compare]))
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
         }
         Ok(qs)
+    }
+
+    /// Returns a `QuerySet<M>` filtered by primary key `pk` AND, when tenant scoping
+    /// is active, the current tenant — so PK-backed reads/writes never cross tenant
+    /// boundaries (`get_by_pk`, `update_from_form`, `delete_by_pk`, etc.).
+    fn scoped_pk_queryset(
+        &self,
+        pk: i64,
+        tenant: TenantFilter,
+    ) -> Result<djangors_orm::queryset::QuerySet<M>, DjangorsError> {
+        let meta = M::meta();
+        let pk_field =
+            meta.fields.iter().find(|f| f.primary_key).ok_or_else(|| {
+                DjangorsError::Internal("Primary key field not found".to_string())
+            })?;
+        let mut compares = vec![djangors_orm::expr::UnresolvedCompare {
+            field: pk_field.name,
+            value: djangors_orm::expr::Value::I64(pk),
+        }];
+        if let Some(tc) = tenant_compare(tenant) {
+            compares.push(tc);
+        }
+        M::objects()
+            .filter(djangors_orm::expr::UnresolvedExpr::And(compares))
+            .map_err(|e| DjangorsError::Internal(e.to_string()))
     }
 
     fn row_values(&self, item: &M, columns: &[&'static str]) -> Vec<String> {
@@ -412,10 +461,6 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         self.config.inlines.unwrap_or(&[])
     }
 
-    fn set_tenant_filter(&self, field: &'static str, id: i64) {
-        *self.tenant_filter.lock().unwrap() = Some((field, id));
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn changelist(
         &self,
@@ -426,8 +471,9 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         search: Option<&str>,
         filters: &[(&'static str, bool)],
         date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+        tenant: TenantFilter,
     ) -> Result<ChangelistPage, DjangorsError> {
-        let mut qs = self.build_filtered_queryset(order, search, filters, date_range)?;
+        let mut qs = self.build_filtered_queryset(order, search, filters, date_range, tenant)?;
 
         let total = qs
             .clone()
@@ -486,8 +532,9 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         search: Option<&str>,
         filters: &[(&'static str, bool)],
         date_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+        tenant: TenantFilter,
     ) -> Result<(Vec<&'static str>, Vec<Vec<String>>), DjangorsError> {
-        let qs = self.build_filtered_queryset(order, search, filters, date_range)?;
+        let qs = self.build_filtered_queryset(order, search, filters, date_range, tenant)?;
         let items = qs
             .all(db)
             .await
@@ -504,24 +551,9 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         &self,
         db: &djangors_db::Database,
         pk: i64,
+        tenant: TenantFilter,
     ) -> Result<Option<Vec<(&'static str, djangors_orm::expr::Value)>>, DjangorsError> {
-        let meta = M::meta();
-        let pk_field =
-            meta.fields.iter().find(|f| f.primary_key).ok_or_else(|| {
-                DjangorsError::Internal("Primary key field not found".to_string())
-            })?;
-
-        let unresolved_cmp =
-            djangors_orm::expr::UnresolvedExpr::And(vec![djangors_orm::expr::UnresolvedCompare {
-                field: pk_field.name,
-                value: djangors_orm::expr::Value::I64(pk),
-            }]);
-
-        let row_opt = M::objects()
-            .filter(unresolved_cmp)
-            .map_err(|e| DjangorsError::Internal(e.to_string()))?
-            .get(db)
-            .await;
+        let row_opt = self.scoped_pk_queryset(pk, tenant)?.get(db).await;
 
         match row_opt {
             Ok(row) => Ok(Some(row.field_values())),
@@ -535,6 +567,7 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         db: &djangors_db::Database,
         pk: i64,
         form: &std::collections::HashMap<String, String>,
+        tenant: TenantFilter,
     ) -> Result<Result<(), std::collections::HashMap<String, String>>, DjangorsError> {
         let meta = M::meta();
         let mut errors = std::collections::HashMap::new();
@@ -571,20 +604,7 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
             return Ok(Err(errors));
         }
 
-        let pk_field =
-            meta.fields.iter().find(|f| f.primary_key).ok_or_else(|| {
-                DjangorsError::Internal("Primary key field not found".to_string())
-            })?;
-
-        let unresolved_cmp =
-            djangors_orm::expr::UnresolvedExpr::And(vec![djangors_orm::expr::UnresolvedCompare {
-                field: pk_field.name,
-                value: djangors_orm::expr::Value::I64(pk),
-            }]);
-
-        let qs = M::objects()
-            .filter(unresolved_cmp)
-            .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        let qs = self.scoped_pk_queryset(pk, tenant)?;
 
         qs.update(db, sets)
             .await
@@ -598,6 +618,7 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         db: &djangors_db::Database,
         pk: i64,
         form: &std::collections::HashMap<String, String>,
+        tenant: TenantFilter,
     ) -> Result<Result<(), std::collections::HashMap<String, String>>, DjangorsError> {
         let meta = M::meta();
         let mut errors = std::collections::HashMap::new();
@@ -625,18 +646,7 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
             return Ok(Ok(())); // nothing in `form` matched a real field - a no-op, not an error
         }
 
-        let pk_field =
-            meta.fields.iter().find(|f| f.primary_key).ok_or_else(|| {
-                DjangorsError::Internal("Primary key field not found".to_string())
-            })?;
-        let unresolved_cmp =
-            djangors_orm::expr::UnresolvedExpr::And(vec![djangors_orm::expr::UnresolvedCompare {
-                field: pk_field.name,
-                value: djangors_orm::expr::Value::I64(pk),
-            }]);
-        let qs = M::objects()
-            .filter(unresolved_cmp)
-            .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+        let qs = self.scoped_pk_queryset(pk, tenant)?;
         qs.update(db, sets)
             .await
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
@@ -648,6 +658,7 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         &self,
         db: &djangors_db::Database,
         form: &std::collections::HashMap<String, String>,
+        tenant: TenantFilter,
     ) -> Result<Result<i64, std::collections::HashMap<String, String>>, DjangorsError> {
         let meta = M::meta();
         let mut errors = std::collections::HashMap::new();
@@ -684,6 +695,13 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
             return Ok(Err(errors));
         }
 
+        // When tenant scoping is active, force the new row's tenant field to the
+        // current tenant so an object created from a scoped add-form always belongs
+        // to the right tenant — the form cannot set another tenant's id.
+        if let Some((field, id)) = tenant {
+            values.push((field, djangors_orm::expr::Value::I64(id)));
+        }
+
         let pk = djangors_orm::queryset::QuerySet::<M>::insert_raw(db, values)
             .await
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
@@ -695,7 +713,20 @@ impl<M: Model + djangors_orm::error::FromRow + Send + Sync + 'static> ModelAdmin
         &self,
         db: &djangors_db::Database,
         pk: i64,
+        tenant: TenantFilter,
     ) -> Result<bool, DjangorsError> {
+        // If tenant scoping is active, only delete when the row also belongs to the
+        // current tenant — otherwise a cross-tenant PK could be deleted.
+        if tenant.is_some() {
+            let scoped = self
+                .scoped_pk_queryset(pk, tenant)?
+                .first(db)
+                .await
+                .map_err(|e| DjangorsError::Internal(e.to_string()))?;
+            if scoped.is_none() {
+                return Ok(false);
+            }
+        }
         let rows = djangors_orm::queryset::QuerySet::<M>::delete_by_pk(db, pk)
             .await
             .map_err(|e| DjangorsError::Internal(e.to_string()))?;
@@ -985,9 +1016,7 @@ async fn build_inline_tables(
     for ic in inlines {
         let child_meta = djangors_orm::meta::all_registered_models()
             .find(|m| m.struct_name == ic.struct_name)
-            .ok_or_else(|| {
-                DjangorsError::Internal(format!("unknown model {}", ic.struct_name))
-            })?;
+            .ok_or_else(|| DjangorsError::Internal(format!("unknown model {}", ic.struct_name)))?;
 
         let mut conn = db.conn();
         let dialect = conn.dialect();
@@ -1420,7 +1449,6 @@ impl AdminSite {
         reg.push(Arc::new(DefaultModelAdmin::<M> {
             config,
             _marker: PhantomData,
-            tenant_filter: std::sync::Mutex::new(None),
         }));
     }
 
@@ -1474,6 +1502,16 @@ impl AdminSite {
 
         let changelist_tenant_scope = self.tenant_scope.clone();
         let export_csv_tenant_scope = self.tenant_scope.clone();
+        let add_get_tenant_scope = self.tenant_scope.clone();
+        let add_post_tenant_scope = self.tenant_scope.clone();
+        let change_get_tenant_scope = self.tenant_scope.clone();
+        let change_post_tenant_scope = self.tenant_scope.clone();
+        let delete_get_tenant_scope = self.tenant_scope.clone();
+        let delete_post_tenant_scope = self.tenant_scope.clone();
+        let history_tenant_scope = self.tenant_scope.clone();
+        let bulk_delete_tenant_scope = self.tenant_scope.clone();
+        let bulk_action_tenant_scope = self.tenant_scope.clone();
+        let save_changelist_tenant_scope = self.tenant_scope.clone();
 
         let mut router = Router::new()
             .get("/", move |req: Request, params: PathParams| {
@@ -1510,6 +1548,7 @@ impl AdminSite {
                         params,
                         add_get_admins.clone(),
                         add_get_branding.clone(),
+                        add_get_tenant_scope.clone(),
                     )
                 },
             )
@@ -1521,6 +1560,7 @@ impl AdminSite {
                         params,
                         add_post_admins.clone(),
                         add_post_branding.clone(),
+                        add_post_tenant_scope.clone(),
                     )
                 },
             )
@@ -1532,6 +1572,7 @@ impl AdminSite {
                         params,
                         change_get_admins.clone(),
                         change_get_branding.clone(),
+                        change_get_tenant_scope.clone(),
                     )
                 },
             )
@@ -1543,6 +1584,7 @@ impl AdminSite {
                         params,
                         change_post_admins.clone(),
                         change_post_branding.clone(),
+                        change_post_tenant_scope.clone(),
                     )
                 },
             )
@@ -1554,19 +1596,31 @@ impl AdminSite {
                         params,
                         delete_get_admins.clone(),
                         delete_get_branding.clone(),
+                        delete_get_tenant_scope.clone(),
                     )
                 },
             )
             .post(
                 "/{app:slug}/{model:slug}/{pk:i64}/delete/",
                 move |req: Request, params: PathParams| {
-                    admin_delete_post(req, params, delete_post_admins.clone())
+                    admin_delete_post(
+                        req,
+                        params,
+                        delete_post_admins.clone(),
+                        delete_post_tenant_scope.clone(),
+                    )
                 },
             )
             .get(
                 "/{app:slug}/{model:slug}/{pk:i64}/history/",
                 move |req: Request, params: PathParams| {
-                    admin_history(req, params, admins.clone(), history_branding.clone())
+                    admin_history(
+                        req,
+                        params,
+                        admins.clone(),
+                        history_branding.clone(),
+                        history_tenant_scope.clone(),
+                    )
                 },
             )
             .post(
@@ -1577,6 +1631,7 @@ impl AdminSite {
                         params,
                         bulk_delete_admins.clone(),
                         bulk_delete_branding.clone(),
+                        bulk_delete_tenant_scope.clone(),
                     )
                 },
             )
@@ -1588,6 +1643,7 @@ impl AdminSite {
                         params,
                         save_changelist_admins.clone(),
                         save_changelist_branding.clone(),
+                        save_changelist_tenant_scope.clone(),
                     )
                 },
             )
@@ -1599,6 +1655,7 @@ impl AdminSite {
                         params,
                         bulk_action_admins.clone(),
                         bulk_action_branding.clone(),
+                        bulk_action_tenant_scope.clone(),
                     )
                 },
             );
@@ -1658,15 +1715,10 @@ async fn admin_export_csv(
 
     let db = req.require_state::<djangors_db::Database>()?;
 
-    require_perm(&req, db, admin.model_meta(), "view").await?;
+    let user = require_perm(&req, db, admin.model_meta(), "view").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     let state = parse_changelist_query_state(&req, admin.as_ref())?;
-
-    if let Some(ref ts) = tenant_scope {
-        if let Some(tid) = (ts.extract_tenant_id)(&req) {
-            admin.set_tenant_filter(ts.tenant_field, tid);
-        }
-    }
 
     let (columns, rows) = admin
         .export_csv_rows(
@@ -1675,6 +1727,7 @@ async fn admin_export_csv(
             state.search,
             &state.filters,
             state.date_range,
+            tenant,
         )
         .await?;
     let csv_body = rows_to_csv(&columns, &rows);
@@ -1731,6 +1784,31 @@ async fn require_perm(
         )));
     }
     Ok(user)
+}
+
+/// Resolves the tenant restriction to apply to this request's admin queries.
+///
+/// A superuser is deliberately unrestricted, so they see every tenant's rows. For anyone
+/// else, when the site is tenant-scoped, the tenant id MUST resolve — a scoped site that
+/// cannot determine the current tenant fails closed with `Forbidden` rather than silently
+/// running the query unrestricted across every tenant.
+fn resolve_tenant(
+    user: &User,
+    tenant_scope: &Option<TenantScope>,
+    req: &Request,
+) -> Result<TenantFilter, DjangorsError> {
+    if user.is_superuser {
+        return Ok(None);
+    }
+    let Some(ts) = tenant_scope.as_ref() else {
+        return Ok(None);
+    };
+    match (ts.extract_tenant_id)(req) {
+        Some(tid) => Ok(Some((ts.tenant_field, tid))),
+        None => Err(DjangorsError::Forbidden(
+            "no tenant could be resolved for this request".to_string(),
+        )),
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -2226,6 +2304,7 @@ async fn admin_changelist(
     let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "view").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     let meta = admin.model_meta();
     let has_add = if user.is_superuser {
@@ -2290,12 +2369,6 @@ async fn admin_changelist(
         None => 1,
     };
 
-    if let Some(ref ts) = tenant_scope {
-        if let Some(tid) = (ts.extract_tenant_id)(&req) {
-            admin.set_tenant_filter(ts.tenant_field, tid);
-        }
-    }
-
     let page_data = admin
         .changelist(
             db,
@@ -2305,6 +2378,7 @@ async fn admin_changelist(
             q,
             &active_filters,
             date_range,
+            tenant,
         )
         .await?;
 
@@ -2643,6 +2717,7 @@ async fn admin_add_get(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
     branding: SiteBranding,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -2657,7 +2732,8 @@ async fn admin_add_get(
 
     let db = req.require_state::<djangors_db::Database>()?;
 
-    require_perm(&req, db, admin.model_meta(), "add").await?;
+    let user = require_perm(&req, db, admin.model_meta(), "add").await?;
+    let _tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     let meta = admin.model_meta();
     let field_names = admin.field_names();
@@ -2690,6 +2766,7 @@ async fn admin_add_post(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
     branding: SiteBranding,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -2705,11 +2782,12 @@ async fn admin_add_post(
     let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "add").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     let Form(form_data) =
         Form::<std::collections::HashMap<String, String>>::from_request(&req).await?;
 
-    match admin.create_from_form(db, &form_data).await? {
+    match admin.create_from_form(db, &form_data, tenant).await? {
         Ok(new_pk) => {
             log_action(
                 db,
@@ -2754,6 +2832,7 @@ async fn admin_change_get(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
     branding: SiteBranding,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -2772,6 +2851,7 @@ async fn admin_change_get(
     let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "change").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     let meta = admin.model_meta();
     let has_delete = if user.is_superuser {
@@ -2784,7 +2864,7 @@ async fn admin_change_get(
     };
 
     let row_vals = admin
-        .get_by_pk(db, pk)
+        .get_by_pk(db, pk, tenant)
         .await?
         .ok_or(DjangorsError::NotFound)?;
 
@@ -2823,6 +2903,7 @@ async fn admin_change_post(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
     branding: SiteBranding,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -2841,13 +2922,14 @@ async fn admin_change_post(
     let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "change").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     let Form(form_data) =
         Form::<std::collections::HashMap<String, String>>::from_request(&req).await?;
 
-    let old_row_vals = admin.get_by_pk(db, pk).await?;
+    let old_row_vals = admin.get_by_pk(db, pk, tenant).await?;
 
-    match admin.update_from_form(db, pk, &form_data).await? {
+    match admin.update_from_form(db, pk, &form_data, tenant).await? {
         Ok(()) => {
             let field_diff = if let Some(old_vals) = old_row_vals {
                 let meta = admin.model_meta();
@@ -2901,7 +2983,7 @@ async fn admin_change_post(
         }
         Err(errors) => {
             let row_vals = admin
-                .get_by_pk(db, pk)
+                .get_by_pk(db, pk, tenant)
                 .await?
                 .ok_or(DjangorsError::NotFound)?;
 
@@ -3164,6 +3246,7 @@ async fn admin_delete_get(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
     branding: SiteBranding,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -3181,10 +3264,11 @@ async fn admin_delete_get(
 
     let db = req.require_state::<djangors_db::Database>()?;
 
-    require_perm(&req, db, admin.model_meta(), "delete").await?;
+    let user = require_perm(&req, db, admin.model_meta(), "delete").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     let row_vals = admin
-        .get_by_pk(db, pk)
+        .get_by_pk(db, pk, tenant)
         .await?
         .ok_or(DjangorsError::NotFound)?;
 
@@ -3227,6 +3311,7 @@ async fn admin_delete_post(
     req: Request,
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -3245,6 +3330,7 @@ async fn admin_delete_post(
     let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "delete").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     let meta = admin.model_meta();
     let related = collect_related_objects(db, meta, pk).await?;
@@ -3257,7 +3343,7 @@ async fn admin_delete_post(
         }
     }
 
-    let deleted = admin.delete_by_pk(db, pk).await?;
+    let deleted = admin.delete_by_pk(db, pk, tenant).await?;
     if deleted {
         log_action(
             db,
@@ -3315,6 +3401,7 @@ async fn admin_history(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
     branding: SiteBranding,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -3331,6 +3418,15 @@ async fn admin_history(
         .ok_or(DjangorsError::NotFound)?;
 
     let db = req.require_state::<djangors_db::Database>()?;
+
+    let user = require_perm(&req, db, admin.model_meta(), "view").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
+
+    // The log table has no tenant column, so gate on the target object's visibility instead:
+    // if this tenant cannot see the object, it cannot read the object's audit history either.
+    if tenant.is_some() && admin.get_by_pk(db, pk, tenant).await?.is_none() {
+        return Err(DjangorsError::NotFound);
+    }
 
     let meta = admin.model_meta();
 
@@ -3433,6 +3529,7 @@ async fn admin_bulk_action_post(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
     branding: SiteBranding,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -3447,6 +3544,7 @@ async fn admin_bulk_action_post(
     let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "change").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     let Form(pairs) = Form::<Vec<(String, String)>>::from_request(&req).await?;
 
@@ -3475,7 +3573,7 @@ async fn admin_bulk_action_post(
     if action.requires_confirm && !is_confirm {
         let mut items = Vec::new();
         for &pk in &pks {
-            if let Some(row_vals) = admin.get_by_pk(db, pk).await? {
+            if let Some(row_vals) = admin.get_by_pk(db, pk, tenant).await? {
                 let display = row_vals
                     .iter()
                     .map(|(_, v)| v.to_string())
@@ -3522,6 +3620,7 @@ async fn admin_bulk_delete_post(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
     branding: SiteBranding,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -3536,6 +3635,7 @@ async fn admin_bulk_delete_post(
     let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "delete").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     // A HashMap extractor silently drops all but the last value for repeated form keys (every
     // checked "selected" checkbox shares the name "selected"). This would result in only one
@@ -3562,7 +3662,7 @@ async fn admin_bulk_delete_post(
         // Step 1: render the confirm page, listing each selected object.
         let mut items = Vec::new();
         for &pk in &pks {
-            if let Some(row_vals) = admin.get_by_pk(db, pk).await? {
+            if let Some(row_vals) = admin.get_by_pk(db, pk, tenant).await? {
                 let display = row_vals
                     .iter()
                     .map(|(_, v)| v.to_string())
@@ -3608,7 +3708,7 @@ async fn admin_bulk_delete_post(
         if is_protected {
             continue;
         }
-        if admin.delete_by_pk(db, pk).await? {
+        if admin.delete_by_pk(db, pk, tenant).await? {
             log_action(
                 db,
                 user.id,
@@ -3647,6 +3747,7 @@ async fn admin_save_changelist_post(
     params: PathParams,
     admins: Vec<Arc<dyn ModelAdmin>>,
     branding: SiteBranding,
+    tenant_scope: Option<TenantScope>,
 ) -> Result<Response, DjangorsError> {
     let app = params.get("app").unwrap_or("");
     let model = params.get("model").unwrap_or("");
@@ -3661,6 +3762,7 @@ async fn admin_save_changelist_post(
     let db = req.require_state::<djangors_db::Database>()?;
 
     let user = require_perm(&req, db, admin.model_meta(), "change").await?;
+    let tenant = resolve_tenant(&user, &tenant_scope, &req)?;
 
     let editable_fields = admin.list_editable_fields();
     let Form(pairs) = Form::<Vec<(String, String)>>::from_request(&req).await?;
@@ -3693,7 +3795,10 @@ async fn admin_save_changelist_post(
 
     let mut row_errors: Vec<(i64, std::collections::HashMap<String, String>)> = Vec::new();
     for (pk, fields) in &by_pk {
-        match admin.update_fields_from_form(db, *pk, fields).await? {
+        match admin
+            .update_fields_from_form(db, *pk, fields, tenant)
+            .await?
+        {
             Ok(()) => {
                 log_action(
                     db,
@@ -4346,10 +4451,9 @@ mod tests {
         let admin_a = DefaultModelAdmin::<ModelA> {
             config: ModelAdminConfig::default(),
             _marker: PhantomData,
-            tenant_filter: std::sync::Mutex::new(None),
         };
         let page_data = admin_a
-            .changelist(db, None, 2, 2, None, &[], None)
+            .changelist(db, None, 2, 2, None, &[], None, None)
             .await
             .unwrap();
         assert_eq!(page_data.total, 5);

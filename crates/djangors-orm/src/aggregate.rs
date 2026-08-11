@@ -129,9 +129,7 @@ impl FuncExpr {
                     crate::expr::Value::I64(n) => n.to_string(),
                     crate::expr::Value::F64(f) => f.to_string(),
                     crate::expr::Value::Text(s) => format!("'{}'", s.replace('\'', "''")),
-                    crate::expr::Value::Bool(b) => {
-                        (if *b { "TRUE" } else { "FALSE" }).to_string()
-                    }
+                    crate::expr::Value::Bool(b) => (if *b { "TRUE" } else { "FALSE" }).to_string(),
                     crate::expr::Value::Null => "NULL".to_string(),
                     _ => "NULL".to_string(),
                 };
@@ -147,8 +145,7 @@ impl FuncExpr {
                 format!("LENGTH({})", dialect.quote_ident(field))
             }
             Self::Concat { fields } => {
-                let quoted: Vec<String> =
-                    fields.iter().map(|f| dialect.quote_ident(f)).collect();
+                let quoted: Vec<String> = fields.iter().map(|f| dialect.quote_ident(f)).collect();
                 quoted.join(" || ")
             }
         }
