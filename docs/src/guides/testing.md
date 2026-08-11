@@ -310,3 +310,99 @@ SQLite run alone does not prove those paths still work.
 
 Use SQLite for the fast inner development loop, and run against PostgreSQL before changing anything
 dialect-specific and in CI.
+
+---
+
+## 3. Test Conventions
+
+The suite is expected to stay green under **both** Postgres and SQLite. Conventions below keep it
+that way.
+
+### Where test code lives
+
+Production `.rs` files contain no test code. Every `#[cfg(test)]` module lives in a **sibling
+file**:
+
+- For a crate's `lib.rs`, that is `src/tests.rs`, declared `#[cfg(test)] mod tests;` — see the
+  bottom of `crates/djangors-admin/src/lib.rs`.
+- For any other module, e.g. `src/queryset.rs`, it is `src/queryset_tests.rs`, declared with
+  `#[cfg(test)] #[path = "queryset_tests.rs"] mod tests;` — see
+  `crates/djangors-contrib-payments/src/bachs.rs`. The `#[path]` is required: without it Rust
+  looks for `src/queryset/tests.rs`.
+
+This keeps the production files readable, while the tests stay a **child module**, so they can
+still reach private items. That is exactly why they are not in `crates/*/tests/` — an integration
+test there only sees the crate's public API, and much of this suite exercises private functions.
+
+### Writing tests that pass on both backends
+
+Tests run as `cargo test --workspace` (Postgres, needs `DATABASE_URL`) and as
+`env -u DATABASE_URL TEST_BACKEND=sqlite cargo test --workspace`. The rules below keep both green:
+
+#### Build DDL from the dialect, never as a fixed string
+
+`BIGSERIAL` and `TIMESTAMPTZ` are Postgres spellings; SQLite needs `INTEGER PRIMARY KEY
+AUTOINCREMENT`. Use `db.dialect().auto_pk_type()` and `db.dialect().timestamp_type()`:
+
+```rust,illustrative
+let auto_pk = db.dialect().auto_pk_type();
+let ts_type = db.dialect().timestamp_type();
+db.conn().execute(
+    &format!("CREATE TABLE widget (id {auto_pk}, created_at {ts_type} NOT NULL)"),
+    &[],
+)
+.await
+.unwrap();
+```
+
+SQLite is permissive enough to *accept* the Postgres text, so the `CREATE TABLE` succeeds and the
+failure surfaces much later as an insert that returns no row — which is exactly how this bug hid
+(see `create_table_sql` in `crates/djangors-contrib-payments/src/transaction_tests.rs`).
+
+#### Quote identifiers through the dialect
+
+`db.dialect().quote_ident("user")` — `user` is a reserved word in Postgres but not in SQLite, so
+an unquoted column name passes on one backend and is a syntax error on the other:
+
+```rust,illustrative
+let user_col = db.dialect().quote_ident("user");
+let create_profile = format!(
+    "CREATE TABLE profile (id {auto_pk}, {user_col} BIGINT NOT NULL UNIQUE)"
+);
+```
+
+#### Never use raw `sqlx` against `Database::pool()`
+
+`pool()` panics outright on a SQLite handle (`"Attempted to access Postgres PgPool on a SQLite
+Database handle"`), and `$1` placeholders are Postgres-only. Go through the ORM
+(`Model::objects()`, `.save()`, `.count()`), which is already dialect-aware.
+
+#### Never hardcode a connection string
+
+Use `djangors_test::TestDatabase`, which honours `TEST_BACKEND` and `DATABASE_URL`. A hardcoded
+`postgres://…@localhost/djangors_test` ignores both and can only pass against one specific machine.
+
+#### Use `TestDatabase::isolated()` when a test creates its own tables
+
+Several tests sharing one table name against a single Postgres database will race on
+`DROP`/`CREATE` when run in parallel; `isolated()` gives each test its own database:
+
+```rust,illustrative
+let test_db = djangors_test::TestDatabase::isolated().await.unwrap();
+let db = test_db.database();
+```
+
+`connect()` is fine for read-only work (see `TestDatabase::connect()` vs
+`TestDatabase::isolated()` in `crates/djangors-test/src/lib.rs`).
+
+### Checklist before adding a test
+
+- Put the module in a sibling file (`src/tests.rs` or `src/{name}_tests.rs` with `#[path]`), never
+  in the production `.rs`.
+- Build every `CREATE TABLE` from `db.dialect().auto_pk_type()` / `timestamp_type()`, and quote
+  identifiers with `quote_ident()`.
+- Go through the ORM; never touch raw `pool()` or write `$1` placeholders by hand.
+- Obtain the database via `djangors_test::TestDatabase`, never a hardcoded URL.
+- Use `isolated()` when the test creates and drops tables; `connect()` only for read-only work.
+- Run under **both** backends (`cargo test --workspace` and the SQLite env-invocation) before
+  relying on it staying green.
