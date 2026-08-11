@@ -5,6 +5,100 @@ All notable changes to Djangors are documented here. Format loosely follows
 
 ## [Unreleased]
 
+## [0.7.0]
+
+This release contains a **breaking change to the `ModelAdmin` trait**, made to fix a
+cross-tenant data leak in the admin. Per the pre-1.0 policy in
+[API Stability](docs/src/api-stability.md), that bumps the minor version.
+
+### Removed
+
+- **`ModelAdmin::set_tenant_filter` and `ModelAdmin::clear_tenant_filter`.** These stored the
+  active tenant *on the admin object*. A `ModelAdmin` is constructed once at registration and
+  shared across every concurrent request behind an `Arc`, so a handler that set the filter and
+  then awaited the database could have a second request overwrite it mid-flight and run the
+  first request's query against the wrong tenant. `clear_tenant_filter` was worse: a superuser
+  request removed the restriction globally for whatever else was in flight.
+
+  There is no replacement, because the tenant is no longer stored anywhere. See below.
+
+### Changed (breaking)
+
+- **The seven `ModelAdmin` methods that touch data now take a final `tenant: TenantFilter`
+  argument**: `changelist`, `export_csv_rows`, `get_by_pk`, `update_from_form`,
+  `update_fields_from_form`, `create_from_form`, and `delete_by_pk`. `TenantFilter` is
+  `Option<(&'static str, i64)>` — the tenant FK field name plus the id every row must match, or
+  `None` for unrestricted.
+
+  **Migrating a custom `ModelAdmin`**: add the parameter to each of those methods and apply it to
+  every query the method runs. Do not cache it on `self` — that is the bug this change fixes.
+  Implementations that ignore tenancy entirely can accept the argument and ignore it, but will
+  then not be tenant-safe. `DefaultModelAdmin` needs no changes from callers.
+
+- **Admin tenant resolution now fails closed.** For a non-superuser on a tenant-scoped site, a
+  request whose tenant cannot be resolved returns `Forbidden` instead of running the query
+  unscoped across every tenant.
+
+- **`tenant_scope` returns `Internal` rather than `Unauthorized` when the membership lookup
+  itself fails.** A database error during tenant resolution was previously indistinguishable
+  from "this user is not a member", so an outage was reported to clients as an authorization
+  failure. `TenantResolutionLayer` now records a `TenantResolutionFailed` marker that
+  `tenant_scope` maps to a 500.
+
+### Added
+
+- **Bachs payment provider** (`djangors-contrib-payments`): `BachsProvider` implementing
+  `PaymentProvider` against the [bachs.io](https://bachs.io) REST API — product-less checkout
+  sessions, checkout-based verification, refunds, and HMAC-SHA256 webhook verification.
+  Note that `verify`/`refund` take the Bachs **checkout id** (returned as `access_code` from
+  `initiate`), not your merchant reference, because Bachs has no lookup-by-reference endpoint.
+  Not yet exercised against the live API.
+- **`PaymentProvider::verify_webhook_signature_with_timestamp`**, for providers that sign over a
+  timestamp plus the body. Has a default implementation that ignores the timestamp and delegates
+  to `verify_webhook_signature`, so existing implementations (including Paystack) are unaffected.
+- **`Router::set_error_renderer(renderer)`**, which performs the `Arc<dyn ErrorRenderer>` cast
+  for you. `with_state(Arc::new(MyRenderer))` compiles but stores the value under its concrete
+  type, where the renderer lookup never finds it — the custom renderer is then silently ignored.
+- **`TenantResolutionService`** is now re-exported from `djangors-contrib-tenancy`'s root,
+  alongside the new `TenantResolutionFailed`.
+- **`TenantFilter`** is exported from `djangors-admin`.
+
+### Fixed
+
+- **`record_charge_initiated` is now idempotent on SQLite.** It documents that a UNIQUE violation
+  on `reference` means "already recorded" and returns the existing row, but it matched only
+  Postgres's `23505`. On SQLite — a supported backend since 0.5.0 — a concurrent webhook
+  redelivery returned a hard error instead. SQLite's `2067` and `1555` are now recognised too.
+- **`admin_history` had no permission check at all**, and no tenant restriction. It now requires
+  the `view` permission and confirms the target object is visible to the current tenant before
+  reading its audit log (the log table has no tenant column of its own, so visibility is gated on
+  the object).
+- Several tests only passed on the backend they were written against, hiding the bug above: raw
+  `sqlx` against `Database::pool()` (which panics on a SQLite handle), `BIGSERIAL`/`TIMESTAMPTZ`
+  DDL, `$1` placeholders, an unquoted `user` column (a reserved word in Postgres), and one
+  hardcoded `postgres://…@localhost/djangors_test` that ignored both `TEST_BACKEND` and
+  `DATABASE_URL`. The suite now passes on both backends.
+- Four ORM tests shared one table against a single Postgres database and raced on `DROP`/`CREATE`
+  under parallel execution; they now use isolated per-test databases.
+
+### Internal
+
+- `djangors-admin`'s `lib.rs` went from 9,848 lines to 86, split into twelve modules
+  (`model_admin`, `site`, `changelist`, `edit_view`, `delete_view`, `index_view`, `history_view`,
+  `action_view`, `forms`, `log`, `perms`, `favicon`). Purely a move — every previously-public item
+  is re-exported at its original path, so this is not a breaking change.
+- All `#[cfg(test)]` modules across the workspace moved out of production sources into sibling
+  test files (59 files). They remain child modules, so they keep access to private items.
+
+### Documentation
+
+- New guidance in `guides/testing.md` on where test code lives and how to write tests that pass
+  on both backends; `guides/admin.md` gains the crate layout and the custom-`ModelAdmin` tenancy
+  contract. `guides/payments.md`, `guides/multi-tenancy.md`, `guides/http-and-middleware.md`,
+  `guides/orm.md`, and `guides/migrations.md` updated for the changes above, plus the previously
+  undocumented ORM features (`OneToOne`, `ManyToMany`, custom managers, composite indexes,
+  `QuerySet::delete`, query caching, `detect_changes`).
+
 ## [0.6.3]
 
 ### Router
