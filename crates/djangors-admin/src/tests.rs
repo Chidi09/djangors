@@ -1,8 +1,14 @@
 use super::*;
+// These were previously in scope implicitly: `tests` was a child module of a single monolithic
+// lib.rs and picked them up through `use super::*`. After the crate was split into modules,
+// lib.rs no longer imports them, so the test module declares them itself.
 use bytes::Bytes;
+use djangors_auth::User;
 use djangors_auth::SESSION_USER_ID_KEY;
+use djangors_core::{DjangorsError, PathParams, Request, Response, Router, StatusCode};
 use djangors_macros::Model as MacroModel;
 use hyper::http::{Extensions, HeaderMap, Method, Uri};
+use std::marker::PhantomData;
 
 static DB_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
