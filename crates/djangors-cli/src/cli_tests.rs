@@ -1,0 +1,168 @@
+use super::*;
+
+#[test]
+fn test_parse_new() {
+    let args = vec!["dj", "new", "myproject"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::New { name } => {
+            assert_eq!(name, "myproject");
+        }
+        _ => panic!("Expected Commands::New"),
+    }
+}
+
+#[test]
+fn test_parse_run_with_port() {
+    let args = vec!["dj", "run", "--port", "9000"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::Run { port } => {
+            assert_eq!(port, 9000);
+        }
+        _ => panic!("Expected Commands::Run"),
+    }
+}
+
+#[test]
+fn test_parse_run_default_port() {
+    let args = vec!["dj", "run"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::Run { port } => {
+            assert_eq!(port, 8000);
+        }
+        _ => panic!("Expected Commands::Run"),
+    }
+}
+
+#[test]
+fn test_parse_makemigrations_check() {
+    let args = vec!["dj", "makemigrations", "--check"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::Makemigrations { check } => {
+            assert!(check);
+        }
+        _ => panic!("Expected Commands::Makemigrations"),
+    }
+}
+
+#[test]
+fn test_parse_createsuperuser() {
+    let args = vec![
+        "dj",
+        "createsuperuser",
+        "--username",
+        "admin",
+        "--email",
+        "admin@example.com",
+    ];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::Createsuperuser { username, email } => {
+            assert_eq!(username, "admin");
+            assert_eq!(email, "admin@example.com");
+        }
+        _ => panic!("Expected Commands::Createsuperuser"),
+    }
+}
+
+#[test]
+fn test_parse_check_deploy() {
+    let args = vec!["dj", "check", "--deploy"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::Check { deploy } => {
+            assert!(deploy);
+        }
+        _ => panic!("Expected Commands::Check"),
+    }
+}
+
+#[test]
+fn test_parse_dbshell() {
+    let args = vec!["dj", "dbshell"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::Dbshell => {}
+        _ => panic!("Expected Commands::Dbshell"),
+    }
+}
+
+#[test]
+fn test_parse_sqlmigrate() {
+    let args = vec!["dj", "sqlmigrate", "polls", "0001"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::Sqlmigrate { app, migration } => {
+            assert_eq!(app, "polls");
+            assert_eq!(migration, "0001");
+        }
+        _ => panic!("Expected Commands::Sqlmigrate"),
+    }
+}
+
+#[test]
+fn test_parse_showmigrations() {
+    let args = vec!["dj", "showmigrations"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::Showmigrations => {}
+        _ => panic!("Expected Commands::Showmigrations"),
+    }
+}
+
+#[test]
+fn test_parse_migrate_plan() {
+    let args = vec!["dj", "migrate", "--plan"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::Migrate {
+            rollback,
+            plan,
+            fake,
+        } => {
+            assert_eq!(rollback, None);
+            assert!(plan);
+            assert!(!fake);
+        }
+        _ => panic!("Expected Commands::Migrate"),
+    }
+}
+
+#[test]
+fn test_parse_migrate_fake() {
+    let args = vec!["dj", "migrate", "--fake"];
+    let cli = Cli::try_parse_from(args).unwrap();
+    match cli.command {
+        Commands::Migrate {
+            rollback,
+            plan,
+            fake,
+        } => {
+            assert_eq!(rollback, None);
+            assert!(!plan);
+            assert!(fake);
+        }
+        _ => panic!("Expected Commands::Migrate"),
+    }
+}
+
+#[test]
+fn test_migrate_plan_and_fake_conflict() {
+    let args = vec!["dj", "migrate", "--plan", "--fake"];
+    assert!(Cli::try_parse_from(args).is_err());
+}
+
+#[test]
+fn test_migrate_rollback_and_fake_conflict() {
+    let args = vec!["dj", "migrate", "--rollback", "--fake"];
+    assert!(Cli::try_parse_from(args).is_err());
+}
+
+#[test]
+fn test_migrate_rollback_and_plan_conflict() {
+    let args = vec!["dj", "migrate", "--rollback", "--plan"];
+    assert!(Cli::try_parse_from(args).is_err());
+}
